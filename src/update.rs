@@ -70,9 +70,22 @@ async fn release(http: &reqwest::Client, tag: Option<&str>) -> Result<Release, S
     serde_json::from_slice(&body).map_err(|e| format!("无法解析 Release 信息：{e}"))
 }
 
+/// Retried: the asset CDN behind GitHub's redirect drops connections now and then.
 async fn download(http: &reqwest::Client, url: &str) -> Result<Vec<u8>, String> {
-    let response = http.get(url).send().await.and_then(|r| r.error_for_status()).map_err(|e| format!("下载失败：{e}"))?;
-    response.bytes().await.map(|b| b.to_vec()).map_err(|e| format!("下载失败：{e}"))
+    let mut last = String::new();
+    for attempt in 0..3 {
+        if attempt > 0 { tokio::time::sleep(Duration::from_secs(2)).await; }
+        let result = async {
+            let response = http.get(url).send().await?.error_for_status()?;
+            response.bytes().await
+        }.await;
+        match result {
+            Ok(bytes) => return Ok(bytes.to_vec()),
+            // reqwest's top-level message hides the cause ("error sending request"); the source names it.
+            Err(e) => last = std::error::Error::source(&e).map_or_else(|| e.to_string(), |cause| format!("{e}：{cause}")),
+        }
+    }
+    Err(format!("下载失败：{last}"))
 }
 
 /// `1.2.3` from `v1.2.3`; pre-release suffixes are ignored for ordering.
