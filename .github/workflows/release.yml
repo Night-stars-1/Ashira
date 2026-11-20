@@ -36,6 +36,18 @@ jobs:
       - name: Linux packages
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y pkg-config libwayland-dev libxkbcommon-dev
+      - name: Version from tag
+        if: env.VERSION != ''
+        shell: bash
+        env:
+          V: ${{ github.event.release.tag_name }}
+        run: |
+          # The binary reports and compares against CARGO_PKG_VERSION, so it must match the tag.
+          # perl rather than sed: macOS ships BSD sed, which lacks `0,/re/`.
+          perl -0pi -e '($v = $ENV{V}) =~ s/^v//; s/^version = "[^"]*"/version = "$v"/m' Cargo.toml
+          perl -0pi -e '($v = $ENV{V}) =~ s/^v//; s/(^name = "ashira"\r?\nversion = )"[^"]*"/$1"$v"/m' Cargo.lock
+          grep -m1 '^version' Cargo.toml
+          grep -A1 '^name = "ashira"' Cargo.lock
       - run: cargo build --release --locked --target ${{ matrix.target }}
       - name: Package
         shell: bash
