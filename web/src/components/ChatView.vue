@@ -7,8 +7,8 @@ import AgentView from '@/components/AgentView.vue'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import QuestionForm from '@/components/QuestionForm.vue'
-import type { QuestionAnswers, QuestionRequest } from '@/lib/api'
-import { computed, defineAsyncComponent, ref } from 'vue'
+import { workspaceSessionKey, type QuestionAnswers, type QuestionRequest } from '@/lib/api'
+import { computed, defineAsyncComponent, provide, ref, toRef } from 'vue'
 
 const props = defineProps<{
   cwd: string
@@ -27,6 +27,9 @@ const props = defineProps<{
   filesOpen: boolean
   question: QuestionRequest | null
 }>()
+
+// Workspace images in replies and tool cards load from this session.
+provide(workspaceSessionKey, toRef(props, 'sessionId'))
 
 const emit = defineEmits<{
   'update:draft': [value: string]

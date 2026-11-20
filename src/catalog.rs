@@ -17,20 +17,134 @@ use std::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{config, session};
+use crate::{api::Usage, config, session};
 
 const URL: &str = "https://models.dev/api.json";
 const TTL_SECS: u64 = 24 * 60 * 60;
+/// Bumped when `Info` changes meaning, so an older cached catalog is fetched again.
+const VERSION: u32 = 3;
 
 /// A single source's USD per million token price card.
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 pub struct Price {
     pub input: Option<f64>,
     pub output: Option<f64>,
     pub cache_read: Option<f64>,
     pub cache_write: Option<f64>,
+    /// Context-length tiers, ascending by `above`; the base rates apply below the first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tiers: Vec<Tier>,
+    /// The card prices tokens the usage cannot separate (reasoning at its own rate, unknown kinds).
     #[serde(default)]
     pub unsupported: bool,
+}
+
+/// Rates once the request's context (input + cache read + cache write) exceeds `above` tokens.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+pub struct Tier {
+    pub above: u64,
+    pub input: Option<f64>,
+    pub output: Option<f64>,
+    pub cache_read: Option<f64>,
+    pub cache_write: Option<f64>,
+}
+
+/// (input, output, cache read, cache write) USD per million tokens.
+pub type Rates = (Option<f64>, Option<f64>, Option<f64>, Option<f64>);
+
+impl Price {
+    /// A models.dev `cost` object or a models.yml `cost` card. Rates are rounded to
+    /// micro-dollars so equal cards from different sources compare equal.
+    pub fn parse(card: &Value) -> Option<Price> {
+        let card = card.as_object()?;
+        let rate = |obj: &serde_json::Map<String, Value>, snake: &str, camel: &str| {
+            obj.get(snake).or_else(|| obj.get(camel)).and_then(Value::as_f64)
+                .filter(|v| v.is_finite() && *v >= 0.0).map(|v| (v * 1e6).round() / 1e6)
+        };
+        let rates = |obj| (rate(obj, "input", "input"), rate(obj, "output", "output"), rate(obj, "cache_read", "cacheRead"), rate(obj, "cache_write", "cacheWrite"));
+        let known = |key: &str| matches!(key, "input" | "output" | "cache_read" | "cacheRead" | "cache_write" | "cacheWrite");
+        // Rates for tokens the usage never has or already bills correctly. Audio: Ashira
+        // sends and receives none. Reasoning: providers report it inside output, so only
+        // a rate equal to output's is billed right; a different one makes the card unusable.
+        let harmless = |obj: &serde_json::Map<String, Value>, key: &str| match key {
+            "input_audio" | "output_audio" | "inputAudio" | "outputAudio" => true,
+            "reasoning" => rate(obj, "reasoning", "reasoning").is_some_and(|r| Some(r) == rate(obj, "output", "output")),
+            _ => false,
+        };
+        let mut unsupported = false;
+        let mut tiers = Vec::new();
+        for (key, value) in card {
+            match key.as_str() {
+                key if known(key) || harmless(card, key) => {}
+                // models.dev's older single tier; `tiers` carries it too.
+                "context_over_200k" => {}
+                "tiers" => for tier in value.as_array().into_iter().flatten() {
+                    let parsed = tier.as_object().and_then(|obj| {
+                        let limit = obj.get("tier")?;
+                        if limit["type"] != "context" || obj.keys().any(|key| key != "tier" && !known(key) && !harmless(obj, key)) { return None; }
+                        let (input, output, cache_read, cache_write) = rates(obj);
+                        Some(Tier { above: limit["size"].as_u64()?, input, output, cache_read, cache_write })
+                    });
+                    match parsed {
+                        Some(tier) => tiers.push(tier),
+                        None => unsupported = true,
+                    }
+                },
+                _ => unsupported = true,
+            }
+        }
+        tiers.sort_by_key(|tier| tier.above);
+        let (input, output, cache_read, cache_write) = rates(card);
+        Some(Price { input, output, cache_read, cache_write, tiers, unsupported })
+    }
+
+    /// The rates for a request whose context is `context` tokens.
+    pub fn rates(&self, context: u64) -> Rates {
+        match self.tiers.iter().rev().find(|tier| context > tier.above) {
+            Some(tier) => (tier.input, tier.output, tier.cache_read, tier.cache_write),
+            None => (self.input, self.output, self.cache_read, self.cache_write),
+        }
+    }
+
+    /// USD for one request, or `None` when a token kind it used has no rate. Tiered
+    /// cards bill the whole request at the tier its context (input + cache) falls in.
+    pub fn cost(&self, usage: Usage) -> Option<f64> {
+        if self.unsupported && (usage.input != 0 || usage.output != 0 || usage.cache_read != 0 || usage.cache_write != 0) {
+            return None;
+        }
+        let (input, output, cache_read, cache_write) = self.rates(usage.input + usage.cache_read + usage.cache_write);
+        let component = |tokens: u64, rate: Option<f64>| -> Option<f64> {
+            if tokens == 0 { return Some(0.0); }
+            Some(tokens as f64 * rate.filter(|r| r.is_finite() && *r >= 0.0)?)
+        };
+        let cost = (component(usage.input, input)? + component(usage.output, output)?
+            + component(usage.cache_read, cache_read)? + component(usage.cache_write, cache_write)?) / 1_000_000.0;
+        cost.is_finite().then_some(cost)
+    }
+
+    /// Total order for voting between sources: equal cards share a key.
+    fn key(&self) -> PriceKey {
+        let micros = |v: Option<f64>| v.map(|v| (v * 1e6).round() as i64);
+        let rates = |(i, o, r, w): Rates| [micros(i), micros(o), micros(r), micros(w)];
+        let tiers = self.tiers.iter().map(|t| (t.above, rates((t.input, t.output, t.cache_read, t.cache_write)))).collect();
+        (rates((self.input, self.output, self.cache_read, self.cache_write)), tiers, self.unsupported)
+    }
+}
+
+type PriceKey = ([Option<i64>; 4], Vec<(u64, [Option<i64>; 4])>, bool);
+
+/// `Price` ordered by its voting key.
+struct Voted(Price);
+
+impl PartialEq for Voted {
+    fn eq(&self, other: &Self) -> bool { self.0.key() == other.0.key() }
+}
+impl Eq for Voted {}
+impl PartialOrd for Voted {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> { Some(self.cmp(other)) }
+}
+impl Ord for Voted {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering { self.0.key().cmp(&other.0.key()) }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -41,9 +155,7 @@ pub struct Info {
     pub context: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output: Option<u32>,
-    /// USD per million tokens (input, output).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cost: Option<(f64, f64)>,
+    /// The voted price card; billing and model listings both read it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub price: Option<Price>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -52,6 +164,8 @@ pub struct Info {
 
 #[derive(Serialize, Deserialize, Default)]
 struct Stored {
+    #[serde(default)]
+    version: u32,
     fetched_at: u64,
     /// Lowercased model id -> merged info.
     models: BTreeMap<String, Info>,
@@ -65,7 +179,9 @@ fn path() -> PathBuf {
 
 fn store() -> &'static RwLock<Stored> {
     CATALOG.get_or_init(|| {
-        let stored = fs::read(path()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        let mut stored: Stored = fs::read(path()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        // An older layout still answers lookups but counts as stale, so startup refetches it.
+        if stored.version != VERSION { stored.fetched_at = 0; }
         RwLock::new(stored)
     })
 }
@@ -100,7 +216,7 @@ pub async fn refresh(force: bool) -> Result<bool, String> {
     }
     let bytes = resp.bytes().await.map_err(|e| format!("models.dev: {e}"))?;
     let raw: HashMap<String, RawProvider> = serde_json::from_slice(&bytes).map_err(|e| format!("models.dev: bad JSON: {e}"))?;
-    let stored = Stored { fetched_at: now, models: reduce(&raw) };
+    let stored = Stored { version: VERSION, fetched_at: now, models: reduce(&raw) };
     if let Ok(b) = serde_json::to_vec(&stored) {
         let _ = fs::write(path(), b);
     }
@@ -121,7 +237,7 @@ struct RawModel {
     #[serde(default)]
     limit: Option<RawLimit>,
     #[serde(default)]
-    cost: Option<RawCost>,
+    cost: Option<Value>,
     #[serde(default)]
     reasoning_options: Option<Vec<Value>>,
 }
@@ -132,20 +248,6 @@ struct RawLimit {
     context: Option<u64>,
     #[serde(default)]
     output: Option<u64>,
-}
-
-#[derive(Deserialize)]
-struct RawCost {
-    #[serde(default)]
-    input: Option<f64>,
-    #[serde(default)]
-    output: Option<f64>,
-    #[serde(default)]
-    cache_read: Option<f64>,
-    #[serde(default)]
-    cache_write: Option<f64>,
-    #[serde(flatten)]
-    extra: HashMap<String, Value>,
 }
 
 /// Providers that publish the model themselves; their numbers win over resellers'.
@@ -174,19 +276,8 @@ fn reduce(raw: &HashMap<String, RawProvider>) -> BTreeMap<String, Info> {
                 name: vote(&rows, |m| m.name.clone()),
                 context: vote(&rows, |m| m.limit.as_ref()?.context.filter(|n| *n > 0)),
                 output: vote(&rows, |m| m.limit.as_ref()?.output.filter(|n| *n > 0).and_then(|n| u32::try_from(n).ok())),
-                // Vote on the entire card so cache prices never come from another source.
-                cost: vote(&rows, |m| {
-                    let c = m.cost.as_ref()?;
-                    Some(((c.input? * 1e6).round() as i64, (c.output? * 1e6).round() as i64))
-                }).map(|(i, o)| (i as f64 / 1e6, o as f64 / 1e6)),
-                price: vote(&rows, |m| {
-                    let c = m.cost.as_ref()?;
-                    let n = |v: Option<f64>| v.filter(|v| v.is_finite() && *v >= 0.0).map(|v| (v * 1e6).round() as i64);
-                    Some((n(c.input), n(c.output), n(c.cache_read), n(c.cache_write), !c.extra.is_empty()))
-                }).map(|(i, o, r, w, unsupported)| Price {
-                    input: i.map(|v| v as f64 / 1e6), output: o.map(|v| v as f64 / 1e6),
-                    cache_read: r.map(|v| v as f64 / 1e6), cache_write: w.map(|v| v as f64 / 1e6), unsupported,
-                }),
+                // Vote on the entire card so cache and tier prices never come from another source.
+                price: vote(&rows, |m| Price::parse(m.cost.as_ref()?).map(Voted)).map(|voted| voted.0),
                 efforts: vote(&rows, |m| {
                     let effort = m.reasoning_options.as_ref()?.iter().find(|o| o["type"] == "effort")?;
                     Some(effort["values"].as_array()?.iter().filter_map(Value::as_str).map(str::to_owned).collect::<Vec<_>>())
@@ -248,7 +339,7 @@ fn candidates(id: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::candidates;
+    use super::{candidates, Price};
 
     #[test]
     fn gateway_decorations_are_stripped() {
@@ -259,5 +350,43 @@ mod tests {
         assert!(candidates("z-ai/GLM-5.3").contains(&"glm-5.3".to_owned()));
         // Version components like `4-8` are not dates and must survive.
         assert_eq!(candidates("claude-opus-4-8").last().map(String::as_str), Some("claude-opus-4-8"));
+    }
+
+    #[test]
+    fn context_tiers_pick_rates_by_request_context() {
+        // models.dev's grok-4.7 card: one tier above 200k, plus the legacy duplicate key.
+        let card = serde_json::json!({
+            "input": 2, "output": 6, "cache_read": 0.5,
+            "tiers": [{"input": 4, "output": 12, "cache_read": 1, "tier": {"type": "context", "size": 200000}}],
+            "context_over_200k": {"input": 4, "output": 12, "cache_read": 1},
+        });
+        let price = Price::parse(&card).unwrap();
+        assert!(!price.unsupported);
+        assert_eq!(price.rates(200_000), (Some(2.0), Some(6.0), Some(0.5), None));
+        assert_eq!(price.rates(200_001), (Some(4.0), Some(12.0), Some(1.0), None));
+
+        // Several tiers given out of order still pick the highest one exceeded.
+        let card = serde_json::json!({"input": 1, "output": 2, "tiers": [
+            {"input": 3, "output": 6, "tier": {"type": "context", "size": 128000}},
+            {"input": 2, "output": 4, "tier": {"type": "context", "size": 32000}},
+        ]});
+        let price = Price::parse(&card).unwrap();
+        assert_eq!(price.rates(10_000).0, Some(1.0));
+        assert_eq!(price.rates(50_000).0, Some(2.0));
+        assert_eq!(price.rates(500_000).0, Some(3.0));
+
+        // Audio rates never apply (no audio is sent), and a reasoning rate equal to output's
+        // bills right; models.dev's google card for gemini-4-hydrogen has both shapes.
+        let card = serde_json::json!({"input": 1.5, "output": 7.5, "cache_read": 0.075, "input_audio": 1.5, "reasoning": 7.5});
+        let price = Price::parse(&card).unwrap();
+        assert!(!price.unsupported);
+        assert_eq!(price.rates(0), (Some(1.5), Some(7.5), Some(0.075), None));
+
+        // Rates usage cannot be split into stay unsupported.
+        for card in [serde_json::json!({"input": 1, "output": 2, "reasoning": 3}),
+                     serde_json::json!({"input": 1, "output": 2, "tiers": [{"input": 2, "output": 2, "reasoning": 3, "tier": {"type": "context", "size": 1}}]}),
+                     serde_json::json!({"input": 1, "output": 2, "tiers": [{"input": 2, "tier": {"type": "time", "size": 1}}]})] {
+            assert!(Price::parse(&card).unwrap().unsupported);
+        }
     }
 }

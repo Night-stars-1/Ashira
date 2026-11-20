@@ -11,6 +11,7 @@ import 'theme.dart';
 import 'widgets.dart';
 import 'terminal_view.dart';
 import 'transcript.dart';
+import 'workspace_image.dart';
 import 'window_frame.dart';
 
 class HomePage extends StatefulWidget {
@@ -190,11 +191,14 @@ class _HomePageState extends State<HomePage> {
                 ? const SizedBox.shrink()
                 : state.blocks.isEmpty && state.activity.isEmpty
                 ? _Empty(hasSession: hasSession, cwd: state.cwd)
-                : Transcript(
-                    key: ValueKey(state.shownId),
-                    blocks: state.blocks,
-                    activity: state.activity,
-                    onOpenAgent: (id) => showSubagent(context, state.client, id),
+                : WorkspaceImages(
+                    uri: (path) => state.client.rawUri(state.shownId, path),
+                    child: Transcript(
+                      key: ValueKey(state.shownId),
+                      blocks: state.blocks,
+                      activity: state.activity,
+                      onOpenAgent: (id) => showSubagent(context, state.client, id, (path) => state.client.rawUri(state.shownId, path)),
+                    ),
                   ),
           ),
           Composer(

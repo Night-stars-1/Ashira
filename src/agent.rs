@@ -182,6 +182,7 @@ pub struct Model {
 
 struct ToolCache {
     generation: u64,
+    image: bool,
     parent: Arc<Value>,
     task: Arc<Value>,
     scout: Arc<Value>,
@@ -189,20 +190,24 @@ struct ToolCache {
 
 impl Model {
     fn new(client: Client) -> Arc<Model> {
-        Arc::new(Model { client, tools: Mutex::new(ToolCache { generation: u64::MAX, parent: Arc::default(), task: Arc::default(), scout: Arc::default() }) })
+        Arc::new(Model { client, tools: Mutex::new(ToolCache { generation: u64::MAX, image: false, parent: Arc::default(), task: Arc::default(), scout: Arc::default() }) })
     }
 
-    fn tools(&self, mcp: &Mcp, plugins: &crate::plugin::Plugins, role: Option<Role>, interactive: bool) -> Arc<Value> {
+    /// `image_role`: `modelRoles.image` is set. Either that or this model being on Responses
+    /// (which can run the provider's built-in image tool) offers `generate_image`.
+    fn tools(&self, mcp: &Mcp, plugins: &crate::plugin::Plugins, role: Option<Role>, interactive: bool, image_role: bool) -> Arc<Value> {
+        let image = image_role || self.client.on_responses();
         let generation = mcp.generation();
         let mut t = self.tools.lock().expect("tools lock");
-        if t.generation != generation {
+        if t.generation != generation || t.image != image {
             let defs = mcp.definitions();
             let plugin_defs = plugins.tool_definitions();
             *t = ToolCache {
                 generation,
-                parent: Arc::new(self.client.wire_tools(tools::definitions(None, &defs, &plugin_defs, interactive))),
-                task: Arc::new(self.client.wire_tools(tools::definitions(Some(Role::Task), &defs, &[], interactive))),
-                scout: Arc::new(self.client.wire_tools(tools::definitions(Some(Role::Scout), &defs, &[], interactive))),
+                image,
+                parent: Arc::new(self.client.wire_tools(tools::definitions(None, &defs, &plugin_defs, interactive, image))),
+                task: Arc::new(self.client.wire_tools(tools::definitions(Some(Role::Task), &defs, &[], interactive, image))),
+                scout: Arc::new(self.client.wire_tools(tools::definitions(Some(Role::Scout), &defs, &[], interactive, image))),
             };
         }
         match role { None => t.parent.clone(), Some(Role::Task) => t.task.clone(), Some(Role::Scout) => t.scout.clone() }
@@ -289,6 +294,11 @@ impl Shared {
     }
 
     pub(crate) fn record_statistics(&self, scope: &Arc<Mutex<StatsScope>>, record: &crate::stats::RequestStats) {
+        // A session's client keeps the price it resolved with; a model priced since
+        // (models.dev caught up, models.yml edited) is costed from the current registry.
+        let mut record = record.clone();
+        record.price_missing(&self.registry());
+        let record = &record;
         {
             let mut state = scope.lock().unwrap();
             if !state.ledger.record(record) { return; }
@@ -434,6 +444,27 @@ impl Shared {
         if let Some(error) = registry.load_error() { return Err(error.to_owned()); }
         let resolved = if let Some(selector) = selector { Some(registry.resolve(selector)?) } else { registry.resolve_role("task").transpose()? };
         match resolved { Some(r) => Ok(Model::new(Client::new(r)?)), None => self.model().ok_or_else(|| "no active model".into()) }
+    }
+
+    /// The model for a background job role (`compact`, `title`, `memory`): the configured
+    /// role when it resolves, else `fallback` (the session's model). A broken role is
+    /// reported once per call and does not block the job.
+    pub fn role_model(&self, role: &str, fallback: &Arc<Model>) -> Arc<Model> {
+        self.reload_registry();
+        match self.registry().resolve_role(role) {
+            Some(Ok(resolved)) => match Client::new(resolved) {
+                Ok(client) => Model::new(client),
+                Err(error) => { self.emit(Event::Notice(format!("modelRoles.{role}：{error}，改用当前模型"))); fallback.clone() }
+            },
+            Some(Err(error)) => { self.emit(Event::Notice(format!("{error}，改用当前模型"))); fallback.clone() }
+            None => fallback.clone(),
+        }
+    }
+
+    /// Whether `modelRoles.image` is set. `generate_image` is offered then, or when the
+    /// model is on Responses (see `Model::tools`); a broken role surfaces when the tool runs.
+    pub fn has_image_role(&self) -> bool {
+        self.registry().role("image").is_some_and(|value| !value.trim().is_empty())
     }
 
     pub fn turn_token(&self) -> CancellationToken { self.root.child_token() }
@@ -628,6 +659,39 @@ impl Agent {
         Ok(())
     }
 
+    /// `generate_image`: the `modelRoles.image` model's `images/generations` endpoint, or
+    /// without one the agent's own Responses model through the provider's built-in tool.
+    /// Recorded like any other request so its cost shows in the usage figures.
+    async fn generate_image(&self, input: &Value, cancel: &CancellationToken) -> Output {
+        use crate::image_gen::Source;
+        self.shared.reload_registry();
+        let (model, source) = match self.shared.registry().resolve_role("image") {
+            Some(Ok(resolved)) => match Client::new(resolved) { Ok(client) => (Model::new(client), Source::Images), Err(error) => return Output::err(error) },
+            Some(Err(error)) => return Output::err(error),
+            None => match self.current_model() {
+                Ok(model) if model.client.on_responses() => (model, Source::Hosted),
+                Ok(_) => return Output::err("no image model: set modelRoles.image in config.yml (or Settings → 模型 → 生成图片)"),
+                Err(error) => return Output::err(error),
+            },
+        };
+        let client = &model.client;
+        let request_id = match self.begin_request(client, crate::stats::Kind::Image, cancel).await { Ok(id) => id, Err(error) => return Output::err(error) };
+        let started = std::time::Instant::now();
+        let result = crate::image_gen::generate(client, source, input, &self.shared.cwd(), cancel).await;
+        let usage = result.as_ref().ok().and_then(|generated| generated.usage);
+        let record = crate::stats::RequestStats {
+            id: request_id, model: client.name().to_owned(), kind: crate::stats::Kind::Image, usage,
+            cost: usage.and_then(|u| client.estimate_cost(u)),
+            duration_ms: started.elapsed().as_millis().min(u64::MAX as u128) as u64,
+            child: self.identity.is_some(),
+        };
+        if let Err(error) = self.record_request(&record).await { return Output::err(error); }
+        match result {
+            Ok(generated) => Output::ok(crate::image_gen::report(client.name(), &generated)),
+            Err(error) => Output::err(error),
+        }
+    }
+
     fn publish_context(&self) {
         if self.identity.is_none() { self.shared.publish_context(self.context_tokens()); }
     }
@@ -644,7 +708,7 @@ impl Agent {
         }
         let role = self.identity.as_ref().map(|identity| identity.role);
         if self.history.len() <= 1 && role != Some(Role::Scout) { self.shared.mcp.wait_settled(Duration::from_millis(1500), false).await; }
-        Ok((self.shared.system(role).await?, model.tools(&self.shared.mcp, &self.shared.plugins, role, self.shared.interactive)))
+        Ok((self.shared.system(role).await?, model.tools(&self.shared.mcp, &self.shared.plugins, role, self.shared.interactive, self.shared.has_image_role())))
     }
 
     async fn receive_messages(&mut self, cancel: &CancellationToken) -> Result<bool, String> {
@@ -892,7 +956,8 @@ impl Agent {
                 if let Some(baseline) = memory_baseline {
                     let answer = self.last_text();
                     if !answer.trim().is_empty() && memory_user.as_ref().is_some_and(|user| !user.trim().is_empty()) {
-                        self.consolidate_memory(&model.client, baseline, memory_user.as_deref().unwrap_or_default(), &answer, cancel).await?;
+                        let memory = self.shared.role_model("memory", &model);
+                        self.consolidate_memory(&memory.client, baseline, memory_user.as_deref().unwrap_or_default(), &answer, cancel).await?;
                     }
                 }
                 self.name_session(&model);
@@ -916,7 +981,7 @@ impl Agent {
         let Some(user) = self.history.iter().find(|m| m["role"] == "user").map(|m| text_of(&m["content"])).filter(|t| !t.trim().is_empty()) else { return };
         if !session::needs_summary(&id) { return; }
         let answer = self.last_text();
-        let (shared, model, scope) = (self.shared.clone(), model.clone(), self.scope.clone());
+        let (shared, model, scope) = (self.shared.clone(), self.shared.role_model("title", model), self.scope.clone());
         shared.emit(Event::Titling { id: id.clone(), done: false, title: None });
         tokio::spawn(async move {
             let client = &model.client;
@@ -1032,6 +1097,7 @@ impl Agent {
                 self.shared.emit(Event::Todo(Arc::new(snapshot)));
                 Output::ok(summary)
             }
+            "generate_image" => self.generate_image(input, cancel).await,
             "read" if input["path"].as_str().is_some_and(subagents::is_agent_uri) => {
                 match self.shared.subagents.read_agent(&self.endpoint(), input["path"].as_str().unwrap()).await { Ok(text) => Output::ok(text), Err(error) => Output::err(error) }
             }
@@ -1321,7 +1387,7 @@ impl Agent {
         if !sub { sh.emit(Event::Notice(format!("正在压缩上下文（{}）…", tokens(before)))); }
         else if let Some(remote) = &self.remote { let _ = remote.send(crate::ipc::Frame::Progress { activity: "compacting context".into() }); }
         else { sh.subagents.update(&self.endpoint(), subagents::Status::Running, "compacting context"); }
-        let model = self.current_model()?;
+        let model = self.shared.role_model("compact", &self.current_model()?);
         let (system, tools) = self.request_context(&model, cancel).await?;
         let request_id = self.begin_request(&model.client, crate::stats::Kind::Compact, cancel).await?;
         let started = std::time::Instant::now();
@@ -1400,7 +1466,7 @@ impl Agent {
                 let activation = if self.session.as_ref().is_some_and(|s| s.path == target.path) {
                     Ok(())
                 } else {
-                    match session::load(&target.path).and_then(|loaded| {
+                    match session::load(&target.path, &self.shared.registry()).and_then(|loaded| {
                         if self.shared.cwd() != target.cwd { self.shared.set_cwd(&target.cwd)?; }
                         Ok(loaded)
                     }) {
@@ -1529,7 +1595,7 @@ pub async fn handle_worker_request(shared: Arc<Shared>, run: &subagents::RunLeas
             if params["first"] == true && run.identity.role != Role::Scout { shared.mcp.wait_settled(Duration::from_millis(1500), false).await; }
             let base = shared.system(Some(run.identity.role)).await?;
             let system = format!("{base}\n\nYour stable agent ID is {} (run {}). The parent is agent://parent. Your role is {}. Discover peers with read agent://.", run.identity.id, run.endpoint.generation, run.identity.role.as_str());
-            let tools = run.model.tools(&shared.mcp, &crate::plugin::Plugins::empty(), Some(run.identity.role), false);
+            let tools = run.model.tools(&shared.mcp, &crate::plugin::Plugins::empty(), Some(run.identity.role), false, shared.has_image_role());
             Ok(json!({"system":system,"tools":tools.as_ref()}))
         }
         "run_tool" => {
@@ -1635,6 +1701,7 @@ fn intent(name: &str, input: &Value) -> String {
         "task_cancel" => "取消子任务",
         "memory" => "管理记忆",
         "ask_user" => "向用户提问",
+        "generate_image" => "生成图片",
         "mcp_search" => return "查找 MCP 工具".into(),
         n if Mcp::is_tool(n) => return "调用 MCP 工具".into(),
         _ => return "调用工具".into(),
@@ -1663,6 +1730,7 @@ pub(crate) fn summary(name: &str, input: &Value) -> String {
         },
         "memory" => format!("{} {}", s("action"), s("key")).trim_end().to_owned(),
         "ask_user" => question::summary(input),
+        "generate_image" => s("prompt"),
         _ => input.to_string(),
     }
 }

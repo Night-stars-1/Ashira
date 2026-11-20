@@ -14,7 +14,7 @@ use std::{
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use crate::{api::Usage, stats::{Ledger, RequestStats}};
+use crate::{api::Usage, config::Registry, stats::{Ledger, RequestStats}};
 
 #[derive(Serialize)]
 struct MessageRecord<'a> {
@@ -233,15 +233,16 @@ pub fn locate(id: &str) -> Result<Target, String> {
     Err(missing())
 }
 
-pub fn load(path: &Path) -> Result<Loaded, String> {
-    load_records(path, false)
+/// `registry` prices requests that were logged before their model had a price.
+pub fn load(path: &Path, registry: &Registry) -> Result<Loaded, String> {
+    load_records(path, false, registry)
 }
 
-pub fn read_http(path: &Path) -> Result<Loaded, String> {
-    load_records(path, true)
+pub fn read_http(path: &Path, registry: &Registry) -> Result<Loaded, String> {
+    load_records(path, true, registry)
 }
 
-fn load_records(path: &Path, replay: bool) -> Result<Loaded, String> {
+fn load_records(path: &Path, replay: bool, registry: &Registry) -> Result<Loaded, String> {
     let file = File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let mut history = Vec::new();
     let mut usage = Usage::default();
@@ -291,14 +292,17 @@ fn load_records(path: &Path, replay: bool) -> Result<Loaded, String> {
                 pending = None;
                 let g = |k: &str| rec[k].as_u64().unwrap_or(0);
                 usage = Usage { input: g("input"), output: g("output"), cache_read: g("cache_read"), cache_write: g("cache_write") };
-                if !stats_boundary { ledger.legacy(usage); }
+                // Before request records, each model response wrote one `usage`, under the session's model.
+                let cost = model.as_deref().and_then(|model| registry.price_of(model)).and_then(|price| price.cost(usage));
+                if !stats_boundary { ledger.legacy(usage, cost); }
                 if let Some(index) = previous_reply {
-                    reply_stats.insert(index, ReplyStats { model: model.clone(), usage: Some(usage), cost: None, duration_ms: None });
+                    reply_stats.insert(index, ReplyStats { model: model.clone(), usage: Some(usage), cost, duration_ms: None });
                 }
             }
             Some("request_stats_boundary") => { stats_boundary = true; pending = None; }
             Some("request_stats") => {
-                if let Ok(stats) = serde_json::from_value::<RequestStats>(rec["stats"].take()) {
+                if let Ok(mut stats) = serde_json::from_value::<RequestStats>(rec["stats"].take()) {
+                    stats.price_missing(registry);
                     if ledger.record(&stats) && replay && !stats.child {
                         pending = matches!(stats.kind, crate::stats::Kind::Chat).then_some(stats);
                     }
@@ -606,7 +610,7 @@ pub(crate) fn repair(history: &[Value]) -> Option<Value> {
 }
 
 /// `YYYYMMDD-HHMMSS` in UTC.
-fn timestamp(secs: u64) -> String {
+pub(crate) fn timestamp(secs: u64) -> String {
     let days = (secs / 86_400) as i64;
     let rem = secs % 86_400;
     // Howard Hinnant's civil_from_days.
@@ -625,6 +629,11 @@ fn timestamp(secs: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Without models.yml no request gets a price filled in, so logged costs stay as written.
+    fn load(path: &Path) -> Result<Loaded, String> {
+        super::load(path, &Registry::empty())
+    }
 
     #[test]
     fn todo_lifecycle_persists_compaction_and_isolates_sessions() {

@@ -10,6 +10,7 @@ mod file_output;
 mod file_report;
 mod hub;
 mod input;
+mod image_gen;
 mod ipc;
 mod mcp;
 mod plugin;
@@ -222,7 +223,7 @@ fn run(args: Args, cwd: std::path::PathBuf, rt: &tokio::runtime::Runtime) -> Res
     let registry = Registry::load();
     let (mut notices, warnings) = (Vec::new(), registry.warnings.clone());
     let loaded = match &args.resume {
-        Some(id) => Some(session::load(&session::find(&cwd, id)?)?),
+        Some(id) => Some(session::load(&session::find(&cwd, id)?, &registry)?),
         None => None,
     };
     // Discovered lists refresh in the background; startup uses the cache.
@@ -329,15 +330,23 @@ fn run(args: Args, cwd: std::path::PathBuf, rt: &tokio::runtime::Runtime) -> Res
         });
     }
     {
-        // models.dev metadata (context, output limit, price); daily, in the background.
+        // models.dev metadata (context, output limit, price). Checked hourly so a long-running
+        // TUI or API picks up a new model's price; `refresh` only downloads once a day.
         let shared = shared.clone();
         rt.spawn(async move {
-            match catalog::refresh(false).await {
-                Ok(true) => shared.catalog_updated(),
-                Ok(false) => {}
-                Err(e) => {
-                    let _ = shared.events.send(Event::Notice(format!("更新模型资料失败（{e}），继续使用缓存")));
+            let mut first = true;
+            loop {
+                match catalog::refresh(false).await {
+                    Ok(true) => shared.catalog_updated(),
+                    Ok(false) => {}
+                    // Reported once; later attempts retry quietly with the cache in use.
+                    Err(e) if first => {
+                        let _ = shared.events.send(Event::Notice(format!("更新模型资料失败（{e}），继续使用缓存")));
+                    }
+                    Err(_) => {}
                 }
+                first = false;
+                tokio::time::sleep(std::time::Duration::from_secs(60 * 60)).await;
             }
         });
     }

@@ -5,8 +5,9 @@ import { Button } from '@/components/ui/button'
 import { ArrowDown, Bot, ChevronDown, ChevronRight, ChevronUp, LoaderCircle } from '@lucide/vue'
 import Markdown from '@/components/Markdown.vue'
 import ToolOutput from '@/components/ToolOutput.vue'
+import WorkspaceImage from '@/components/WorkspaceImage.vue'
 import TextFileCard from '@/components/TextFileCard.vue'
-import type { ReplyMetrics } from '@/lib/api'
+import { generatedImages, type ReplyMetrics } from '@/lib/api'
 
 export type ToolCard = { name: string; summary: string; output: string; error: boolean; done: boolean }
 export type ReplyPart = { type: 'text'; text: string } | { type: 'reasoning'; text: string } | ({ type: 'tool' } & ToolCard)
@@ -48,8 +49,9 @@ function toggleReasoning(key: string) {
 
 type Reply = Extract<Block, { kind: 'assistant' }>
 /** One reply between two user messages: every model request's parts, split into the
- *  work (thinking, tools and the text between them) and the answer after the last tool. */
-type Turn = { work: ReplyPart[]; answer: string[]; live: boolean; durationMs: number | null; steps: number }
+ *  work (thinking, tools and the text between them) and the answer after the last tool.
+ *  `images` are the pictures `generate_image` saved; they are results, shown with the answer. */
+type Turn = { work: ReplyPart[]; answer: string[]; images: string[]; live: boolean; durationMs: number | null; steps: number }
 type Row = { key: number; block: Exclude<Block, Reply> } | { key: number; reply: Turn }
 
 function turn(parts: ReplyPart[], live: boolean, durationMs: number | null): Turn {
@@ -59,7 +61,8 @@ function turn(parts: ReplyPart[], live: boolean, durationMs: number | null): Tur
   // Thinking after the last tool still belongs to the work; only its text is the answer.
   const work = [...parts.slice(0, lastTool + 1), ...tail.filter((part) => part.type === 'reasoning')]
   const answer = tail.flatMap((part) => part.type === 'text' && part.text ? [part.text] : [])
-  return { work, answer, live, durationMs, steps: work.filter((part) => part.type !== 'text').length }
+  const images = parts.flatMap((part) => part.type === 'tool' ? generatedImages(part) : [])
+  return { work, answer, images, live, durationMs, steps: work.filter((part) => part.type !== 'text').length }
 }
 
 // Consecutive assistant blocks (one per model request) form one reply.
@@ -229,6 +232,9 @@ watch(content, (body, _previous, onCleanup) => {
                 <Markdown v-else-if="part.text" :text="part.text" />
               </template>
             </div>
+          </div>
+          <div v-if="row.reply.images.length" class="flex flex-wrap gap-2">
+            <WorkspaceImage v-for="path in row.reply.images" :key="path" :path="path" />
           </div>
           <Markdown v-for="(text, answerIndex) in row.reply.answer" :key="answerIndex" :text="text" />
         </div>

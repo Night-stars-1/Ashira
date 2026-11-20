@@ -1,3 +1,5 @@
+import type { InjectionKey, Ref } from 'vue'
+
 const serverKey = 'ashira.server'
 const tokenKey = 'ashira.token'
 /** Build-time default; empty means the page's own origin (dev uses the Vite `/v1` proxy). */
@@ -56,6 +58,27 @@ export function streamUrl(path: string): URL {
   return url
 }
 
+/** Session whose workspace images (`![](path)`, `generate_image` results) load through `rawUrl`. */
+export const workspaceSessionKey: InjectionKey<Ref<string>> = Symbol('workspaceSession')
+
+/** A workspace image of the session as an `<img src>`; the token rides in the query. */
+export function rawUrl(sessionId: string, path: string): string {
+  const url = streamUrl(`${sessionPath(sessionId)}/raw`)
+  url.searchParams.set('path', path)
+  return url.toString()
+}
+
+/** A Markdown image target that names a workspace file: no scheme, not protocol-relative. */
+export function isWorkspacePath(src: string): boolean {
+  return !!src && !/^[a-z][a-z0-9+.-]*:/i.test(src) && !src.startsWith('//')
+}
+
+/** Workspace paths a successful `generate_image` call saved (one `saved: <path>` line each). */
+export function generatedImages(tool: { name: string; output: string; error: boolean }): string[] {
+  if (tool.name !== 'generate_image' || tool.error) return []
+  return tool.output.split('\n').flatMap((line) => line.startsWith('saved: ') ? [line.slice(7).trim()] : [])
+}
+
 export type UsageStatistics = {
   usage: { input: number; output: number; cacheRead: number; cacheWrite: number }
   cost: { main: number; child: number; mainUnknown: boolean; childUnknown: boolean }
@@ -111,7 +134,10 @@ export type ProviderKey =
   | { kind: 'missing' }
 export type ProviderStatus = { state: 'ready' | 'pending' | 'failed'; detail: string | null; models: number }
 export type ProviderConfig = { id: string; api: string; baseUrl: string; key: ProviderKey; discovery: boolean; models: string[]; status: ProviderStatus | null }
-export type ModelConfig = { apis: string[]; providers: ProviderConfig[]; default: string; task: string; loadError: string | null; warnings: string[] }
+/** `config.yml` `modelRoles` the settings page edits (same list as the server's). */
+export const MODEL_ROLES = ['default', 'task', 'compact', 'title', 'memory', 'image'] as const
+export type ModelRole = typeof MODEL_ROLES[number]
+export type ModelConfig = { apis: string[]; providers: ProviderConfig[]; roles: Record<ModelRole, string>; loadError: string | null; warnings: string[] }
 /** `key.value` empty keeps the stored key of that provider. */
 export type ProviderForm = { id: string; api: string; baseUrl: string; key: { kind: 'env' | 'literal' | 'command' | 'none'; value: string }; discovery: boolean; models: string[] }
 
@@ -473,7 +499,9 @@ export const api = {
       return [{ id: text(row.id), api: text(row.api), baseUrl: text(row.baseUrl), key, discovery: row.discovery === true, models, status }]
     }) : []
     const strings = (value: unknown) => Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
-    return { apis: strings(body.apis), providers, default: text(body.default), task: text(body.task), loadError: typeof body.loadError === 'string' ? body.loadError : null, warnings: strings(body.warnings) }
+    const rawRoles = record(body.roles)
+    const roles = Object.fromEntries(MODEL_ROLES.map((role) => [role, text(rawRoles[role])])) as Record<ModelRole, string>
+    return { apis: strings(body.apis), providers, roles, loadError: typeof body.loadError === 'string' ? body.loadError : null, warnings: strings(body.warnings) }
   },
   /** Create (`previous` empty) or replace a provider. */
   saveProvider: (previous: string, provider: ProviderForm) => request('/v1/model-config', { method: 'POST', body: JSON.stringify({ action: 'save', previous, provider }) }),
@@ -483,6 +511,7 @@ export const api = {
     const body = record(await request('/v1/model-config', { method: 'POST', body: JSON.stringify({ action: 'probe', previous, provider }) }))
     return Array.isArray(body.models) ? body.models.filter((model): model is string => typeof model === 'string') : []
   },
-  saveRoles: (roles: { default: string; task: string }) => request('/v1/model-config', { method: 'POST', body: JSON.stringify({ action: 'roles', ...roles }) }),
+  /** Saves every role given; an empty selector clears it. */
+  saveRoles: (roles: Partial<Record<ModelRole, string>>) => request('/v1/model-config', { method: 'POST', body: JSON.stringify({ action: 'roles', roles }) }),
   events: (id: string) => new EventSource(streamUrl(`${sessionPath(id)}/events`)),
 }

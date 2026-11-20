@@ -5,6 +5,7 @@ import 'package:markdown/markdown.dart' as md;
 import 'package:url_launcher/url_launcher.dart';
 
 import 'theme.dart';
+import 'workspace_image.dart';
 
 /// Opens only http(s) and mailto links, like the web client's `safeHref`.
 Future<void> openLink(String? href) async {
@@ -26,8 +27,12 @@ class Markdown extends StatelessWidget {
       data: text,
       selectable: true,
       onTapLink: (_, href, _) => openLink(href),
-      // Remote images are not fetched; show the alt text like the web client.
-      imageBuilder: (_, _, alt) => Text(alt ?? '', style: base.copyWith(color: scheme.onSurfaceVariant)),
+      // Workspace files load from the session; remote images are not fetched (alt text, like the web).
+      imageBuilder: (uri, _, alt) {
+        final src = Uri.decodeFull(uri.toString()).trim();
+        if (isWorkspacePath(src) && WorkspaceImages.of(context) != null) return WorkspaceImage(src);
+        return Text(alt ?? '', style: base.copyWith(color: scheme.onSurfaceVariant));
+      },
       builders: {'pre': _CodeBlockBuilder()},
       styleSheet: MarkdownStyleSheet.fromTheme(theme).copyWith(
         p: base,

@@ -66,7 +66,8 @@ fn read_at(models: &Path, settings: &Path) -> Result<Value, String> {
     }).collect();
     let settings: Mapping = load(settings)?;
     let role = |name: &str| settings.get("modelRoles").and_then(|r| r.get(name)).and_then(Value::as_str).unwrap_or("").to_owned();
-    Ok(json!({"apis": APIS, "providers": rows, "default": role("default"), "task": role("task")}))
+    let roles: serde_json::Map<String, Value> = ROLES.iter().map(|&name| (name.to_owned(), json!(role(name)))).collect();
+    Ok(json!({"apis": APIS, "providers": rows, "roles": roles}))
 }
 
 /// `{kind, value}`: an env var name, a `!command`, a stored literal (value hidden), none, or keyless.
@@ -182,16 +183,23 @@ fn remove_provider_at(models: &Path, id: &str) -> Result<(), String> {
     write(models, &file)
 }
 
-/// Empty string clears the role (default falls back, task inherits the session model).
-pub fn save_roles(default: &str, task: &str) -> Result<(), String> {
-    save_roles_at(&config::settings_path(), default, task)
+/// Roles the settings form edits: default model, subagents, the background jobs, images.
+pub const ROLES: [&str; 6] = ["default", "task", "compact", "title", "memory", "image"];
+
+/// Sets each role in `roles` (`name -> selector`); an empty selector clears it (default
+/// falls back to the first usable model, the others to the session's model). Roles
+/// missing from `roles` and any other keys are left as they are.
+pub fn save_roles(roles: &Value) -> Result<(), String> {
+    save_roles_at(&config::settings_path(), roles)
 }
 
-fn save_roles_at(settings: &Path, default: &str, task: &str) -> Result<(), String> {
+fn save_roles_at(settings: &Path, given: &Value) -> Result<(), String> {
     let mut value: Mapping = load(settings)?;
     let roles = value.entry("modelRoles".into()).or_insert_with(|| json!({}));
     let roles = roles.as_object_mut().ok_or("modelRoles 必须是映射")?;
-    for (name, selector) in [("default", default.trim()), ("task", task.trim())] {
+    for name in ROLES {
+        let Some(selector) = given.get(name) else { continue };
+        let selector = selector.as_str().ok_or_else(|| format!("{name} 必须是字符串"))?.trim();
         if selector.is_empty() { roles.remove(name); } else { roles.insert(name.into(), json!(selector)); }
     }
     write(settings, &value)
@@ -228,7 +236,8 @@ mod tests {
         assert_eq!(view["providers"][0]["key"], json!({"kind": "literal"}), "literal keys never leave the server");
         assert!(!view.to_string().contains("sk-secret-literal"));
         assert_eq!(view["providers"][1]["key"], json!({"kind": "command", "value": "get-key"}));
-        assert_eq!(view["default"].as_str(), Some("zeta/gpt-x"));
+        assert_eq!(view["roles"]["default"].as_str(), Some("zeta/gpt-x"));
+        assert_eq!(view["roles"]["title"].as_str(), Some(""), "every role is listed, unset ones empty");
 
         // Rename + edit without retyping the key: key, overrides, per-model fields and position survive.
         let form = json!({"id": "renamed", "api": "openai-completions", "baseUrl": "https://a2.example/v1/", "key": {"kind": "literal", "value": ""}, "discovery": false, "models": ["gpt-x", "gpt-new"]});
@@ -252,9 +261,12 @@ mod tests {
         save_provider_at(&models, &settings, "", &fresh).unwrap();
         assert_eq!(ids(&models), ["renamed", "alpha", "third"]);
         assert_eq!(load::<ModelsFile>(&models).unwrap().providers["third"]["discovery"]["type"], "openai-models-list");
-        save_roles_at(&settings, "third/m", "").unwrap();
+        save_roles_at(&settings, &json!({"default": "third/m", "task": "", "title": "third/small"})).unwrap();
         let roles: Mapping = load(&settings).unwrap();
-        assert_eq!((roles["modelRoles"]["default"].as_str(), roles["modelRoles"].get("task")), (Some("third/m"), None));
+        assert_eq!((roles["modelRoles"]["default"].as_str(), roles["modelRoles"].get("task"), roles["modelRoles"]["title"].as_str()), (Some("third/m"), None, Some("third/small")));
+        // Roles left out of a save keep their value.
+        save_roles_at(&settings, &json!({"default": "third/m"})).unwrap();
+        assert_eq!(load::<Mapping>(&settings).unwrap()["modelRoles"]["title"].as_str(), Some("third/small"));
         remove_provider_at(&models, "alpha").unwrap();
         assert_eq!(ids(&models), ["renamed", "third"]);
         // The registry still loads what the form wrote.

@@ -38,8 +38,9 @@ impl Output {
 /// Built-in tools in a fixed order, then MCP tools (already sorted by name), so
 /// the cached prompt prefix stays stable.
 /// `interactive` adds `ask_user`, which only the root agent of an attached
-/// session may call; `-p` runs and subagents never see it.
-pub fn definitions(role: Option<crate::subagents::Role>, mcp: &[Value], plugins: &[Value], interactive: bool) -> Value {
+/// session may call; `-p` runs and subagents never see it. `image` adds
+/// `generate_image` (a `modelRoles.image` model is configured).
+pub fn definitions(role: Option<crate::subagents::Role>, mcp: &[Value], plugins: &[Value], interactive: bool, image: bool) -> Value {
     let mut tools = vec![
         json!({
             "name": "bash",
@@ -171,6 +172,7 @@ pub fn definitions(role: Option<crate::subagents::Role>, mcp: &[Value], plugins:
         "name": "wait", "description": "Wait for incoming messages or selected jobs. Does not consume messages or completions; message receipts become delivered only after history persistence.",
         "input_schema": {"type": "object", "properties": {"ids": {"type": "array", "items": {"type": "string"}}}}
     }));
+    if image { tools.push(crate::image_gen::definition()); }
     for tool in &mut tools {
         tool["input_schema"]["properties"]["i"] = json!({
             "type": "string",

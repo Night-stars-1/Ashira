@@ -13,8 +13,17 @@ const _apiLabels = {
   'anthropic-messages': 'Anthropic Messages',
 };
 const _keyKinds = [('literal', '直接填写'), ('env', '环境变量'), ('command', '命令'), ('none', '不需要')];
+/// Role, label and what an empty value means.
+const _roleRows = [
+  ('default', '新会话', '未设置（用第一个可用模型）'),
+  ('task', '子代理', '跟随当前会话的模型'),
+  ('compact', '压缩上下文', '跟随当前会话的模型'),
+  ('title', '生成标题', '跟随当前会话的模型'),
+  ('memory', '整理记忆', '跟随当前会话的模型'),
+  ('image', '生成图片', '未设置（Responses 模型用服务商自带的图片生成）'),
+];
 
-/// Settings → 模型: default/task roles and the providers in models.yml.
+/// Settings → 模型: model roles and the providers in models.yml.
 class ModelSettings extends StatefulWidget {
   const ModelSettings({super.key, required this.client});
   final AshiraClient client;
@@ -28,7 +37,7 @@ class _ModelSettingsState extends State<ModelSettings> {
   List<String> _levels = const [];
   String _loadError = '';
   String _notice = '';
-  final _roles = {'default': (model: '', level: ''), 'task': (model: '', level: '')};
+  final _roles = {for (final role in modelRoles) role: (model: '', level: '')};
   bool _savingRoles = false;
 
   @override
@@ -49,8 +58,9 @@ class _ModelSettingsState extends State<ModelSettings> {
           _levels = catalog.levels.where((level) => level != '默认').toList();
         }
         _config = config;
-        _roles['default'] = _split(config.defaultRole);
-        _roles['task'] = _split(config.taskRole);
+        for (final role in modelRoles) {
+          _roles[role] = _split(config.roles[role] ?? '');
+        }
         _loadError = '';
       });
     } catch (error) {
@@ -70,7 +80,7 @@ class _ModelSettingsState extends State<ModelSettings> {
     return value.model.isEmpty ? '' : value.level.isEmpty ? value.model : '${value.model}:${value.level}';
   }
 
-  bool get _rolesDirty => _config != null && (_joined('default') != _config!.defaultRole || _joined('task') != _config!.taskRole);
+  bool get _rolesDirty => _config != null && modelRoles.any((role) => _joined(role) != (_config!.roles[role] ?? ''));
 
   /// Levels the model accepts; unknown support offers all, like the model picker.
   List<String> _roleLevels(String selector) {
@@ -84,7 +94,7 @@ class _ModelSettingsState extends State<ModelSettings> {
       _notice = '';
     });
     try {
-      await widget.client.saveRoles(_joined('default'), _joined('task'));
+      await widget.client.saveRoles({for (final role in modelRoles) role: _joined(role)});
       await _load();
     } catch (error) {
       if (mounted) setState(() => _notice = errorText(error, '保存失败'));
@@ -161,8 +171,8 @@ class _ModelSettingsState extends State<ModelSettings> {
         padding: const EdgeInsets.all(12),
         decoration: BoxDecoration(border: Border.all(color: scheme.border), borderRadius: BorderRadius.circular(radius)),
         child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-          const Text('默认模型', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w500)),
-          for (final (role, label, placeholder) in [('default', '新会话', '未设置（用第一个可用模型）'), ('task', '子代理', '跟随当前会话的模型')]) ...[
+          const Text('模型分工', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w500)),
+          for (final (role, label, placeholder) in _roleRows) ...[
             const SizedBox(height: 10),
             Text(label, style: small),
             const SizedBox(height: 4),
@@ -175,17 +185,20 @@ class _ModelSettingsState extends State<ModelSettings> {
                   onChanged: (model) => setState(() => _roles[role] = (model: model, level: model.isEmpty ? '' : _roles[role]!.level)),
                 ),
               ),
-              const SizedBox(width: 8),
-              SizedBox(
-                width: 112,
-                child: SelectField<String>(
-                  label: '$label思考强度',
-                  enabled: _roles[role]!.model.isNotEmpty,
-                  value: _roles[role]!.level,
-                  onChanged: (level) => setState(() => _roles[role] = (model: _roles[role]!.model, level: level)),
-                  options: [('', '默认强度'), for (final level in _roleLevels(_roles[role]!.model)) (level, level)],
+              // Image models do not think.
+              if (role != 'image') ...[
+                const SizedBox(width: 8),
+                SizedBox(
+                  width: 112,
+                  child: SelectField<String>(
+                    label: '$label思考强度',
+                    enabled: _roles[role]!.model.isNotEmpty,
+                    value: _roles[role]!.level,
+                    onChanged: (level) => setState(() => _roles[role] = (model: _roles[role]!.model, level: level)),
+                    options: [('', '默认强度'), for (final level in _roleLevels(_roles[role]!.model)) (level, level)],
+                  ),
                 ),
-              ),
+              ],
             ]),
           ],
           const SizedBox(height: 12),

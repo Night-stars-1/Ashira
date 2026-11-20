@@ -1,7 +1,8 @@
 //! Model registry loaded from `models.yml`: `providers.<id>` carry the wire
 //! `api`, `baseUrl`, credentials, `headers`, `compat`, static `models`,
 //! `modelOverrides` and `discovery`. Which model a workload uses comes from
-//! `config.yml` `modelRoles` (`default`, `task`), as selectors
+//! `config.yml` `modelRoles` (`default`, `task`, and the background jobs `compact`,
+//! `title`, `memory`; `image` for `generate_image`), as selectors
 //! `provider/modelId[:thinkingLevel]`.
 //!
 //! Discovered model lists are cached in `models-cache.json`; startup never
@@ -232,23 +233,21 @@ struct ModelDef {
 }
 
 impl ModelDef {
-    /// One whole price card; a present but incomplete card blocks lower-priority cards.
+    /// One whole price card; a present but unreadable card blocks lower-priority cards.
     fn price(&self) -> Option<catalog::Price> {
-        let c = self.rest.get("cost")?;
-        let get = |key: &str| c.get(key).and_then(Value::as_f64).filter(|v| v.is_finite() && *v >= 0.0);
-        let unsupported = c.as_object().is_none_or(|obj| obj.keys().any(|k| !matches!(k.as_str(), "input" | "output" | "cacheRead" | "cacheWrite" | "cache_read" | "cache_write")));
-        Some(catalog::Price { input: get("input"), output: get("output"), cache_read: get("cacheRead").or_else(|| get("cache_read")), cache_write: get("cacheWrite").or_else(|| get("cache_write")), unsupported })
-    }
-
-    fn cost(&self) -> Option<(f64, f64)> {
-        let c = self.price()?;
-        Some((c.input?, c.output?))
+        let card = self.rest.get("cost")?;
+        Some(catalog::Price::parse(card).unwrap_or(catalog::Price { unsupported: true, ..Default::default() }))
     }
 
     // Other shapes have no defined capability meaning and block lower-priority guesses.
     fn reasoning_capability(&self) -> Option<Option<bool>> {
         self.rest.get("reasoning").or_else(|| self.rest.get("thinking")).map(Value::as_bool)
     }
+}
+
+/// The card both billing and model listings use: override, then the model, then models.dev.
+fn price_card(ov: Option<&ModelDef>, def: Option<&ModelDef>, cat: Option<&catalog::Info>) -> Option<catalog::Price> {
+    ov.and_then(ModelDef::price).or_else(|| def.and_then(ModelDef::price)).or_else(|| cat.and_then(|c| c.price.clone()))
 }
 
 #[derive(Deserialize)]
@@ -373,7 +372,7 @@ pub struct Entry {
     pub name: Option<String>,
     pub context_window: u64,
     pub max_tokens: Option<u32>,
-    /// USD per million tokens (input, output), from the `cost` field.
+    /// USD per million tokens (input, output): the base rates of the card billing uses.
     pub cost: Option<(f64, f64)>,
     /// Reasoning efforts the model accepts (from models.dev); empty when unknown.
     pub efforts: Vec<String>,
@@ -555,6 +554,13 @@ impl Registry {
         }
     }
 
+    /// A registry from models.yml text alone, for tests.
+    #[cfg(test)]
+    pub fn from_yaml(text: &str) -> Registry {
+        let home = std::env::temp_dir();
+        Registry::parse(text, home.join("models.yml"), None, &home.join("config.yml"), home.join("models-cache.json"), Cache::default()).expect("models.yml")
+    }
+
     pub fn changed_on_disk(&self) -> bool {
         !self.stamp.is_empty() && stamp() != self.stamp
     }
@@ -706,7 +712,7 @@ impl Registry {
                 continue;
             }
             let start = out.len();
-            let push = |out: &mut Vec<Entry>, id: &str, name: Option<String>, ctx: Option<u64>, max: Option<u32>, cost: Option<(f64, f64)>, api: Option<&str>| {
+            let push = |out: &mut Vec<Entry>, id: &str, name: Option<String>, ctx: Option<u64>, max: Option<u32>, def: Option<&ModelDef>, api: Option<&str>| {
                 if out[start..].iter().any(|e: &Entry| e.id == id) {
                     return;
                 }
@@ -722,13 +728,14 @@ impl Registry {
                     name: ov.and_then(|o| o.name.clone()).or(name).or_else(|| cat.and_then(|c| c.name.clone())),
                     context_window: ov.and_then(|o| o.context_window).or(ctx).or_else(|| cat.and_then(|c| c.context)).unwrap_or(DEFAULT_CONTEXT),
                     max_tokens: ov.and_then(|o| o.max_tokens).or(max).or_else(|| cat.and_then(|c| c.output)),
-                    cost: ov.and_then(ModelDef::cost).or(cost).or_else(|| cat.and_then(|c| c.cost)),
+                    // A card billing cannot use shows no price rather than a wrong one.
+                    cost: price_card(ov, def, cat).filter(|price| !price.unsupported).and_then(|price| Some((price.input?, price.output?))),
                     efforts: cat.map(|c| c.efforts.clone()).unwrap_or_default(),
                     fast: api.is_some_and(|api| openai_fast_model(api, id)),
                 });
             };
             for m in &p.models {
-                push(&mut out, m.id.as_deref().unwrap_or_default(), m.name.clone(), m.context_window, m.max_tokens, m.cost(), m.api.as_deref());
+                push(&mut out, m.id.as_deref().unwrap_or_default(), m.name.clone(), m.context_window, m.max_tokens, Some(m), m.api.as_deref());
             }
             if let Some(c) = cache.0.get(pid).filter(|c| Some(c.source.as_str()) == discovery_url(p).as_deref()) {
                 for d in &c.models {
@@ -773,6 +780,16 @@ impl Registry {
     }
 
     /// `provider/id[:level]` or a bare id (searched across providers).
+    /// The current price card for a selector a request was logged with (`provider/id[:level]`),
+    /// without resolving credentials; for costing requests logged before a price was known.
+    pub fn price_of(&self, selector: &str) -> Option<catalog::Price> {
+        let (sel, _) = split_level(selector.trim());
+        let (pid, id) = sel.split_once('/')?;
+        let p = self.providers.get(pid)?;
+        let def = p.models.iter().find(|m| m.id.as_deref() == Some(id));
+        price_card(p.model_overrides.get(id), def, catalog::lookup(id).as_ref())
+    }
+
     pub fn resolve(&self, selector: &str) -> Result<Resolved, String> {
         let (sel, level) = split_level(selector.trim());
         let (pid, id) = match sel.split_once('/') {
@@ -845,9 +862,7 @@ impl Registry {
                 c.efforts.iter().any(|e| e != "none" && e != "off").then_some(true)
             }));
         let display_name = ov.and_then(|o| o.name.clone()).or_else(|| def.and_then(|d| d.name.clone())).or_else(|| cat.as_ref().and_then(|c| c.name.clone()));
-        let price = ov.and_then(ModelDef::price).or_else(|| def.and_then(ModelDef::price)).or_else(|| cat.as_ref().and_then(|c| {
-            c.price.or_else(|| c.cost.map(|(input, output)| catalog::Price { input: Some(input), output: Some(output), ..Default::default() }))
-        }));
+        let price = price_card(ov, def, cat.as_ref());
         Ok(Resolved {
             context_window: ov
                 .and_then(|o| o.context_window)

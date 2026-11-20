@@ -6,6 +6,8 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { Separator } from '@/components/ui/separator'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import WorkspaceImage from '@/components/WorkspaceImage.vue'
+import { isWorkspacePath } from '@/lib/api'
 
 export type MdNode = {
   type: string
@@ -116,6 +118,8 @@ function safeHref(href: string | undefined): string {
 
     <Separator v-else-if="token.type === 'hr'" />
 
+    <!-- Workspace files only: outside URLs stay text so replies never load remote images. -->
+    <WorkspaceImage v-else-if="token.type === 'image' && isWorkspacePath(token.href?.trim() ?? '')" :path="token.href!.trim()" :alt="token.text" />
     <a
       v-else-if="token.type === 'link' && safeHref(token.href)"
       class="text-sky-600 underline underline-offset-2 hover:text-sky-500 dark:text-sky-400 dark:hover:text-sky-300"

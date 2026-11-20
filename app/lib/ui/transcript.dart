@@ -6,6 +6,7 @@ import '../api/models.dart';
 import 'markdown.dart';
 import 'text_file_card.dart';
 import 'theme.dart';
+import 'workspace_image.dart';
 
 /// Scrollable chat log. Follows new content while the user is at the bottom.
 class Transcript extends StatefulWidget {
@@ -119,12 +120,15 @@ class _Turn {
     // Thinking after the last tool still belongs to the work; only its text is the answer.
     work = [...parts.sublist(0, lastTool + 1), ...tail.where((part) => part is TextPart && part.reasoning)];
     answer = [for (final part in tail) if (part is TextPart && !part.reasoning && part.text.isNotEmpty) part.text];
+    images = [for (final part in parts) if (part is ToolPart) ...generatedImages(part)];
   }
   final int key;
   final bool live;
   final double? durationMs;
   late final List<ReplyPart> work;
   late final List<String> answer;
+  /// Pictures `generate_image` saved: results, shown with the answer outside the fold.
+  late final List<String> images;
   int get steps => work.where((part) => part is ToolPart || (part is TextPart && part.reasoning)).length;
 }
 
@@ -228,6 +232,11 @@ class _TurnViewState extends State<_TurnView> {
                   : const SizedBox(width: double.infinity),
             ),
           ]),
+        ),
+      if (turn.images.isNotEmpty)
+        Padding(
+          padding: EdgeInsets.only(bottom: turn.answer.isEmpty ? 0 : 8),
+          child: Wrap(spacing: 8, runSpacing: 8, children: [for (final path in turn.images) WorkspaceImage(path)]),
         ),
       for (final (index, text) in turn.answer.indexed) Padding(padding: EdgeInsets.only(top: index == 0 ? 0 : 8), child: Markdown(text)),
     ]);
@@ -375,6 +384,11 @@ class _DataImage extends StatelessWidget {
   }
 }
 
+/// Workspace paths a successful `generate_image` call saved (one `saved: <path>` line each).
+List<String> generatedImages(ToolPart tool) => tool.name == 'generate_image' && !tool.error
+    ? [for (final line in tool.output.split('\n')) if (line.startsWith('saved: ')) line.substring(7).trim()]
+    : const [];
+
 /// The web's ToolOutput: a badge with the tool's name and its summary, then the result
 /// (todo board, `ask_user` answers or raw/numbered output) under a divider. Always open.
 class ToolCard extends StatelessWidget {
@@ -387,7 +401,8 @@ class ToolCard extends StatelessWidget {
     final todo = tool.name == 'todo' ? parseTodo(tool.output) : null;
     final asked = tool.name == 'ask_user' ? parseAsk(tool.output) : null;
     final numbered = todo == null && asked == null && tool.output.isNotEmpty ? numberedLines(tool.output) : null;
-    final label = switch (tool.name) { 'todo' => '待办', 'ask_user' => '提问', _ => tool.name };
+    final label = switch (tool.name) { 'todo' => '待办', 'ask_user' => '提问', 'generate_image' => '生成图片', _ => tool.name };
+    final images = generatedImages(tool);
     // `max-h-64` scroll area for the todo board and raw output; answers are short and show whole.
     Widget scrolled(Widget child) => ConstrainedBox(
           constraints: const BoxConstraints(maxHeight: 256),
@@ -425,6 +440,13 @@ class ToolCard extends StatelessWidget {
               Text('失败', style: TextStyle(fontSize: 12, color: scheme.error)),
           ]),
         ),
+        if (images.isNotEmpty) ...[
+          const Divider(),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            child: Wrap(spacing: 8, runSpacing: 8, children: [for (final path in images) WorkspaceImage(path, maxHeight: 256)]),
+          ),
+        ],
         if (body != null) ...[const Divider(), body],
       ]),
     );

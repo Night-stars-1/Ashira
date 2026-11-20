@@ -38,6 +38,10 @@ class AshiraClient {
     return '/v1/sessions/${Uri.encodeComponent(id)}';
   }
 
+  /// A workspace image of the session for `Image.network`; the token rides in the query.
+  Uri rawUri(String sessionId, String path) =>
+      _uri('${_session(sessionId)}/raw', {'path': path, if (token.isNotEmpty) 'token': token});
+
   Future<Object?> _send(String method, String path, {Map<String, String>? query, Object? body}) async {
     final http.Response response;
     try {
@@ -165,7 +169,8 @@ class AshiraClient {
   Future<List<String>> probeModels(String previous, ProviderForm form) async =>
       [for (final model in asList(asMap(await _post('/v1/model-config', {'action': 'probe', 'previous': previous, 'provider': form.toJson()}))['models'])) if (model is String) model];
 
-  Future<void> saveRoles(String defaultRole, String taskRole) => _post('/v1/model-config', {'action': 'roles', 'default': defaultRole, 'task': taskRole});
+  /// Saves every role given; an empty selector clears it.
+  Future<void> saveRoles(Map<String, String> roles) => _post('/v1/model-config', {'action': 'roles', 'roles': roles});
 
   Future<UsageReport> usage() async => UsageReport.fromJson(await _get('/v1/usage'));
 

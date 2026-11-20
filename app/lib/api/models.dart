@@ -546,9 +546,9 @@ class ProviderConfig {
   final ProviderStatus? status;
 }
 
-/// `GET /v1/model-config`: providers from models.yml plus the default/task roles.
+/// `GET /v1/model-config`: providers from models.yml plus the model roles.
 class ModelConfig {
-  const ModelConfig({required this.apis, required this.providers, required this.defaultRole, required this.taskRole, this.loadError, this.warnings = const []});
+  const ModelConfig({required this.apis, required this.providers, required this.roles, this.loadError, this.warnings = const []});
   factory ModelConfig.fromJson(Object? json) {
     final m = asMap(json);
     return ModelConfig(
@@ -567,18 +567,21 @@ class ModelConfig {
                 : null,
           ),
       ],
-      defaultRole: str(m['default']),
-      taskRole: str(m['task']),
+      roles: {for (final role in modelRoles) role: str(asMap(m['roles'])[role])},
       loadError: optStr(m['loadError']),
       warnings: [for (final warning in asList(m['warnings'])) if (warning is String) warning],
     );
   }
   final List<String> apis;
   final List<ProviderConfig> providers;
-  final String defaultRole, taskRole;
+  /// Every role in [modelRoles]; '' when unset.
+  final Map<String, String> roles;
   final String? loadError;
   final List<String> warnings;
 }
+
+/// `config.yml` `modelRoles` the settings page edits (same list as the server's).
+const modelRoles = ['default', 'task', 'compact', 'title', 'memory', 'image'];
 
 /// What the provider form sends; an empty `keyValue` keeps the stored key.
 class ProviderForm {

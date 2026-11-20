@@ -11,7 +11,7 @@ import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 import ListSkeleton from '@/components/ListSkeleton.vue'
 import ModelCombobox from '@/components/ModelCombobox.vue'
-import { api, type ModelConfig, type ModelItem, type ProviderConfig, type ProviderForm } from '@/lib/api'
+import { api, MODEL_ROLES, type ModelConfig, type ModelItem, type ModelRole, type ProviderConfig, type ProviderForm } from '@/lib/api'
 
 const props = defineProps<{ active: boolean }>()
 
@@ -21,12 +21,21 @@ const levels = ref<string[]>([])
 const loadError = ref('')
 const notice = ref('')
 
-type Role = 'default' | 'task'
+/** Role, label and what an empty value means. */
+const ROLE_ROWS: [ModelRole, string, string][] = [
+  ['default', '新会话', '未设置（用第一个可用模型）'],
+  ['task', '子代理', '跟随当前会话的模型'],
+  ['compact', '压缩上下文', '跟随当前会话的模型'],
+  ['title', '生成标题', '跟随当前会话的模型'],
+  ['memory', '整理记忆', '跟随当前会话的模型'],
+  ['image', '生成图片', '未设置（Responses 模型用服务商自带的图片生成）'],
+]
+const emptyRoles = () => Object.fromEntries(MODEL_ROLES.map((role) => [role, { model: '', level: '' }])) as Record<ModelRole, { model: string; level: string }>
 /** Each role as model selector + thinking level ('' = model default). */
-const roles = ref<Record<Role, { model: string; level: string }>>({ default: { model: '', level: '' }, task: { model: '', level: '' } })
+const roles = ref(emptyRoles())
 const rolesSaving = ref(false)
-const joined = (role: Role) => roles.value[role].model ? roles.value[role].model + (roles.value[role].level ? `:${roles.value[role].level}` : '') : ''
-const rolesDirty = computed(() => config.value !== null && (joined('default') !== config.value.default || joined('task') !== config.value.task))
+const joined = (role: ModelRole) => roles.value[role].model ? roles.value[role].model + (roles.value[role].level ? `:${roles.value[role].level}` : '') : ''
+const rolesDirty = computed(() => config.value !== null && MODEL_ROLES.some((role) => joined(role) !== config.value!.roles[role]))
 
 const API_LABELS: Record<string, string> = {
   'openai-responses': 'OpenAI Responses',
@@ -86,7 +95,7 @@ async function load() {
       levels.value = catalog.levels.filter((level) => level !== '默认')
     }
     config.value = next
-    roles.value = { default: split(next.default), task: split(next.task) }
+    roles.value = Object.fromEntries(MODEL_ROLES.map((role) => [role, split(next.roles[role])])) as Record<ModelRole, { model: string; level: string }>
   } catch (reason) {
     loadError.value = message(reason, '读取模型配置失败')
   }
@@ -111,7 +120,7 @@ async function saveRoles() {
   rolesSaving.value = true
   notice.value = ''
   try {
-    await api.saveRoles({ default: joined('default'), task: joined('task') })
+    await api.saveRoles(Object.fromEntries(MODEL_ROLES.map((role) => [role, joined(role)])))
     await load()
   } catch (reason) {
     notice.value = message(reason, '保存失败')
@@ -238,15 +247,15 @@ function statusLabel(provider: ProviderConfig): string {
     <p v-if="notice" role="alert" class="text-sm text-destructive">{{ notice }}</p>
 
     <section aria-labelledby="model-roles" class="flex flex-col gap-2 rounded-lg border p-3">
-      <h3 id="model-roles" class="text-sm font-medium">默认模型</h3>
-      <div v-for="role in ([['default', '新会话', '未设置（用第一个可用模型）'], ['task', '子代理', '跟随当前会话的模型']] as const)" :key="role[0]" class="flex flex-col gap-1">
+      <h3 id="model-roles" class="text-sm font-medium">模型分工</h3>
+      <div v-for="role in ROLE_ROWS" :key="role[0]" class="flex flex-col gap-1">
         <span class="text-xs text-muted-foreground">{{ role[1] }}</span>
         <div class="flex gap-2">
           <div class="min-w-0 flex-1">
             <ModelCombobox v-model="roles[role[0]].model" :models="models" :placeholder="role[2]" :label="`${role[1]}模型`" />
           </div>
-          <!-- reka forbids '' as an item value; 'default' stands for no level suffix. -->
-          <Select :model-value="roles[role[0]].level || 'default'" :disabled="!roles[role[0]].model" @update:model-value="(level) => roles[role[0]].level = level === 'default' ? '' : String(level)">
+          <!-- reka forbids '' as an item value; 'default' stands for no level suffix. Image models do not think. -->
+          <Select v-if="role[0] !== 'image'" :model-value="roles[role[0]].level || 'default'" :disabled="!roles[role[0]].model" @update:model-value="(level) => roles[role[0]].level = level === 'default' ? '' : String(level)">
             <SelectTrigger :aria-label="`${role[1]}思考强度`" class="h-9 w-28 shrink-0">
               <SelectValue />
             </SelectTrigger>

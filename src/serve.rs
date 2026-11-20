@@ -157,6 +157,7 @@ async fn handle(mut socket: TcpStream, hub: Arc<Hub>) -> Result<(), String> {
             write_response(&mut socket, status, reason(status), "application/json", bytes.as_bytes()).await
         }
         Ok(Response::Events(id)) => stream_events(&mut socket, &hub, &id).await,
+        Ok(Response::Bytes { status, content_type, body }) => write_response(&mut socket, status, reason(status), content_type, &body).await,
         Err(error) => {
             let status = if error.contains("还在进行") { 409 } else if error.contains("unknown") || error.contains("没有") { 404 } else { 400 };
             let body = json!({"error": error}).to_string();
@@ -212,6 +213,8 @@ async fn terminal_upgrade(mut socket: TcpStream, hub: &Hub, method: &str, id: &s
 enum Response {
     Json { status: u16, body: Value },
     Events(String),
+    /// A workspace image for `<img>` (`GET .../raw`); errors are JSON like elsewhere.
+    Bytes { status: u16, content_type: &'static str, body: Vec<u8> },
 }
 
 async fn dispatch(hub: &Arc<Hub>, method: &str, path: &str, query: &str, body: &[u8]) -> Result<Response, String> {
@@ -307,7 +310,10 @@ async fn dispatch(hub: &Arc<Hub>, method: &str, path: &str, query: &str, body: &
             Ok(Response::Json { status: 200, body: crate::mcp::config::entry(&hub.shared.cwd(), &name)? })
         }
         ("GET", "/v1/memory") => Ok(Response::Json { status: 200, body: memory(hub).await? }),
-        ("GET", "/v1/usage") => Ok(Response::Json { status: 200, body: tokio::task::spawn_blocking(crate::usage_report::report).await.map_err(|error| error.to_string())? }),
+        ("GET", "/v1/usage") => {
+            let registry = hub.shared.registry();
+            Ok(Response::Json { status: 200, body: tokio::task::spawn_blocking(move || crate::usage_report::report(&registry)).await.map_err(|error| error.to_string())? })
+        }
         ("GET", "/v1/model-config") => Ok(Response::Json { status: 200, body: model_config(hub).await? }),
         ("POST", "/v1/model-config") => {
             let action = json_body.get("action").and_then(Value::as_str).unwrap_or("").to_owned();
@@ -324,7 +330,7 @@ async fn dispatch(hub: &Arc<Hub>, method: &str, path: &str, query: &str, body: &
                 match action.as_str() {
                     "save" => crate::model_config::save_provider(&text("previous"), body.get("provider").unwrap_or(&Value::Null)),
                     "remove" => crate::model_config::remove_provider(&text("id")),
-                    "roles" => crate::model_config::save_roles(&text("default"), &text("task")),
+                    "roles" => crate::model_config::save_roles(body.get("roles").unwrap_or(&Value::Null)),
                     _ => Err("action must be save, remove or roles".into()),
                 }
             }).await.map_err(|error| error.to_string())??;
@@ -386,6 +392,13 @@ async fn session_route(hub: &Arc<Hub>, method: &str, id: &str, action: &str, que
             return Ok(Response::Json { status: 201, body: tokio::task::spawn_blocking(move || {
                 create_workspace_entry(&target.cwd, &relative, directory)
             }).await.map_err(|error| error.to_string())?? });
+        }
+        ("GET", "raw") => {
+            let relative = path();
+            return match tokio::task::spawn_blocking(move || read_image(&target.cwd, &relative)).await.map_err(|error| error.to_string())? {
+                Ok((content_type, body)) => Ok(Response::Bytes { status: 200, content_type, body }),
+                Err((status, error)) => Ok(Response::Json { status, body: json!({"error": error}) }),
+            };
         }
         ("GET", "file") => read_text(&target.cwd, &path()).await?,
         ("POST", "file") => write_text(&target.cwd, body["path"].as_str().unwrap_or(""), body["text"].as_str().ok_or("text is required")?).await?,
@@ -535,14 +548,15 @@ async fn memory(hub: &Hub) -> Result<Value, String> {
 
 async fn session_view(hub: &Hub, id: &str, target: session::Target) -> Result<Value, String> {
     let cwd = target.cwd;
+    let registry = hub.shared.registry();
     let (messages, model, fast, context, stats) = tokio::task::spawn_blocking(move || {
-        let loaded = session::read_http(&target.path)?;
+        let loaded = session::read_http(&target.path, &registry)?;
         Ok::<_, String>((project_history(&loaded.history, Some(&loaded.reply_stats)), loaded.model.filter(|model| !model.is_empty()), loaded.fast, loaded.usage.context(), loaded.ledger.snapshot()))
     }).await.map_err(|error| error.to_string())??;
     let resolved = model.as_deref().and_then(|selector| hub.shared.registry().resolve(selector).ok());
     let model_name = resolved.as_ref().map(|model| model.display_name.as_deref().filter(|name| !name.is_empty()).unwrap_or(&model.id)).or(model.as_deref());
     let window = resolved.as_ref().map(|model| model.context_window).filter(|&window| window > 0);
-    let price = resolved.as_ref().and_then(|model| model.price).filter(|price| !price.unsupported).map(|price| {
+    let price = resolved.as_ref().and_then(|model| model.price.as_ref()).filter(|price| !price.unsupported).map(|price| {
         json!({"input": price.input, "output": price.output, "cacheRead": price.cache_read, "cacheWrite": price.cache_write})
     });
     let runtime = hub.running(id);
@@ -922,13 +936,25 @@ fn shown_path(cwd: &Path, path: &Path) -> String {
     path.strip_prefix(&root).unwrap_or(path).to_string_lossy().replace('\\', "/")
 }
 
+const MAX_IMAGE: u64 = 20 * 1024 * 1024;
+
+/// A workspace image's content type and bytes; `(status, message)` on failure.
+fn read_image(cwd: &Path, relative: &str) -> Result<(&'static str, Vec<u8>), (u16, String)> {
+    let content_type = crate::image_gen::content_type(relative).ok_or((415, "只能读取 png、jpg、gif、webp 图片".to_owned()))?;
+    let path = workspace_file(cwd, relative, false).map_err(|error| (if error.ends_with("was not found") { 404 } else { 400 }, error))?;
+    let meta = std::fs::metadata(&path).map_err(|error| (404, format!("{relative}: {error}")))?;
+    if !meta.is_file() { return Err((404, format!("{relative} is not a file"))); }
+    if meta.len() > MAX_IMAGE { return Err((413, "image is too large".into())); }
+    std::fs::read(&path).map(|body| (content_type, body)).map_err(|error| (404, format!("{relative}: {error}")))
+}
+
 impl Hub {
     /// The session's runtime, started on its first command: a `Shared` cut from the
     /// template, the session loaded into an agent, and a pump for its events.
     fn runtime(self: &Arc<Self>, id: &str, target: &session::Target) -> Result<Arc<Runtime>, String> {
         let mut runtimes = self.runtimes.lock().expect("runtimes");
         if let Some(runtime) = runtimes.get(id) { return Ok(runtime.clone()); }
-        let loaded = session::load(&target.path)?;
+        let loaded = session::load(&target.path, &self.shared.registry())?;
         let (events_tx, events_rx) = tokio::sync::mpsc::unbounded_channel();
         let shared = Arc::new(self.shared.for_session(target.cwd.clone(), events_tx));
         shared.restore_model(loaded.model.as_deref(), loaded.fast);
@@ -1149,6 +1175,8 @@ fn reason(status: u16) -> &'static str {
         401 => "Unauthorized",
         404 => "Not Found",
         409 => "Conflict",
+        413 => "Payload Too Large",
+        415 => "Unsupported Media Type",
         _ => "Error",
     }
 }
@@ -1444,6 +1472,8 @@ mod tests {
         let root = std::env::temp_dir().join(format!("ashira-api-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
         std::fs::create_dir_all(root.join("nested")).unwrap();
         std::fs::write(root.join("nested").join("note.txt"), "hello").unwrap();
+        // Content is irrelevant to the route (it goes by extension); text keeps the test's reader simple.
+        std::fs::write(root.join("nested").join("pic.png"), "PNGDATA").unwrap();
         let root = crate::agent::plain_path(root.canonicalize().unwrap());
         let (addr, server) = serve(template(&root), TOKEN).await;
 
@@ -1468,6 +1498,12 @@ mod tests {
         assert_eq!(request(addr, "POST", &format!("{a_path}/file"), r#"{"path":"nested/note.txt","text":"edited"}"#).await.0, 200);
         assert_eq!(request(addr, "GET", &file, "").await.1["text"], "edited");
         assert_eq!(request(addr, "GET", &format!("{a_path}/files?path=.."), "").await.0, 400);
+        // Workspace images are served as bytes; other files and escapes are refused.
+        let raw = exchange(addr, &format!("GET {a_path}/raw?path=nested/pic.png&token={TOKEN} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")).await;
+        assert!(raw.starts_with("HTTP/1.1 200") && raw.contains("Content-Type: image/png") && raw.ends_with("PNGDATA"), "{raw:?}");
+        assert_eq!(request(addr, "GET", &format!("{a_path}/raw?path=nested/note.txt"), "").await.0, 415);
+        assert_eq!(request(addr, "GET", &format!("{a_path}/raw?path=../x.png"), "").await.0, 400);
+        assert_eq!(request(addr, "GET", &format!("{a_path}/raw?path=nested/missing.png"), "").await.0, 404);
 
         let mut events_a = open_events(addr, a).await;
         let mut events_b = open_events(addr, b).await;

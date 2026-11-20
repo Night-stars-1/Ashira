@@ -130,17 +130,7 @@ impl Client {
 
     /// Estimate from the price snapshot captured when this client was resolved.
     pub fn estimate_cost(&self, usage: Usage) -> Option<f64> {
-        let price = self.cfg.price.unwrap_or_default();
-        if price.unsupported && (usage.input != 0 || usage.output != 0 || usage.cache_read != 0 || usage.cache_write != 0) {
-            return None;
-        }
-        let component = |tokens: u64, rate: Option<f64>| -> Option<f64> {
-            if tokens == 0 { return Some(0.0); }
-            Some(tokens as f64 * rate.filter(|r| r.is_finite() && *r >= 0.0)?)
-        };
-        let cost = (component(usage.input, price.input)? + component(usage.output, price.output)?
-            + component(usage.cache_read, price.cache_read)? + component(usage.cache_write, price.cache_write)?) / 1_000_000.0;
-        cost.is_finite().then_some(cost)
+        self.cfg.price.clone().unwrap_or_default().cost(usage)
     }
 
     pub fn context_window(&self) -> u64 {
@@ -177,6 +167,53 @@ impl Client {
         tokio::spawn(async move {
             let _ = req.send().await;
         });
+    }
+
+    /// The provider's model id, without provider prefix or thinking level.
+    pub fn model_id(&self) -> &str {
+        &self.cfg.id
+    }
+
+    /// Speaks the Responses API, so it can try the provider's built-in image tool.
+    pub fn on_responses(&self) -> bool {
+        self.cfg.api == Api::OpenaiResponses
+    }
+
+    /// POSTs `body` to `{baseUrl}/{path}` with this model's credentials and headers and
+    /// returns the JSON reply; for non-chat endpoints such as `images/generations`.
+    pub async fn post_json(&self, path: &str, body: &Value, timeout: Duration, cancel: &CancellationToken) -> Result<Value, String> {
+        let url = format!("{}/{}", self.cfg.base_url.trim_end_matches('/'), path.trim_start_matches('/'));
+        let body = serde_json::to_vec(body).map_err(|e| e.to_string())?;
+        let mut req = self.http.post(&url).body(body).timeout(timeout);
+        for (k, v) in self.auth().await? {
+            req = req.header(*k, v);
+        }
+        let resp = tokio::select! {
+            _ = cancel.cancelled() => return Err(CANCELLED.into()),
+            r = req.send() => r.map_err(|e| format!("request failed: {}", chain(&e)))?,
+        };
+        let status = resp.status();
+        let text = tokio::select! {
+            _ = cancel.cancelled() => return Err(CANCELLED.into()),
+            r = resp.text() => r.map_err(|e| format!("response failed: {}", chain(&e)))?,
+        };
+        if !status.is_success() {
+            return Err(format!("API {status}: {}", error_message(&text)));
+        }
+        serde_json::from_str(&text).map_err(|e| format!("bad JSON response: {e}"))
+    }
+
+    /// Downloads `url` (an image a provider links to instead of inlining).
+    pub async fn download(&self, url: &str, timeout: Duration, cancel: &CancellationToken) -> Result<Vec<u8>, String> {
+        let resp = tokio::select! {
+            _ = cancel.cancelled() => return Err(CANCELLED.into()),
+            r = self.http.get(url).timeout(timeout).send() => r.map_err(|e| format!("download failed: {}", chain(&e)))?,
+        };
+        if !resp.status().is_success() { return Err(format!("download failed: HTTP {}", resp.status())); }
+        tokio::select! {
+            _ = cancel.cancelled() => Err(CANCELLED.into()),
+            r = resp.bytes() => r.map(|bytes| bytes.to_vec()).map_err(|e| format!("download failed: {}", chain(&e))),
+        }
     }
 
     /// Anthropic keys go in `x-api-key`; OpenAI wires and `authHeader: true` use a bearer token.

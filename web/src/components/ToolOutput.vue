@@ -4,6 +4,8 @@ import { Ban, Check, Circle, CircleDot, CircleHelp, CornerDownRight, Minus } fro
 import { Badge } from '@/components/ui/badge'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import type { ToolCard } from '@/components/Transcript.vue'
+import WorkspaceImage from '@/components/WorkspaceImage.vue'
+import { generatedImages } from '@/lib/api'
 
 type TodoTask = { content: string; status: string; reason: string }
 type TodoPhase = { name: string; tasks: TodoTask[] }
@@ -11,6 +13,7 @@ type TodoPhase = { name: string; tasks: TodoTask[] }
 const props = defineProps<{ tool: ToolCard }>()
 const todo = computed(() => props.tool.name === 'todo' ? todoBoard(props.tool.output) : null)
 const asked = computed(() => props.tool.name === 'ask_user' ? askResult(props.tool.output) : null)
+const images = computed(() => generatedImages(props.tool))
 const numbered = computed(() => todo.value || asked.value || !props.tool.output ? null : numberedLines(props.tool.output))
 
 type Answer = { question: string; answer: string; typed: boolean; skipped: boolean }
@@ -80,11 +83,14 @@ function todoLabel(status: string) {
 <template>
   <div class="overflow-hidden rounded-lg border">
     <div class="flex items-center gap-2 px-3 py-2 text-sm">
-      <Badge variant="secondary">{{ tool.name === 'todo' ? '待办' : tool.name === 'ask_user' ? '提问' : tool.name }}</Badge>
+      <Badge variant="secondary">{{ tool.name === 'todo' ? '待办' : tool.name === 'ask_user' ? '提问' : tool.name === 'generate_image' ? '生成图片' : tool.name }}</Badge>
       <span v-if="tool.name !== 'todo'" class="min-w-0 flex-1 truncate text-muted-foreground">{{ tool.summary }}</span>
       <span v-else class="min-w-0 flex-1" />
       <span v-if="!tool.done" class="text-xs text-muted-foreground">运行中</span>
       <span v-else-if="tool.error" class="text-xs text-destructive">失败</span>
+    </div>
+    <div v-if="images.length" class="flex flex-wrap gap-2 border-t px-3 py-2">
+      <WorkspaceImage v-for="path in images" :key="path" :path="path" size="thumb" />
     </div>
     <ScrollArea v-if="todo" class="border-t" viewport-class="max-h-64">
       <div class="flex flex-col gap-3 px-3 py-2 text-sm">

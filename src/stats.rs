@@ -13,6 +13,8 @@ pub enum Kind {
     Memory,
     /// The background request that names a session.
     Title,
+    /// A `generate_image` call to the image model.
+    Image,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -28,6 +30,16 @@ pub struct RequestStats {
 
 pub(crate) fn output_rate(usage: Usage, duration_ms: u64) -> Option<f64> {
     (usage.output > 0).then(|| usage.output as f64 * 1000.0 / duration_ms.max(100) as f64)
+}
+
+impl RequestStats {
+    /// Costs a request logged without a price (the model was unpriced then) at today's
+    /// price; a logged cost is kept as it was billed.
+    pub fn price_missing(&mut self, registry: &crate::config::Registry) {
+        if self.cost.is_none() && let Some(usage) = self.usage {
+            self.cost = registry.price_of(&self.model).and_then(|price| price.cost(usage));
+        }
+    }
 }
 
 #[derive(Clone, Copy, Default)]
@@ -73,9 +85,14 @@ impl Ledger {
         true
     }
 
-    pub fn legacy(&mut self, usage: Usage) {
+    /// A turn's usage from a log written before request records; `cost` is today's
+    /// price for the session's model at the time, when there is one.
+    pub fn legacy(&mut self, usage: Usage, cost: Option<f64>) {
         self.add_usage(usage);
-        self.snapshot.main_unknown = true;
+        match cost {
+            Some(cost) => self.snapshot.main_cost += cost,
+            None => self.snapshot.main_unknown = true,
+        }
         self.snapshot.main_requests += 1;
     }
 
