@@ -32,7 +32,7 @@ class _ConnectPageState extends State<ConnectPage> {
   Future<void> _connect() async {
     final url = ConnectionSettings.normalize(_url.text);
     if (url.isEmpty) {
-      setState(() => _error = '请输入服务器地址，例如 192.168.1.5:8787');
+      setState(() => _error = '请输入服务器地址，例如 192.168.1.5:8787 或 https://example.com');
       return;
     }
     final settings = ConnectionSettings(baseUrl: url, token: _token.text.trim());

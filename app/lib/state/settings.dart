@@ -28,7 +28,8 @@ class ConnectionSettings {
 
   static Future<void> rememberSession(String id) async => (await SharedPreferences.getInstance()).setString(_sessionKey, id);
 
-  /// Accepts `host`, `host:port` or a full URL; defaults to http and port 8787.
+  /// Accepts `host`, `host:port` or a full URL; defaults to http. The port is used as
+  /// typed: none means the scheme's default (80/443), e.g. behind a reverse proxy.
   static String normalize(String input) {
     // Chinese IMEs often produce full-width ：。／ while typing an address.
     var value = input.trim().replaceAll('：', ':').replaceAll('。', '.').replaceAll('／', '/').replaceAll(' ', '');
@@ -36,7 +37,6 @@ class ConnectionSettings {
     if (!value.contains('://')) value = 'http://$value';
     final uri = Uri.tryParse(value);
     if (uri == null || !{'http', 'https'}.contains(uri.scheme) || !RegExp(r'^[A-Za-z0-9.\-]+$|^\[[0-9A-Fa-f:]+\]$').hasMatch(uri.host)) return '';
-    final port = uri.hasPort ? uri.port : 8787;
-    return Uri(scheme: uri.scheme, host: uri.host, port: port).toString();
+    return Uri(scheme: uri.scheme, host: uri.host, port: uri.hasPort ? uri.port : null).toString();
   }
 }
