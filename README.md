@@ -12,6 +12,30 @@
 - 待办清单、后台子任务、插件、MCP、全局记忆
 - 网页和 App：多会话、文件浏览与编辑、发送图片和长文本文件、用量统计
 
+## 安装
+
+Windows（PowerShell）：
+
+```powershell
+irm https://raw.githubusercontent.com/Night-stars-1/Ashira/master/install.ps1 | iex
+```
+
+Linux x64 / macOS（Apple Silicon）：
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Night-stars-1/Ashira/master/install.sh | sh
+```
+
+脚本从最新的 [Release](https://github.com/Night-stars-1/Ashira/releases) 下载 `ashira-core`，校验 SHA256 后安装：Windows 装到 `%LOCALAPPDATA%\Programs\ashira` 并加入用户 PATH，Linux 和 macOS 装到 `~/.local/bin`。设置 `ASHIRA_VERSION=v0.2.0` 安装指定版本，`ASHIRA_INSTALL_DIR` 修改安装目录。
+
+更新到最新版本：
+
+```sh
+ashira update            # 或 ashira update v0.2.0 安装指定版本
+```
+
+网页和 App（Windows、Android）在 [Release](https://github.com/Night-stars-1/Ashira/releases) 页面下载。
+
 ## 构建
 
 Core：
@@ -33,8 +57,6 @@ cd app
 flutter build apk --release
 flutter build windows --release
 ```
-
-Android、Windows 和 Web 使用同一款[「灰之旅人」图标](app/assets/ashira-icon-elaina.svg)。Web 的 SVG 副本位于 `web/public/favicon.svg`。
 
 ## 配置
 
