@@ -100,12 +100,23 @@ jobs:
         run: |
           # Release builds take the tag's version; the run number keeps Android version codes increasing.
           if [ -n "$VERSION" ]; then echo "flags=--build-name=${VERSION#v} --build-number=${{ github.run_number }}" >> "$GITHUB_OUTPUT"; fi
+      - name: Signing key
+        if: matrix.name == 'android'
+        env:
+          KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          # Every release APK must carry the same key, or it cannot update an installed one.
+          if [ -z "$KEYSTORE" ] || [ -z "$PASSWORD" ]; then echo "::error::ANDROID_KEYSTORE_BASE64 / ANDROID_KEYSTORE_PASSWORD secrets are missing"; exit 1; fi
+          echo "$KEYSTORE" | base64 -d > "$RUNNER_TEMP/ashira-release.jks"
+          printf 'storeFile=%s\nstorePassword=%s\nkeyPassword=%s\nkeyAlias=ashira\n' "$RUNNER_TEMP/ashira-release.jks" "$PASSWORD" "$PASSWORD" > android/key.properties
       - name: Build APK
         if: matrix.name == 'android'
         run: |
           flutter build apk --release ${{ steps.version.outputs.flags }}
           mkdir -p ../dist
           cp build/app/outputs/flutter-apk/app-release.apk "../dist/ashira-app-${VERSION:-dev}-android.apk"
+          rm -f android/key.properties "$RUNNER_TEMP/ashira-release.jks"
       - name: Build Windows
         if: matrix.name == 'windows-x64'
         run: |
