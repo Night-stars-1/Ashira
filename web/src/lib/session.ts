@@ -347,6 +347,12 @@ export function useAshira() {
 
   onMounted(async () => {
     const mine = view
+    // The server always requires a token, so without one there is nothing to try yet.
+    if (!connection().token) {
+      loading.value = false
+      needsConnection.value = true
+      return
+    }
     try {
       const [service, listing] = await Promise.all([api.status(), api.sessions()])
       tree.value = listing.tree
