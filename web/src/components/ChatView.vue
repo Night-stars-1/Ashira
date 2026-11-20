@@ -250,7 +250,7 @@ function removeText(index: number) {
         <p class="mt-2 w-full max-w-md truncate px-3 text-sm text-muted-foreground" :title="cwd">{{ cwd }}</p>
       </div>
       <div v-else class="min-h-0 flex-1">
-        <Transcript :blocks="blocks" :activity="activity" @open-agent="agentId = $event" />
+        <Transcript :key="sessionId" :blocks="blocks" :activity="activity" @open-agent="agentId = $event" />
         <AgentView :id="agentId" @close="agentId = ''" />
       </div>
       <form class="shrink-0 px-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] sm:px-6 sm:pb-6" @submit.prevent="submit">

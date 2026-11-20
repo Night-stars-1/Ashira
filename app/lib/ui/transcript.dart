@@ -62,7 +62,8 @@ class _TranscriptState extends State<Transcript> {
 
   @override
   Widget build(BuildContext context) {
-    final count = widget.blocks.length + (widget.activity.isEmpty ? 0 : 1);
+    final rows = _rows(widget.blocks);
+    final count = rows.length + (widget.activity.isEmpty ? 0 : 1);
     if (count == 0) {
       return Center(child: Text(widget.emptyText ?? '没有对话', style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant)));
     }
@@ -76,8 +77,11 @@ class _TranscriptState extends State<Transcript> {
           padding: EdgeInsets.symmetric(horizontal: wide ? 24 : 12, vertical: wide ? 24 : 16),
           itemCount: count,
           itemBuilder: (context, index) {
-            final child = index < widget.blocks.length
-                ? _BlockView(block: widget.blocks[index], onOpenAgent: widget.onOpenAgent)
+            final child = index < rows.length
+                ? switch (rows[index]) {
+                    final _Turn turn => _TurnView(turn, key: ValueKey(turn.key)),
+                    final block => _BlockView(block: block as Block, onOpenAgent: widget.onOpenAgent),
+                  }
                 : _Activity(widget.activity);
             return Center(
               child: ConstrainedBox(constraints: const BoxConstraints(maxWidth: 768), child: Padding(padding: const EdgeInsets.only(bottom: 16), child: child)),
@@ -102,6 +106,130 @@ class _TranscriptState extends State<Transcript> {
             ),
           ),
         ),
+    ]);
+  }
+}
+
+/// One reply between two user messages: every model request's parts, split into the
+/// work (thinking, tools and the text between them) and the answer after the last tool.
+class _Turn {
+  _Turn(this.key, List<ReplyPart> parts, {required this.live, required this.durationMs}) {
+    final lastTool = parts.lastIndexWhere((part) => part is ToolPart);
+    final tail = parts.sublist(lastTool + 1);
+    // Thinking after the last tool still belongs to the work; only its text is the answer.
+    work = [...parts.sublist(0, lastTool + 1), ...tail.where((part) => part is TextPart && part.reasoning)];
+    answer = [for (final part in tail) if (part is TextPart && !part.reasoning && part.text.isNotEmpty) part.text];
+  }
+  final int key;
+  final bool live;
+  final double? durationMs;
+  late final List<ReplyPart> work;
+  late final List<String> answer;
+  int get steps => work.where((part) => part is ToolPart || (part is TextPart && part.reasoning)).length;
+}
+
+/// Blocks with consecutive assistant blocks (one per model request) merged into turns.
+List<Object> _rows(List<Block> blocks) {
+  final rows = <Object>[];
+  int? key;
+  var parts = <ReplyPart>[];
+  var live = false;
+  double? duration;
+  void flush() {
+    if (key != null) rows.add(_Turn(key!, parts, live: live, durationMs: duration));
+    key = null;
+    parts = [];
+    live = false;
+    duration = null;
+  }
+
+  for (final (index, block) in blocks.indexed) {
+    if (block is! AssistantBlock) {
+      flush();
+      rows.add(block);
+      continue;
+    }
+    key ??= index;
+    parts.addAll(block.parts);
+    live = live || block.live;
+    final ms = block.metrics?.durationMs;
+    if (ms != null) duration = (duration ?? 0) + ms;
+  }
+  flush();
+  return rows;
+}
+
+String _duration(double ms) {
+  final seconds = (ms / 1000).round();
+  return seconds >= 60 ? '${seconds ~/ 60}分${seconds % 60}秒' : '${seconds < 1 ? 1 : seconds}秒';
+}
+
+/// The web's reply: a folded 「思考过程」 card, open while the work runs and closed once
+/// the answer starts or the reply ends (a tap sticks), then the answer itself.
+class _TurnView extends StatefulWidget {
+  const _TurnView(this.turn, {super.key});
+  final _Turn turn;
+  @override
+  State<_TurnView> createState() => _TurnViewState();
+}
+
+class _TurnViewState extends State<_TurnView> {
+  bool? _toggled;
+
+  @override
+  Widget build(BuildContext context) {
+    final turn = widget.turn;
+    final scheme = Theme.of(context).colorScheme;
+    final open = _toggled ?? (turn.live && turn.answer.every((text) => text.trim().isEmpty));
+    final muted = TextStyle(fontSize: 12, color: scheme.mutedForeground.withValues(alpha: .75), fontFeatures: const [FontFeature.tabularFigures()]);
+    return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+      if (turn.work.isNotEmpty)
+        Container(
+          margin: EdgeInsets.only(bottom: turn.answer.isEmpty ? 0 : 8),
+          decoration: BoxDecoration(border: Border.all(color: scheme.border), borderRadius: BorderRadius.circular(radius)),
+          clipBehavior: Clip.antiAlias,
+          child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+            InkWell(
+              onTap: () => setState(() => _toggled = !open),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                child: Row(children: [
+                  AnimatedRotation(turns: open ? .25 : 0, duration: const Duration(milliseconds: 150), child: Icon(Icons.chevron_right, size: 14, color: scheme.mutedForeground)),
+                  const SizedBox(width: 6),
+                  if (turn.live) ...[
+                    SizedBox.square(dimension: 12, child: CircularProgressIndicator(strokeWidth: 1.5, color: scheme.mutedForeground)),
+                    const SizedBox(width: 6),
+                  ],
+                  Text(turn.live ? '正在思考' : '思考过程', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w500, color: scheme.mutedForeground)),
+                  const SizedBox(width: 6),
+                  Text('${turn.steps} 步${turn.durationMs != null && turn.durationMs! > 0 ? ' · 用时 ${_duration(turn.durationMs!)}' : ''}', style: muted),
+                ]),
+              ),
+            ),
+            AnimatedSize(
+              duration: const Duration(milliseconds: 150),
+              alignment: Alignment.topCenter,
+              child: open
+                  ? Container(
+                      decoration: BoxDecoration(border: Border(top: BorderSide(color: scheme.border))),
+                      padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+                      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+                        for (final part in turn.work)
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 8),
+                            child: switch (part) {
+                              TextPart(reasoning: true, :final text) => _Reasoning(text),
+                              TextPart(:final text) => Markdown(text),
+                              ToolPart() => ToolCard(part),
+                            },
+                          ),
+                      ]),
+                    )
+                  : const SizedBox(width: double.infinity),
+            ),
+          ]),
+        ),
+      for (final (index, text) in turn.answer.indexed) Padding(padding: EdgeInsets.only(top: index == 0 ? 0 : 8), child: Markdown(text)),
     ]);
   }
 }
@@ -164,18 +292,8 @@ class _BlockView extends StatelessWidget {
             child: Padding(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8), child: body),
           ),
         );
-      case AssistantBlock(:final parts):
-        return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-          for (final part in parts)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 8),
-              child: switch (part) {
-                TextPart(reasoning: true, :final text) => _Reasoning(text),
-                TextPart(:final text) => Markdown(text),
-                ToolPart() => ToolCard(part),
-              },
-            ),
-        ]);
+      case AssistantBlock():
+        throw StateError('assistant blocks render as turns');
     }
   }
 }
