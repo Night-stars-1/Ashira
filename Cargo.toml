@@ -1,0 +1,39 @@
+[package]
+name = "ashira"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+arboard = { version = "3", features = ["image-data", "wayland-data-control"] }
+base64 = "0.22.1"
+futures-util = "0.3.34"
+globset = "0.4"
+ignore = "0.4"
+indexmap = { version = "2.14.2", features = ["serde"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
+ratatui = { version = "0.30.2", features = ["scrolling-regions"] }
+portable-pty = "0.9"
+pulldown-cmark = { version = "0.13", default-features = false }
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "stream", "http2", "system-proxy"] }
+regex = "1"
+serde = { version = "1.0.229", features = ["derive"] }
+serde-saphyr = { version = "2.1.0", default-features = false, features = ["deserialize", "serialize"] }
+serde_json = "1.0.154"
+similar = "2"
+syntect = { version = "5", default-features = false, features = ["default-syntaxes", "parsing", "regex-fancy"] }
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "process", "io-util", "io-std", "sync", "time", "fs", "signal"] }
+tokio-tungstenite = { version = "0.28", default-features = false, features = ["handshake"] }
+tokio-util = "0.7.20"
+unicode-width = "0.2.3"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[target."cfg(windows)".dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Console", "Win32_System_JobObjects", "Win32_System_Threading"] }
+
+[target."cfg(unix)".dependencies]
+libc = "0.2.191"
