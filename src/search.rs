@@ -1,7 +1,7 @@
 use std::{
     fs::File,
     io::{BufRead, BufReader},
-    path::{Component, Path},
+    path::{Component, Path, PathBuf},
 };
 
 use globset::{GlobBuilder, GlobMatcher};
@@ -40,10 +40,23 @@ fn inside_git(path: &Path) -> bool {
     path.components().any(|component| matches!(component, Component::Normal(name) if name == ".git"))
 }
 
-fn root(input: &Value) -> Result<&Path, &'static str> {
-    match input.get("path") {
-        None => Ok(Path::new(".")),
-        Some(value) => value.as_str().map(Path::new).ok_or("path must be a string"),
+/// `(walk root, shown root)`: the walk runs under the session directory, while
+/// results keep the prefix the model wrote (`.` by default), exactly as when the
+/// process itself ran inside the session directory.
+fn root(input: &Value, cwd: &Path) -> Result<(PathBuf, PathBuf), &'static str> {
+    let shown = match input.get("path") {
+        None => PathBuf::from("."),
+        Some(value) => PathBuf::from(value.as_str().ok_or("path must be a string")?),
+    };
+    Ok((cwd.join(&shown), shown))
+}
+
+/// A walked path re-rooted at what the model asked for.
+fn shown(walk_root: &Path, shown_root: &Path, path: &Path) -> String {
+    match path.strip_prefix(walk_root) {
+        Ok(rest) if rest.as_os_str().is_empty() => shown_root.display().to_string(),
+        Ok(rest) => shown_root.join(rest).display().to_string(),
+        Err(_) => path.display().to_string(),
     }
 }
 
@@ -83,12 +96,13 @@ fn finish(lines: Vec<String>, errors: Vec<String>, truncated: bool, cancelled: b
     if cancelled || !errors.is_empty() { Output::err(text) } else { Output::ok(text) }
 }
 
-pub fn glob(input: &Value, cancel: &CancellationToken) -> Output {
+pub fn glob(input: &Value, cancel: &CancellationToken, cwd: &Path) -> Output {
     let Some(pattern) = input.get("pattern").and_then(Value::as_str) else { return Output::err("pattern must be a string"); };
     let matcher = match matcher(pattern) { Ok(m) => m, Err(e) => return Output::err(e) };
     let max = match limit(input, "limit") { Ok(n) => n, Err(e) => return Output::err(e) };
-    let root = match root(input) { Ok(root) => root, Err(err) => return Output::err(err) };
-    if inside_git(root) { return Output::err("searching inside .git is not allowed"); }
+    let (root, shown_root) = match root(input, cwd) { Ok(root) => root, Err(err) => return Output::err(err) };
+    let root = root.as_path();
+    if inside_git(&shown_root) { return Output::err("searching inside .git is not allowed"); }
     let mut lines = Vec::new();
     let mut errors = Vec::new();
     let mut bytes = 0;
@@ -101,7 +115,7 @@ pub fn glob(input: &Value, cancel: &CancellationToken) -> Output {
                 if let Some(err) = entry.error() { record_error(&mut errors, err.to_string()); }
                 let path = entry.path();
                 if (path == root && entry.file_type().is_some_and(|kind| kind.is_dir())) || !matches_path(&matcher, pattern, root, path) { continue; }
-                let line = path.display().to_string();
+                let line = shown(root, &shown_root, path);
                 if lines.len() >= max || bytes + line.len() + 1 > LIMIT { truncated = true; break; }
                 bytes += line.len() + 1;
                 lines.push(line);
@@ -111,7 +125,7 @@ pub fn glob(input: &Value, cancel: &CancellationToken) -> Output {
     finish(lines, errors, truncated, cancel.is_cancelled())
 }
 
-pub fn grep(input: &Value, cancel: &CancellationToken) -> Output {
+pub fn grep(input: &Value, cancel: &CancellationToken, cwd: &Path) -> Output {
     let Some(pattern) = input.get("pattern").and_then(Value::as_str) else { return Output::err("pattern must be a string"); };
     let case_sensitive = match input.get("case_sensitive") {
         None => true,
@@ -126,8 +140,9 @@ pub fn grep(input: &Value, cancel: &CancellationToken) -> Output {
     };
     let glob = match glob_pattern.map(matcher).transpose() { Ok(m) => m, Err(e) => return Output::err(e) };
     let max = match limit(input, "max_matches") { Ok(n) => n, Err(e) => return Output::err(e) };
-    let root = match root(input) { Ok(root) => root, Err(err) => return Output::err(err) };
-    if inside_git(root) { return Output::err("searching inside .git is not allowed"); }
+    let (root, shown_root) = match root(input, cwd) { Ok(root) => root, Err(err) => return Output::err(err) };
+    let root = root.as_path();
+    if inside_git(&shown_root) { return Output::err("searching inside .git is not allowed"); }
     let mut lines = Vec::new();
     let mut errors = Vec::new();
     let mut bytes = 0;
@@ -139,7 +154,8 @@ pub fn grep(input: &Value, cancel: &CancellationToken) -> Output {
         if !entry.file_type().is_some_and(|kind| kind.is_file()) { continue; }
         let path = entry.path();
         if let (Some(m), Some(p)) = (&glob, glob_pattern) && !matches_path(m, p, root, path) { continue; }
-        let file = match File::open(path) { Ok(f) => f, Err(e) => { record_error(&mut errors, format!("{}: {e}", path.display())); continue; } };
+        let name = shown(root, &shown_root, path);
+        let file = match File::open(path) { Ok(f) => f, Err(e) => { record_error(&mut errors, format!("{name}: {e}")); continue; } };
         let mut reader = BufReader::new(file);
         let mut line = String::new();
         let mut index = 0;
@@ -149,13 +165,13 @@ pub fn grep(input: &Value, cancel: &CancellationToken) -> Output {
             match reader.read_line(&mut line) {
                 Ok(0) => break,
                 Ok(_) => index += 1,
-                Err(e) => { record_error(&mut errors, format!("{}:{}: {e}", path.display(), index + 1)); break; }
+                Err(e) => { record_error(&mut errors, format!("{name}:{}: {e}", index + 1)); break; }
             }
             if line.ends_with('\n') { line.pop(); if line.ends_with('\r') { line.pop(); } }
             if line.contains('\0') { break; }
             let Some(found) = regex.find(&line) else { continue; };
             let (snippet, before, after) = excerpt(&line, found.start());
-            let result = format!("{}:{}:{}{}{}", path.display(), index,
+            let result = format!("{name}:{}:{}{}{}", index,
                 if before { "[... omitted ...]" } else { "" }, snippet,
                 if after { "[... omitted ...]" } else { "" });
             if lines.len() >= max || bytes + result.len() + 1 > LIMIT { truncated = true; break 'walk; }

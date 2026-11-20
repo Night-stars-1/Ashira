@@ -5,7 +5,7 @@ import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import type { SessionNode } from '@/lib/api'
 
-defineProps<{ tree: SessionNode[]; activeId: string; runningId: string; asking: boolean; connected: boolean; update?: string | null }>()
+defineProps<{ tree: SessionNode[]; activeId: string; running: Set<string>; asking: Set<string>; connected: boolean; update?: string | null }>()
 const emit = defineEmits<{ resume: [id: string]; alias: [path: string, name: string]; rename: [id: string, title: string]; archive: [kind: 'session' | 'folder', key: string]; create: []; settings: [] }>()
 </script>
 
@@ -26,7 +26,7 @@ const emit = defineEmits<{ resume: [id: string]; alias: [path: string, name: str
         :key="node.path"
         :node="node"
         :active-id="activeId"
-        :running-id="runningId"
+        :running="running"
         :asking="asking"
         :depth="0"
         @resume="(id) => emit('resume', id)"

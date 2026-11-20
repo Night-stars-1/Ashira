@@ -203,12 +203,12 @@ pub fn allowed(role: Option<crate::subagents::Role>, name: &str, input: &Value) 
     }
 }
 
-pub fn glob(input: &Value, cancel: &CancellationToken) -> Output {
-    crate::search::glob(input, cancel)
+pub fn glob(input: &Value, cancel: &CancellationToken, cwd: &Path) -> Output {
+    crate::search::glob(input, cancel, cwd)
 }
 
-pub fn grep(input: &Value, cancel: &CancellationToken) -> Output {
-    crate::search::grep(input, cancel)
+pub fn grep(input: &Value, cancel: &CancellationToken, cwd: &Path) -> Output {
+    crate::search::grep(input, cancel, cwd)
 }
 
 /// Shell used by the bash tool: `ASHIRA_SHELL`, then Git Bash on Windows, then `bash`.
@@ -308,14 +308,15 @@ impl Drop for Tree {
     }
 }
 
-pub async fn bash(input: &Value, cancel: &CancellationToken) -> Output {
+/// Runs in `cwd`, the session's directory; the process itself may serve several sessions.
+pub async fn bash(input: &Value, cancel: &CancellationToken, cwd: &Path) -> Output {
     let Some(cmd) = input["command"].as_str() else { return Output::err("missing `command`") };
     let timeout = Duration::from_secs(input["timeout"].as_u64().unwrap_or(120).clamp(1, 600));
     let init = json!({"shell":shell(), "command":format!("{{ {cmd}\n}} 2>&1")}).to_string();
     if init.len() > 1024 * 1024 { return Output::err("command initialization exceeds 1 MiB"); }
     let executable = match env::current_exe() { Ok(path) => path, Err(e) => return Output::err(format!("failed to locate command bootstrap: {e}")) };
     let mut c = command(executable);
-    c.arg("--tool-bootstrap").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
+    c.arg("--tool-bootstrap").current_dir(cwd).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
     let deadline = tokio::time::Instant::now() + timeout;
     let mut child = match c.spawn() {
         Ok(c) => c,
@@ -382,20 +383,23 @@ pub async fn bash(input: &Value, cancel: &CancellationToken) -> Output {
     }
 }
 
-pub async fn read(input: &Value, capture: bool) -> Output {
+/// File tools resolve a relative `path` against `cwd`, the session's directory; messages
+/// and file reports keep the path as the model wrote it.
+pub async fn read(input: &Value, capture: bool, cwd: &Path) -> Output {
     let Some(path) = input["path"].as_str() else { return Output::err("missing `path`") };
-    let meta = match tokio::fs::metadata(path).await {
+    let full = cwd.join(path);
+    let meta = match tokio::fs::metadata(&full).await {
         Ok(m) => m,
         Err(e) => return Output::err(format!("{path}: {e}")),
     };
     if meta.is_dir() {
-        let mut output = list_dir(path).await;
+        let mut output = list_dir(path, &full).await;
         if capture && !output.is_error {
             output.file = Some(crate::file_output::FileOutput { path: path.into(), detail: crate::file_output::FileDetail::Read { start: None, end: None, directory: true } });
         }
         return output;
     }
-    let bytes = match tokio::fs::read(path).await {
+    let bytes = match tokio::fs::read(&full).await {
         Ok(b) => b,
         Err(e) => return Output::err(format!("{path}: {e}")),
     };
@@ -436,8 +440,8 @@ pub async fn read(input: &Value, capture: bool) -> Output {
     output
 }
 
-async fn list_dir(path: &str) -> Output {
-    let mut rd = match tokio::fs::read_dir(path).await {
+async fn list_dir(path: &str, full: &Path) -> Output {
+    let mut rd = match tokio::fs::read_dir(full).await {
         Ok(r) => r,
         Err(e) => return Output::err(format!("{path}: {e}")),
     };
@@ -453,16 +457,17 @@ async fn list_dir(path: &str) -> Output {
     Output::ok(or_empty(names.join("\n")))
 }
 
-pub async fn write(input: &Value, capture: bool) -> Output {
+pub async fn write(input: &Value, capture: bool, cwd: &Path) -> Output {
     let (Some(path), Some(content)) = (input["path"].as_str(), input["content"].as_str()) else {
         return Output::err("missing `path` or `content`");
     };
+    let full = cwd.join(path);
     let before = if capture {
-        Some(match tokio::fs::read(path).await {
+        Some(match tokio::fs::read(&full).await {
             Ok(bytes) if bytes.contains(&0) => Err("Previous content is binary; textual diff unavailable."),
             Ok(bytes) => String::from_utf8(bytes).map_err(|_| "Previous content is not UTF-8; textual diff unavailable."),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                match tokio::fs::symlink_metadata(path).await {
+                match tokio::fs::symlink_metadata(&full).await {
                     Err(meta_error) if meta_error.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
                     _ => Err("Previous content could not be read; textual diff unavailable."),
                 }
@@ -472,11 +477,11 @@ pub async fn write(input: &Value, capture: bool) -> Output {
     } else { None };
     if let Some(dir) = Path::new(path).parent()
         && !dir.as_os_str().is_empty()
-        && let Err(e) = tokio::fs::create_dir_all(dir).await
+        && let Err(e) = tokio::fs::create_dir_all(cwd.join(dir)).await
     {
         return Output::err(format!("{}: {e}", dir.display()));
     }
-    match tokio::fs::write(path, content).await {
+    match tokio::fs::write(&full, content).await {
         Ok(()) => {
             let mut output = Output::ok(format!("wrote {} lines to {path}", content.lines().count()));
             if let Some(before) = before {
@@ -493,14 +498,15 @@ pub async fn write(input: &Value, capture: bool) -> Output {
     }
 }
 
-pub async fn edit(input: &Value, capture: bool) -> Output {
+pub async fn edit(input: &Value, capture: bool, cwd: &Path) -> Output {
     let (Some(path), Some(old), Some(new)) = (input["path"].as_str(), input["old"].as_str(), input["new"].as_str()) else {
         return Output::err("missing `path`, `old` or `new`");
     };
     if old.is_empty() {
         return Output::err("`old` must not be empty; use `write` to create files");
     }
-    let content = match tokio::fs::read_to_string(path).await {
+    let full = cwd.join(path);
+    let content = match tokio::fs::read_to_string(&full).await {
         Ok(c) => c,
         Err(e) => return Output::err(format!("{path}: {e}")),
     };
@@ -520,7 +526,7 @@ pub async fn edit(input: &Value, capture: bool) -> Output {
         _ => {}
     }
     let updated = if all { content.replace(&old, &new) } else { content.replacen(&old, &new, 1) };
-    match tokio::fs::write(path, &updated).await {
+    match tokio::fs::write(&full, &updated).await {
         Ok(()) => {
             let mut output = Output::ok(format!("edited {path} ({count} replacement{})", if count == 1 { "" } else { "s" }));
             if capture {

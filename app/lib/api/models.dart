@@ -206,16 +206,18 @@ class SessionItem {
   SessionItem withPrompt(String prompt) => SessionItem(id: id, prompt: prompt, modified: modified, renamed: renamed, cwd: cwd);
 }
 
-/// `GET /v1/sessions`: the tree, which session runs (and whether it waits for an answer), and the archive.
+/// `GET /v1/sessions`: the tree, the sessions with a turn running (and those waiting
+/// for an answer), and the archive.
 class SessionListing {
-  const SessionListing({required this.tree, this.running = '', this.asking = false, this.archivedSessions = const [], this.archivedFolders = const []});
+  const SessionListing({required this.tree, this.running = const {}, this.asking = const {}, this.archivedSessions = const [], this.archivedFolders = const []});
   factory SessionListing.fromJson(Object? json) {
     final m = asMap(json);
     final archived = asMap(m['archived']);
+    Set<String> ids(Object? list) => {for (final id in asList(list)) if (id is String && id.isNotEmpty) id};
     return SessionListing(
       tree: [for (final root in asList(m['roots'])) ?SessionNode.fromJson(root)],
-      running: str(m['running']),
-      asking: m['asking'] == true,
+      running: ids(m['running']),
+      asking: ids(m['asking']),
       archivedSessions: [for (final raw in asList(archived['sessions'])) if (str(asMap(raw)['id']).isNotEmpty) SessionItem.fromJson(asMap(raw))],
       archivedFolders: [
         for (final raw in asList(archived['folders']))
@@ -224,8 +226,7 @@ class SessionListing {
     );
   }
   final List<SessionNode> tree;
-  final String running;
-  final bool asking;
+  final Set<String> running, asking;
   final List<SessionItem> archivedSessions;
   final List<({String name, String path})> archivedFolders;
 }

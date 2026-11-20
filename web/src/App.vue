@@ -31,7 +31,7 @@ const aliasName = ref('')
 const aliasError = ref('')
 const {
   status, tree, archive, blocks, draft, model, modelTitle, fast, connected, loading, naming, confirm, question,
-  busy, hasReplyText, shownId, shownCwd, sessionName, needsConnection, runningId, askingRun, send, openSession, decide, answer, interrupt, refresh, updateSettings, renameSession, setArchived,
+  busy, hasReplyText, shownId, shownCwd, sessionName, needsConnection, runningIds, askingIds, send, openSession, decide, answer, interrupt, refresh, updateSettings, renameSession, setArchived,
 } = useAshira()
 
 function chooseModel(selector: string) {
@@ -117,7 +117,7 @@ function saveRename() {
 <template>
   <div class="flex h-dvh min-w-0 overflow-hidden bg-background text-foreground">
     <div v-if="desktop" class="flex w-64 shrink-0 border-r border-sidebar-border">
-      <SessionSidebar :tree="tree" :active-id="shownId" :running-id="runningId" :asking="askingRun" :connected="connected" :update="status?.update"
+      <SessionSidebar :tree="tree" :active-id="shownId" :running="runningIds" :asking="askingIds" :connected="connected" :update="status?.update"
         @resume="selectSession" @alias="openAlias" @rename="openRename" @archive="(kind, key) => setArchived(kind, key, true)" @create="showProjectPicker" @settings="showSettings" />
     </div>
 
@@ -128,7 +128,7 @@ function saveRename() {
         :aria-describedby="undefined"
       >
         <DialogTitle class="sr-only">{{ drawer === 'sessions' ? '会话列表' : '项目文件' }}</DialogTitle>
-        <SessionSidebar v-if="drawer === 'sessions'" :tree="tree" :active-id="shownId" :running-id="runningId" :asking="askingRun" :connected="connected" :update="status?.update"
+        <SessionSidebar v-if="drawer === 'sessions'" :tree="tree" :active-id="shownId" :running="runningIds" :asking="askingIds" :connected="connected" :update="status?.update"
           @resume="selectSession" @alias="openAlias" @rename="openRename" @archive="(kind, key) => setArchived(kind, key, true)" @create="showProjectPicker" @settings="showSettings" />
         <FilesSidebar v-else-if="drawer === 'files' && shownId" :key="shownId" class="w-full flex-1 border-0"
           :session-id="shownId" :cwd="shownCwd" :active="filePath" @open="openFile" />

@@ -5,7 +5,7 @@ import { computed, ref } from 'vue'
 import { Button } from '@/components/ui/button'
 import type { SessionItem, SessionNode } from '@/lib/api'
 
-const props = defineProps<{ node: SessionNode; activeId: string; runningId: string; asking: boolean; depth: number }>()
+const props = defineProps<{ node: SessionNode; activeId: string; running: Set<string>; asking: Set<string>; depth: number }>()
 const emit = defineEmits<{
   resume: [id: string, cwd: string]
   alias: [path: string, name: string]
@@ -96,16 +96,16 @@ const menuContent = 'z-50 min-w-32 rounded-md border bg-popover p-1 text-popover
                 @dblclick="startRename(item)"
               >
                 <!-- Fixed slot so titles stay aligned whatever the state. -->
-                <span class="flex size-3.5 shrink-0 items-center justify-center" :aria-label="item.id === runningId ? (asking ? '等待回答' : '进行中') : undefined">
-                  <CircleHelp v-if="item.id === runningId && asking" class="size-3.5 text-amber-500" aria-hidden="true" />
-                  <LoaderCircle v-else-if="item.id === runningId" class="size-3.5 text-emerald-500 motion-safe:animate-spin" aria-hidden="true" />
+                <span class="flex size-3.5 shrink-0 items-center justify-center" :aria-label="running.has(item.id) ? (asking.has(item.id) ? '等待回答' : '进行中') : undefined">
+                  <CircleHelp v-if="asking.has(item.id)" class="size-3.5 text-amber-500" aria-hidden="true" />
+                  <LoaderCircle v-else-if="running.has(item.id)" class="size-3.5 text-emerald-500 motion-safe:animate-spin" aria-hidden="true" />
                   <span v-else-if="item.id === activeId" class="size-1.5 rounded-full bg-foreground/70" />
                   <span v-else class="size-1.5 rounded-full bg-muted-foreground/30" />
                 </span>
                 <span class="min-w-0 flex-1 truncate text-left" :class="item.prompt ? '' : 'text-muted-foreground'">{{ item.prompt || '空会话' }}</span>
                 <span class="shrink-0 group-hover/row:hidden group-focus-within/row:hidden max-lg:hidden">
-                  <span v-if="item.id === runningId && asking" class="text-xs text-amber-500">待回答</span>
-                  <span v-else-if="item.id === runningId" class="text-xs text-emerald-500">进行中</span>
+                  <span v-if="asking.has(item.id)" class="text-xs text-amber-500">待回答</span>
+                  <span v-else-if="running.has(item.id)" class="text-xs text-emerald-500">进行中</span>
                   <span v-else-if="item.modified" class="text-xs text-muted-foreground tabular-nums">{{ ago(item.modified) }}</span>
                 </span>
               </Button>
@@ -148,7 +148,7 @@ const menuContent = 'z-50 min-w-32 rounded-md border bg-popover p-1 text-popover
         :key="child.path"
         :node="child"
         :active-id="activeId"
-        :running-id="runningId"
+        :running="running"
         :asking="asking"
         :depth="depth + 1"
         @resume="(id, cwd) => emit('resume', id, cwd)"

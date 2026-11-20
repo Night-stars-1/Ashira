@@ -11,9 +11,8 @@ enum SessionAction { rename, archive, alias, archiveFolder }
 
 /// Running/asking/naming markers for the whole list, like the web sidebar.
 class SessionMarks {
-  const SessionMarks({this.running = '', this.asking = false, this.naming = const {}});
-  final String running;
-  final bool asking;
+  const SessionMarks({this.running = const {}, this.asking = const {}, this.naming = const {}});
+  final Set<String> running, asking;
   final Set<String> naming;
 }
 
@@ -176,8 +175,8 @@ class _ProjectState extends State<_Project> {
                         // The web swaps the time for the 「…」 button on hover.
                         if (!reveal) ...[
                           const SizedBox(width: 8),
-                          if (item.id == widget.marks.running)
-                            Text(widget.marks.asking ? '待回答' : '进行中', style: TextStyle(fontSize: 11, color: widget.marks.asking ? warning : success))
+                          if (widget.marks.running.contains(item.id))
+                            Text(widget.marks.asking.contains(item.id) ? '待回答' : '进行中', style: TextStyle(fontSize: 11, color: widget.marks.asking.contains(item.id) ? warning : success))
                           else if (item.modified > 0)
                             Text(ago(item.modified), style: small),
                         ],
@@ -211,8 +210,8 @@ class _StatusIcon extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final running = item.id == marks.running;
-    if (running && marks.asking) return const Tooltip(message: '等待回答', child: Icon(Icons.help_outline, size: 14, color: warning));
+    final running = marks.running.contains(item.id);
+    if (marks.asking.contains(item.id)) return const Tooltip(message: '等待回答', child: Icon(Icons.help_outline, size: 14, color: warning));
     if (running || marks.naming.contains(item.id)) {
       return Tooltip(
         message: running ? '进行中' : '正在生成标题',

@@ -364,10 +364,13 @@ fn run(args: Args, cwd: std::path::PathBuf, rt: &tokio::runtime::Runtime) -> Res
     if let Some((listen, api_token)) = api {
         let addr: std::net::SocketAddr = listen.parse().map_err(|error| format!("--listen: {error}"))?;
         let listener = rt.block_on(tokio::net::TcpListener::bind(addr)).map_err(|error| error.to_string())?;
-        let serve_result = rt.block_on(serve::start(shared.clone(), cmd_tx, ev_rx, listener, api_token));
+        // Each session gets its own runtime; this agent only stays idle as the template's
+        // owner. Its events (process-wide notices) have no session page to go to.
+        drop(cmd_tx);
+        let mut ev_rx = ev_rx;
+        rt.spawn(async move { while ev_rx.recv().await.is_some() {} });
+        let serve_result = rt.block_on(serve::start(shared.clone(), listener, api_token));
         rt.block_on(async {
-            shared.interrupt();
-            shared.shutdown().await;
             agent_task.await.ok();
             mcp.shutdown().await;
         });

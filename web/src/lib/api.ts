@@ -365,11 +365,12 @@ function questionRequest(value: Record<string, unknown>): QuestionRequest | null
 
 export const api = {
   status: async () => status(await request('/v1')),
-  /** Session tree plus the session whose turn is running, if any. */
+  /** Session tree plus every session with a turn running, and those waiting on an answer. */
   sessions: async () => {
     const body = await request('/v1/sessions')
     const value = record(body)
-    return { tree: sessions(body), running: text(value.running), asking: value.asking === true, archive: archive(value.archived) }
+    const ids = (list: unknown) => Array.isArray(list) ? list.filter((id): id is string => typeof id === 'string') : []
+    return { tree: sessions(body), running: ids(value.running), asking: ids(value.asking), archive: archive(value.archived) }
   },
   alias: (path: string, alias: string) => request('/v1/alias', { method: 'POST', body: JSON.stringify({ path, alias }) }),
   /** An empty title restores the first-message title. */

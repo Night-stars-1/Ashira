@@ -21,9 +21,10 @@ class AshiraState extends ChangeNotifier {
   Status? status;
   List<SessionNode> tree = const [];
 
-  /// Session whose turn runs on the server (any session), and whether it waits on an answer.
-  String running = '';
-  bool asking = false;
+  /// Sessions whose turn runs on the server, and those waiting on an answer. The open
+  /// session's entry follows its event stream; the others come from the list.
+  Set<String> running = {};
+  Set<String> asking = {};
   List<SessionItem> archivedSessions = const [];
   List<({String name, String path})> archivedFolders = const [];
 
@@ -48,6 +49,7 @@ class AshiraState extends ChangeNotifier {
   StreamSubscription<AgentEvent>? _events;
   Timer? _reconnect;
   Timer? _notify;
+  Timer? _polling;
   bool _disposed = false;
 
   bool get busy => turnId != null;
@@ -95,10 +97,20 @@ class AshiraState extends ChangeNotifier {
 
   void _list(SessionListing listing) {
     tree = listing.tree;
-    running = listing.running;
-    asking = listing.asking;
+    // The open session's own state is fresher from its events than from the list.
+    running = {...listing.running.where((id) => id != shownId), if (turnId != null && shownId.isNotEmpty) shownId};
+    asking = {...listing.asking.where((id) => id != shownId), if (question != null && shownId.isNotEmpty) shownId};
     archivedSessions = listing.archivedSessions;
     archivedFolders = listing.archivedFolders;
+    _pollOthers();
+  }
+
+  /// Other sessions' turns send no events here; refresh the list until they end.
+  void _pollOthers() {
+    final others = running.any((id) => id != shownId);
+    if (others == (_polling != null)) return;
+    _polling?.cancel();
+    _polling = others ? Timer.periodic(const Duration(seconds: 3), (_) => unawaited(refresh())) : null;
   }
 
   Future<void> refresh() async {
@@ -271,7 +283,7 @@ class AshiraState extends ChangeNotifier {
       confirm = null;
       question = null;
       error = '';
-      running = shownId;
+      running = {...running, shownId};
       _changed();
       return;
     }
@@ -312,11 +324,11 @@ class AshiraState extends ChangeNotifier {
         if (confirm?.id == (event.raw['id'] as num?)?.toInt()) confirm = null;
       case 'question':
         question = QuestionRequest.fromJson(event.raw);
-        asking = true;
+        asking = {...asking, shownId};
       case 'question_cancelled':
         if (question?.id == (event.raw['id'] as num?)?.toInt()) {
           question = null;
-          asking = false;
+          asking = {...asking}..remove(shownId);
         }
       case 'subagent':
         final failure = event.field('error');
@@ -328,8 +340,8 @@ class AshiraState extends ChangeNotifier {
         turnId = null;
         confirm = null;
         question = null;
-        if (running == shownId) running = '';
-        asking = false;
+        running = {...running}..remove(shownId);
+        asking = {...asking}..remove(shownId);
         final current = blocks.isEmpty ? null : blocks.last;
         if (current is AssistantBlock) current.live = false;
         if (event.raw['ok'] == false) error = event.field('error') ?? '回合失败';
@@ -388,7 +400,7 @@ class AshiraState extends ChangeNotifier {
     final turn = turnId;
     if (pending == null || turn == null || shownId.isEmpty) return;
     question = null;
-    asking = false;
+    asking = {...asking}..remove(shownId);
     _changed();
     await _run(() => client.answer(shownId, turn, pending.id, answers));
   }
@@ -451,6 +463,7 @@ class AshiraState extends ChangeNotifier {
   void dispose() {
     _disposed = true;
     _notify?.cancel();
+    _polling?.cancel();
     _closeEvents();
     client.close();
     super.dispose();

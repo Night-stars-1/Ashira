@@ -31,10 +31,12 @@ const MAX_HEADERS: usize = 64 * 1024;
 const MAX_BODY: usize = 8 * 1024 * 1024;
 const TOOL_OUTPUT: usize = 32_000;
 
+/// One HTTP server for many sessions. `shared` is the template every session runtime is
+/// made from and serves the process-wide routes (models, MCP, memory); each session that
+/// sends work gets its own runtime, so different sessions answer at the same time.
 struct Hub {
     shared: Arc<Shared>,
-    commands: UnboundedSender<(Command, CancellationToken)>,
-    routing: StdMutex<Routing>,
+    runtimes: StdMutex<HashMap<Arc<str>, Arc<Runtime>>>,
     events: broadcast::Sender<Frame>,
     default_cwd: PathBuf,
     default_model: String,
@@ -43,6 +45,12 @@ struct Hub {
     token: String,
 }
 
+/// One session's agent: its own `Shared`, command queue and turn routing.
+struct Runtime {
+    shared: Arc<Shared>,
+    commands: UnboundedSender<(Command, CancellationToken)>,
+    routing: StdMutex<Routing>,
+}
 #[derive(Default)]
 struct Routing {
     queued: Option<Operation>,
@@ -86,7 +94,7 @@ fn next_turn() -> String {
     format!("{now:x}-{:x}", NEXT.fetch_add(1, Ordering::Relaxed))
 }
 
-pub async fn start(shared: Arc<Shared>, commands: UnboundedSender<(Command, CancellationToken)>, mut events: tokio::sync::mpsc::UnboundedReceiver<Event>, listener: TcpListener, token: String) -> Result<(), String> {
+pub async fn start(shared: Arc<Shared>, listener: TcpListener, token: String) -> Result<(), String> {
     let bound = listener.local_addr().map_err(|error| error.to_string())?;
     eprintln!("ashira api http://{bound}");
     let (broadcast, _) = broadcast::channel(1024);
@@ -96,21 +104,20 @@ pub async fn start(shared: Arc<Shared>, commands: UnboundedSender<(Command, Canc
     let terminal_slots = (std::env::var("ASHIRA_WEB_TERMINAL").as_deref() == Ok("1")).then(|| Semaphore::new(8));
     let terminal_shutdown = CancellationToken::new();
     let _shutdown = terminal_shutdown.clone().drop_guard();
-    let hub = Arc::new(Hub { shared, commands, routing: StdMutex::default(), events: broadcast, default_cwd, default_model, terminal_slots, terminal_shutdown, token });
-    let pump = pump(hub.clone(), &mut events);
-    let accept = accept(listener, hub);
-    tokio::pin!(pump, accept);
-    tokio::select! {
-        result = &mut accept => result,
-        _ = &mut pump => Ok(()),
+    let hub = Arc::new(Hub { shared, runtimes: StdMutex::default(), events: broadcast, default_cwd, default_model, terminal_slots, terminal_shutdown, token });
+    let result = tokio::select! {
+        result = accept(listener, hub.clone()) => result,
         _ = tokio::signal::ctrl_c() => Ok(()),
-    }
+    };
+    hub.close().await;
+    result
 }
 
-async fn pump(hub: Arc<Hub>, events: &mut tokio::sync::mpsc::UnboundedReceiver<Event>) {
+/// Turns one runtime's agent events into frames for the shared event stream.
+async fn pump(hub: Arc<Hub>, runtime: Arc<Runtime>, mut events: tokio::sync::mpsc::UnboundedReceiver<Event>) {
     while let Some(event) = events.recv().await {
-        let mut routing = hub.routing.lock().expect("routing");
-        if let Some(frame) = encode(&hub, &mut routing, event) { let _ = hub.events.send(frame); }
+        let frame = encode(&runtime.shared, &mut runtime.routing.lock().expect("routing"), event);
+        if let Some(frame) = frame { let _ = hub.events.send(frame); }
     }
 }
 
@@ -204,7 +211,7 @@ enum Response {
     Events(String),
 }
 
-async fn dispatch(hub: &Hub, method: &str, path: &str, query: &str, body: &[u8]) -> Result<Response, String> {
+async fn dispatch(hub: &Arc<Hub>, method: &str, path: &str, query: &str, body: &[u8]) -> Result<Response, String> {
     let json_body = if body.is_empty() { Value::Object(Default::default()) } else { serde_json::from_slice(body).map_err(|error| format!("invalid JSON: {error}"))? };
     if let Some(rest) = path.strip_prefix("/v1/sessions/") {
         let (id, action) = rest.split_once('/').unwrap_or((rest, ""));
@@ -214,14 +221,16 @@ async fn dispatch(hub: &Hub, method: &str, path: &str, query: &str, body: &[u8])
         ("GET", "/v1") => Ok(Response::Json { status: 200, body: status(hub).await }),
         ("GET", "/v1/sessions") => {
             let mut body = tokio::task::spawn_blocking(session::catalog).await.map_err(|error| error.to_string())?;
-            // One agent serves every session, so at most one turn runs at a time.
-            let (running, asking) = {
-                let routing = hub.routing.lock().expect("routing");
-                let op = routing.active.iter().chain(&routing.queued).find(|op| op.turn.is_some());
-                (op.map(|op| op.session.to_string()), op.is_some_and(|op| op.question.as_ref().is_some_and(|q| !q.cancel.is_cancelled())))
-            };
+            // Sessions run in parallel: every session with a turn in progress, and those
+            // whose turn waits on an `ask_user` answer.
+            let (mut running, mut asking) = (Vec::new(), Vec::new());
+            for (id, runtime) in hub.runtimes.lock().expect("runtimes").iter() {
+                let routing = runtime.routing.lock().expect("routing");
+                let Some(op) = routing.active.iter().chain(&routing.queued).find(|op| op.turn.is_some()) else { continue };
+                running.push(id.to_string());
+                if op.question.as_ref().is_some_and(|q| !q.cancel.is_cancelled()) { asking.push(id.to_string()); }
+            }
             body["running"] = json!(running);
-            // The running turn is blocked on `ask_user`, waiting for the user.
             body["asking"] = json!(asking);
             Ok(Response::Json { status: 200, body })
         }
@@ -325,7 +334,7 @@ async fn dispatch(hub: &Hub, method: &str, path: &str, query: &str, body: &[u8])
     }
 }
 
-async fn session_route(hub: &Hub, method: &str, id: &str, action: &str, query: &str, body: &Value) -> Result<Response, String> {
+async fn session_route(hub: &Arc<Hub>, method: &str, id: &str, action: &str, query: &str, body: &Value) -> Result<Response, String> {
     let target = {
         let id = id.to_owned();
         tokio::task::spawn_blocking(move || session::locate(&id)).await.map_err(|error| error.to_string())??
@@ -529,16 +538,18 @@ async fn session_view(hub: &Hub, id: &str, target: session::Target) -> Result<Va
     let price = resolved.as_ref().and_then(|model| model.price).filter(|price| !price.unsupported).map(|price| {
         json!({"input": price.input, "output": price.output, "cacheRead": price.cache_read, "cacheWrite": price.cache_write})
     });
-    let routing = hub.routing.lock().expect("routing");
-    let operation = routing.active.iter().chain(&routing.queued).find(|op| op.session.as_ref() == id && op.turn.is_some());
+    let runtime = hub.running(id);
+    let routing = runtime.as_ref().map(|runtime| runtime.routing.lock().expect("routing"));
+    let operation = routing.as_ref().and_then(|routing| routing.active.iter().chain(&routing.queued).find(|op| op.turn.is_some()));
     let confirm = operation.and_then(|op| op.confirm.as_ref()).filter(|confirm| !confirm.cancel.is_cancelled()).map(|confirm| &confirm.data);
     let question = operation.and_then(|op| op.question.as_ref()).filter(|question| !question.cancel.is_cancelled()).map(|question| &question.data);
-    Ok(with_statistics(json!({
+    let body = json!({
         "ok": true, "sessionId": id, "cwd": cwd, "messages": messages,
         "modelName": model_name, "model": model, "fast": fast,
         "context": context, "window": window, "price": price,
         "busy": operation.is_some(), "turnId": operation.and_then(|op| op.turn.as_deref()), "confirm": confirm, "question": question,
-    }), stats))
+    });
+    Ok(with_statistics(body, stats))
 }
 
 fn user_turn(text: &str, images: &[(String, String)], files: &[(String, String)]) -> Value {
@@ -905,15 +916,45 @@ fn shown_path(cwd: &Path, path: &Path) -> String {
 }
 
 impl Hub {
+    /// The session's runtime, started on its first command: a `Shared` cut from the
+    /// template, the session loaded into an agent, and a pump for its events.
+    fn runtime(self: &Arc<Self>, id: &str, target: &session::Target) -> Result<Arc<Runtime>, String> {
+        let mut runtimes = self.runtimes.lock().expect("runtimes");
+        if let Some(runtime) = runtimes.get(id) { return Ok(runtime.clone()); }
+        let loaded = session::load(&target.path)?;
+        let (events_tx, events_rx) = tokio::sync::mpsc::unbounded_channel();
+        let shared = Arc::new(self.shared.for_session(target.cwd.clone(), events_tx));
+        shared.restore_model(loaded.model.as_deref(), loaded.fast);
+        let agent = crate::agent::Agent::resumed(shared.clone(), loaded);
+        let (commands, commands_rx) = tokio::sync::mpsc::unbounded_channel();
+        let runtime = Arc::new(Runtime { shared, commands, routing: StdMutex::default() });
+        tokio::spawn(agent.serve(commands_rx));
+        tokio::spawn(pump(self.clone(), runtime.clone(), events_rx));
+        runtimes.insert(Arc::from(id), runtime.clone());
+        Ok(runtime)
+    }
 
-    fn enqueue(&self, id: &str, target: session::Target, action: WebAction, turn: Option<String>, user_message: Option<Value>, completion: Option<oneshot::Sender<Result<(), String>>>) -> Result<(), String> {
-        let mut routing = self.routing.lock().expect("routing");
-        if routing.queued.is_some() || routing.active.is_some() || self.shared.busy() {
+    fn running(&self, id: &str) -> Option<Arc<Runtime>> {
+        self.runtimes.lock().expect("runtimes").get(id).cloned()
+    }
+
+    /// Stops every session runtime, then the process-wide services.
+    async fn close(&self) {
+        let runtimes: Vec<_> = self.runtimes.lock().expect("runtimes").drain().map(|(_, runtime)| runtime).collect();
+        for runtime in runtimes { runtime.shared.close().await; }
+        self.shared.shutdown().await;
+    }
+
+    /// One turn per session at a time; other sessions run alongside.
+    fn enqueue(self: &Arc<Self>, id: &str, target: session::Target, action: WebAction, turn: Option<String>, user_message: Option<Value>, completion: Option<oneshot::Sender<Result<(), String>>>) -> Result<(), String> {
+        let runtime = self.runtime(id, &target)?;
+        let mut routing = runtime.routing.lock().expect("routing");
+        if routing.queued.is_some() || routing.active.is_some() || runtime.shared.busy() {
             return Err("当前回合还在进行".into());
         }
         let cancel = CancellationToken::new();
         routing.queued = Some(Operation { session: Arc::from(id), turn, cancel: cancel.clone(), completion, user_message, confirm: None, question: None });
-        if self.commands.send((Command::Web { target, action }, cancel)).is_err() {
+        if runtime.commands.send((Command::Web { target, action }, cancel)).is_err() {
             routing.queued = None;
             return Err("代理已停止".into());
         }
@@ -921,7 +962,8 @@ impl Hub {
     }
 
     fn control(&self, id: &str, turn: &str, action: &str, body: &Value) -> Result<(), String> {
-        let mut routing = self.routing.lock().expect("routing");
+        let runtime = self.running(id).ok_or("unknown turn")?;
+        let mut routing = runtime.routing.lock().expect("routing");
         let matches = |op: &Operation| op.session.as_ref() == id && op.turn.as_deref() == Some(turn);
         if action == "interrupt" {
             let op = routing.active.iter().chain(&routing.queued).find(|op| matches(op)).ok_or("unknown turn")?;
@@ -969,7 +1011,7 @@ impl Operation {
     }
 }
 
-fn encode(hub: &Hub, routing: &mut Routing, event: Event) -> Option<Frame> {
+fn encode(shared: &Shared, routing: &mut Routing, event: Event) -> Option<Frame> {
     let event = match event {
         Event::WebStarted => {
             let op = routing.queued.take()?;
@@ -1031,7 +1073,7 @@ fn encode(hub: &Hub, routing: &mut Routing, event: Event) -> Option<Frame> {
         Event::Context(tokens) => json!({"type": "context", "tokens": tokens}),
         Event::Notice(text) => json!({"type": "notice", "text": text}),
         Event::Status(text) => json!({"type": "status", "text": text}),
-        Event::Model(name, window) => json!({"type": "model", "name": name, "display": hub.shared.model().map(|model| model.client.display_name().to_owned()).unwrap_or(name), "window": window}),
+        Event::Model(name, window) => json!({"type": "model", "name": name, "display": shared.model().map(|model| model.client.display_name().to_owned()).unwrap_or(name), "window": window}),
         Event::ModelsChanged => json!({"type": "models_changed"}),
         Event::Prompt(text) => json!({"type": "prompt", "text": text}),
         Event::McpChanged => json!({"type": "mcp_changed"}),
@@ -1206,7 +1248,7 @@ fn decode(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{agent::{Agent, Shared}, config::Registry, mcp::Mcp, plugin::Plugins, session::Session};
+    use crate::{agent::Shared, config::Registry, mcp::Mcp, plugin::Plugins};
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
     const TOKEN: &str = "test-token";
@@ -1297,16 +1339,23 @@ mod tests {
         ]));
     }
 
+    /// A template `Shared` the way `main` builds one for `--serve`.
+    fn template(root: &Path) -> Arc<Shared> {
+        let (events_tx, _events_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mcp = Mcp::new(root.to_path_buf(), events_tx.clone());
+        Arc::new(Shared::new(Registry::empty(), None, mcp, Plugins::empty(), root.to_path_buf(), events_tx, true, false))
+    }
+
+    async fn serve(shared: Arc<Shared>, token: &str) -> (std::net::SocketAddr, tokio::task::JoinHandle<Result<(), String>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        (addr, tokio::spawn(start(shared, listener, token.into())))
+    }
+
     #[tokio::test]
     async fn token_gates_requests_but_not_preflight() {
         let root = crate::agent::plain_path(std::env::temp_dir().canonicalize().unwrap());
-        let (events_tx, events_rx) = tokio::sync::mpsc::unbounded_channel();
-        let mcp = Mcp::new(root.clone(), events_tx.clone());
-        let shared = Arc::new(Shared::new(Registry::empty(), None, mcp, Plugins::empty(), root, events_tx, true, false));
-        let (commands_tx, _commands_rx) = tokio::sync::mpsc::unbounded_channel();
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let server = tokio::spawn(start(shared, commands_tx, events_rx, listener, "s3cret".into()));
+        let (addr, server) = serve(template(&root), "s3cret").await;
         let status = |response: String| response.split_whitespace().nth(1).unwrap().to_owned();
 
         let bare = exchange(addr, "GET /v1 HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").await;
@@ -1325,17 +1374,18 @@ mod tests {
         let root = std::env::temp_dir().join(format!("ashira-question-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
         std::fs::create_dir_all(&root).unwrap();
         let root = crate::agent::plain_path(root.canonicalize().unwrap());
-        let (events_tx, events_rx) = tokio::sync::mpsc::unbounded_channel();
-        let mcp = Mcp::new(root.clone(), events_tx.clone());
-        let shared = Arc::new(Shared::new(Registry::empty(), None, mcp, Plugins::empty(), root.clone(), events_tx.clone(), true, false));
-        let (commands_tx, _commands_rx) = tokio::sync::mpsc::unbounded_channel();
+        let shared = template(&root);
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        let server = tokio::spawn(start(shared.clone(), commands_tx, events_rx, listener, TOKEN.into()));
+        let (broadcast, _) = broadcast::channel(1024);
+        let hub = Arc::new(Hub { shared: shared.clone(), runtimes: StdMutex::default(), events: broadcast, default_cwd: root.clone(), default_model: String::new(), terminal_slots: None, terminal_shutdown: CancellationToken::new(), token: TOKEN.into() });
+        let server = tokio::spawn(accept(listener, hub.clone()));
         let session = request(addr, "POST", "/v1/sessions", "{}").await.1["sessionId"].as_str().unwrap().to_owned();
         let path = format!("/v1/sessions/{session}");
         let mut events = open_events(addr, &session).await;
 
+        // The session's own runtime carries its turn; events stand in for its agent.
+        let events_tx = hub.runtime(&session, &session::locate(&session).unwrap()).unwrap().shared.events.clone();
         events_tx.send(Event::BackgroundTurnStarted { cancel: CancellationToken::new(), session_id: session.clone() }).unwrap();
         let turn = next_event(&mut events).await["turnId"].as_str().unwrap().to_owned();
         let ask = |id: u64| {
@@ -1378,15 +1428,7 @@ mod tests {
         std::fs::create_dir_all(root.join("nested")).unwrap();
         std::fs::write(root.join("nested").join("note.txt"), "hello").unwrap();
         let root = crate::agent::plain_path(root.canonicalize().unwrap());
-        let (events_tx, events_rx) = tokio::sync::mpsc::unbounded_channel();
-        let mcp = Mcp::new(root.clone(), events_tx.clone());
-        let shared = Arc::new(Shared::new(Registry::empty(), None, mcp, Plugins::empty(), root.clone(), events_tx, true, false));
-        let agent = Agent::new(shared.clone(), Session::new(&root, ""));
-        let (commands_tx, commands_rx) = tokio::sync::mpsc::unbounded_channel();
-        let agent_task = tokio::spawn(agent.serve(commands_rx));
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let server = tokio::spawn(start(shared.clone(), commands_tx, events_rx, listener, TOKEN.into()));
+        let (addr, server) = serve(template(&root), TOKEN).await;
 
         let (_, before) = request(addr, "GET", "/v1", "").await;
         let (a_status, a) = request(addr, "POST", "/v1/sessions", "{}").await;
@@ -1412,24 +1454,23 @@ mod tests {
 
         let mut events_a = open_events(addr, a).await;
         let mut events_b = open_events(addr, b).await;
-        let (code, accepted) = request(addr, "POST", &format!("{a_path}/messages"), r#"{"text":"hello"}"#).await;
-        assert_eq!(code, 202);
-        loop {
-            let event = next_event(&mut events_a).await;
-            assert_eq!(event["sessionId"], a);
-            assert_eq!(event["turnId"], accepted["turnId"]);
-            if event["type"] == "done" {
-                assert_eq!(event["ok"], false);
-                break;
+        // Both sessions take a turn at once: each has its own runtime.
+        let (code_a, first) = request(addr, "POST", &format!("{a_path}/messages"), r#"{"text":"hello"}"#).await;
+        let (code_b, second) = request(addr, "POST", &format!("{b_path}/messages"), r#"{"text":"other"}"#).await;
+        assert_eq!((code_a, code_b), (202, 202));
+        for (events, id, turn) in [(&mut events_a, a, &first["turnId"]), (&mut events_b, b, &second["turnId"])] {
+            // Each stream carries only its own session's turn, start to end.
+            assert_eq!(next_event(events).await["type"], "turn_start");
+            loop {
+                let event = next_event(events).await;
+                assert_eq!((&event["sessionId"], &event["turnId"]), (&json!(id), turn));
+                if event["type"] == "done" {
+                    // No model is configured in tests, so the turn fails; it still ran.
+                    assert_eq!(event["ok"], false);
+                    break;
+                }
             }
         }
-        // The other stream sees its own next turn first, not A's events.
-        let (code, second) = request(addr, "POST", &format!("{b_path}/messages"), r#"{"text":"other"}"#).await;
-        assert_eq!(code, 202);
-        let event = next_event(&mut events_b).await;
-        assert_eq!(event["type"], "turn_start");
-        assert_eq!(event["sessionId"], b);
-        assert_eq!(event["turnId"], second["turnId"]);
         assert_eq!(request(addr, "GET", &a_path, "").await.1["messages"], json!([]));
         assert_eq!(request(addr, "GET", &b_path, "").await.1["messages"], json!([]));
 
@@ -1461,9 +1502,7 @@ mod tests {
 
         let storage = session::locate(a).unwrap().path.parent().unwrap().to_owned();
         server.abort();
-        agent_task.abort();
         let _ = server.await;
-        let _ = agent_task.await;
         std::fs::remove_dir_all(storage).unwrap();
         std::fs::remove_dir_all(root).unwrap();
     }

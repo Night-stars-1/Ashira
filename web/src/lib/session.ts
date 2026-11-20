@@ -8,12 +8,13 @@ const viewKey = 'ashira.session'
 export function useAshira() {
   const status = ref<Status | null>(null)
   const tree = ref<SessionNode[]>([])
-  // Session whose turn the server is running, from the last list refresh.
-  const listedRunning = ref('')
+  // Sessions with a turn running on the server, from the last list refresh.
+  const listedRunning = ref<string[]>([])
   // A session is being opened; the transcript is empty because it hasn't arrived yet.
   // Starts true: the first paint shows the skeleton until a session (or none) is known.
   const loading = ref(true)
-  const listedAsking = ref(false)
+  // Of those, the ones waiting on an `ask_user` answer.
+  const listedAsking = ref<string[]>([])
   const archive = ref<Archive>({ sessions: [], folders: [] })
   // Sessions whose AI title is being generated right now.
   const titling = reactive(new Set<string>())
@@ -80,13 +81,22 @@ export function useAshira() {
       }
     }, () => api.archive(kind, key, archived), archived ? '归档失败' : '还原失败')
   }
-  // The open session's live turn is fresher than the last list refresh.
-  const runningId = computed(() => turnId.value ? shownId.value : listedRunning.value === shownId.value ? '' : listedRunning.value)
-  // The running turn is waiting on an `ask_user` answer.
-  const askingRun = computed(() => runningId.value === shownId.value ? question.value !== null : listedAsking.value)
-  // Another session's turn sends no events to this page; poll until it ends.
+  // Every session with a turn running. The open session's live turn is fresher than the
+  // last list refresh, so its own state comes from this page's event stream.
+  const runningIds = computed(() => {
+    const ids = new Set(listedRunning.value.filter((id) => id !== shownId.value))
+    if (turnId.value && shownId.value) ids.add(shownId.value)
+    return ids
+  })
+  // Of those, the ones waiting on an `ask_user` answer.
+  const askingIds = computed(() => {
+    const ids = new Set(listedAsking.value.filter((id) => id !== shownId.value))
+    if (turnId.value && shownId.value && question.value !== null) ids.add(shownId.value)
+    return ids
+  })
+  // Other sessions' turns send no events to this page; poll until they end.
   let polling: ReturnType<typeof setInterval> | undefined
-  watch(() => listedRunning.value && listedRunning.value !== shownId.value, (other) => {
+  watch(() => listedRunning.value.some((id) => id !== shownId.value), (other) => {
     clearInterval(polling)
     polling = other ? setInterval(() => { void refresh().catch(() => {}) }, 3000) : undefined
   })
@@ -383,7 +393,7 @@ export function useAshira() {
   onUnmounted(() => { source?.close(); clearInterval(polling) })
 
   return { status, tree, archive, blocks, draft, model, modelTitle, fast, connected, loading, naming, confirm, question,
-    busy, hasReplyText, shownId, shownCwd, sessionName, needsConnection, runningId, askingRun, send, openSession, decide, answer, interrupt, refresh, updateSettings, renameSession, setArchived }
+    busy, hasReplyText, shownId, shownCwd, sessionName, needsConnection, runningIds, askingIds, send, openSession, decide, answer, interrupt, refresh, updateSettings, renameSession, setArchived }
 }
 
 const LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']

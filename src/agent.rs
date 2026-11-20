@@ -224,7 +224,8 @@ pub(crate) struct StatsScope {
 
 pub struct Shared {
     /// Swapped by `/models` so edits to models.yml apply without a restart.
-    registry: RwLock<Arc<Registry>>,
+    /// Shared by every session the API runs, so one settings save reaches all of them.
+    registry: Arc<RwLock<Arc<Registry>>>,
     /// `None` until a model is configured and picked (`/models`).
     model: RwLock<Option<Arc<Model>>>,
     pub subagents: Arc<subagents::Manager>,
@@ -312,7 +313,7 @@ impl Shared {
         Shared {
             model: RwLock::new(client.map(Model::new)),
             root, subagents, parent_turn: Mutex::new(None), launch: Mutex::new(()), next_confirm: AtomicU64::new(0),
-            registry: RwLock::new(Arc::new(registry)),
+            registry: Arc::new(RwLock::new(Arc::new(registry))),
             mcp,
             plugins,
             memory: Store::new(session::home().join("memory.json")),
@@ -335,15 +336,60 @@ impl Shared {
         self.cwd.read().expect("cwd").clone()
     }
 
-    /// Switches the process and the session workspace. Canonical form is stored
-    /// without the Windows `\\?\` prefix so session directories stay stable.
+    /// A separate runtime for one API session, so sessions answer in parallel. It shares
+    /// what is global (model registry, MCP, plugins, memory, `--yes`) and owns the rest:
+    /// model, workspace, turn, sub-agents, confirmations, statistics.
+    pub fn for_session(&self, cwd: PathBuf, events: UnboundedSender<Event>) -> Shared {
+        let root = CancellationToken::new();
+        let subagents = Arc::new(subagents::Manager::new(root.clone(), events.clone()));
+        Shared {
+            model: RwLock::new(self.model()),
+            root, subagents, parent_turn: Mutex::new(None), launch: Mutex::new(()), next_confirm: AtomicU64::new(0),
+            registry: self.registry.clone(),
+            mcp: self.mcp.clone(),
+            plugins: self.plugins.clone(),
+            memory: self.memory.clone(),
+            memory_job: Mutex::new(None),
+            cwd: RwLock::new(cwd),
+            events,
+            interactive: self.interactive,
+            approve_all: AtomicBool::new(self.approve_all.load(Ordering::Relaxed)),
+            approved: Mutex::default(),
+            system: Mutex::new(None),
+            sub_system: Mutex::new(None),
+            full_system: Mutex::new([None, None, None]),
+            stats_scope: Mutex::new(None),
+            context: AtomicU64::new(0),
+            session_id: std::sync::RwLock::new(String::new()),
+            steer: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Puts the session's saved model and fast setting on a fresh runtime, like `activate`;
+    /// a saved model that no longer resolves keeps the template's model.
+    pub fn restore_model(&self, model: Option<&str>, fast: bool) {
+        if let Some(model) = model.filter(|model| !model.is_empty())
+            && let Err(error) = self.switch_model(model)
+        {
+            self.emit(Event::Notice(format!("会话模型未能恢复：{error}")));
+        }
+        if self.model().is_some_and(|model| model.client.fast_enabled() != fast)
+            && let Err(error) = self.set_fast(fast)
+        {
+            self.emit(Event::Notice(format!("会话 fast 设置未能恢复：{error}")));
+        }
+    }
+
+    /// Switches the session workspace. Only this `Shared` changes: the API serves
+    /// several sessions from one process, so tools resolve paths against `cwd()`
+    /// instead of the process directory. Canonical form is stored without the
+    /// Windows `\\?\` prefix so session directories stay stable.
     pub fn set_cwd(&self, path: &Path) -> Result<PathBuf, String> {
         let path = path.canonicalize().map_err(|error| format!("{}: {error}", path.display()))?;
         if !path.is_dir() {
             return Err(format!("{} 不是目录", path.display()));
         }
         let path = plain_path(path);
-        std::env::set_current_dir(&path).map_err(|error| format!("无法进入 {}: {error}", path.display()))?;
         *self.cwd.write().expect("cwd") = path.clone();
         Ok(path)
     }
@@ -396,6 +442,13 @@ impl Shared {
         { let _gate = self.launch.lock().unwrap(); self.root.cancel(); self.interrupt(); }
         if let Some(warning) = self.plugins.notify("session_shutdown", json!({})).await { self.emit(Event::Notice(warning)); }
         self.plugins.shutdown().await;
+        self.subagents.retire().await;
+    }
+
+    /// Ends one API session's runtime. Plugins, MCP and memory belong to the
+    /// whole process, so they stay up; `shutdown` stops them on exit.
+    pub async fn close(&self) {
+        { let _gate = self.launch.lock().unwrap(); self.root.cancel(); self.interrupt(); }
         self.subagents.retire().await;
     }
 
@@ -999,15 +1052,15 @@ impl Agent {
                     return Output::err(denied);
                 }
                 if cancel.is_cancelled() { return Output::err("cancelled"); }
-                tools::bash(input, cancel).await
+                tools::bash(input, cancel, &self.shared.cwd()).await
             }
             "read" => match input["path"].as_str().and_then(|p| p.strip_prefix("mcp://")) {
                 Some(uri) => self.shared.mcp.read_resource(uri, cancel).await,
-                None => tools::read(input, capture).await,
+                None => tools::read(input, capture, &self.shared.cwd()).await,
             },
-            "glob" | "grep" => { let input = input.clone(); let cancel = cancel.clone(); let glob = name == "glob"; match tokio::task::spawn_blocking(move || if glob { tools::glob(&input, &cancel) } else { tools::grep(&input, &cancel) }).await { Ok(out) => out, Err(e) => Output::err(e.to_string()) } },
-            "write" => tools::write(input, capture).await,
-            "edit" => tools::edit(input, capture).await,
+            "glob" | "grep" => { let input = input.clone(); let cancel = cancel.clone(); let cwd = self.shared.cwd(); let glob = name == "glob"; match tokio::task::spawn_blocking(move || if glob { tools::glob(&input, &cancel, &cwd) } else { tools::grep(&input, &cancel, &cwd) }).await { Ok(out) => out, Err(e) => Output::err(e.to_string()) } },
+            "write" => tools::write(input, capture, &self.shared.cwd()).await,
+            "edit" => tools::edit(input, capture, &self.shared.cwd()).await,
             "memory" => self.memory(input).await,
             "ask_user" if self.identity.is_none() => self.ask_user(input, cancel).await,
             "task" if self.identity.is_none() => self.start_jobs(input),
