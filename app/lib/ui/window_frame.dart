@@ -9,15 +9,12 @@ import 'theme.dart';
 /// end of the top-right header. macOS keeps its native traffic lights.
 bool get customFrame => !kIsWeb && (defaultTargetPlatform == TargetPlatform.windows || defaultTargetPlatform == TargetPlatform.linux);
 
-Window? get _window => customFrame ? WindowManager.instance.getCurrent() : null;
-
-void setupWindow() {
-  final window = _window;
-  if (window == null) return;
-  window
-    ..title = 'Ashira'
-    ..minimumSize = const Size(560, 420).toNative()
-    ..titleBarStyle = TitleBarStyle.hidden;
+Future<void> setupWindow() async {
+  if (!customFrame) return;
+  await windowManager.ensureInitialized();
+  await windowManager.setTitle('Ashira');
+  await windowManager.setMinimumSize(const Size(560, 420));
+  await windowManager.setTitleBarStyle(TitleBarStyle.hidden);
 }
 
 /// Drags the window, double click maximizes, right click opens the system menu;
@@ -36,44 +33,44 @@ class WindowButtons extends StatefulWidget {
   State<WindowButtons> createState() => _WindowButtonsState();
 }
 
-class _WindowButtonsState extends State<WindowButtons> {
+class _WindowButtonsState extends State<WindowButtons> with WindowListener {
   bool _maximized = false;
-  ListenerId? _listener;
 
   @override
   void initState() {
     super.initState();
-    final window = _window;
-    if (window == null) return;
-    _maximized = window.isMaximized;
-    _listener = window.addListener((event) {
-      if (!mounted) return;
-      if (event is WindowMaximizedEvent) setState(() => _maximized = true);
-      if (event is WindowRestoredEvent || event is WindowResizedEvent) setState(() => _maximized = window.isMaximized);
+    if (!customFrame) return;
+    windowManager.addListener(this);
+    windowManager.isMaximized().then((value) {
+      if (mounted) setState(() => _maximized = value);
     });
   }
 
   @override
   void dispose() {
-    final listener = _listener;
-    if (listener != null) _window?.removeListener(listener);
+    if (customFrame) windowManager.removeListener(this);
     super.dispose();
   }
 
   @override
+  void onWindowMaximize() => setState(() => _maximized = true);
+
+  @override
+  void onWindowUnmaximize() => setState(() => _maximized = false);
+
+  @override
   Widget build(BuildContext context) {
-    final window = _window;
-    if (window == null) return const SizedBox.shrink();
+    if (!customFrame) return const SizedBox.shrink();
     final scheme = Theme.of(context).colorScheme;
     return Row(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-      _WindowButton(tooltip: '最小化', icon: Icons.remove, onPressed: window.minimize),
+      _WindowButton(tooltip: '最小化', icon: Icons.remove, onPressed: windowManager.minimize),
       _WindowButton(
         tooltip: _maximized ? '还原' : '最大化',
         icon: _maximized ? Icons.filter_none : Icons.crop_square,
         iconSize: _maximized ? 13 : 15,
-        onPressed: () => _maximized ? window.unmaximize() : window.maximize(),
+        onPressed: () => _maximized ? windowManager.unmaximize() : windowManager.maximize(),
       ),
-      _WindowButton(tooltip: '关闭', icon: Icons.close, onPressed: window.close, hover: scheme.error, hoverForeground: Colors.white),
+      _WindowButton(tooltip: '关闭', icon: Icons.close, onPressed: windowManager.close, hover: scheme.error, hoverForeground: Colors.white),
     ]);
   }
 }

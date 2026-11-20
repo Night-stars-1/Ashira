@@ -19,7 +19,8 @@ dependencies:
   re_highlight: ^0.0.3
   shared_preferences: ^2.5.6
   url_launcher: ^6.3.3
-  window_manager: ^0.6.0
+  # 0.6 pulls in nativeapi's FFI bindings, which break Android release (AOT) builds.
+  window_manager: ^0.5.2
   xterm: 4.0.0
 
 dev_dependencies:

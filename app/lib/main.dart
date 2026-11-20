@@ -7,9 +7,9 @@ import 'ui/home_page.dart';
 import 'ui/theme.dart';
 import 'ui/window_frame.dart';
 
-void main() {
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  setupWindow();
+  await setupWindow();
   runApp(const AshiraApp());
 }
 
