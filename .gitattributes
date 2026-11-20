@@ -1,0 +1,2 @@
+# Piped into `sh` on Linux/macOS: CRLF would break it.
+*.sh text eol=lf
