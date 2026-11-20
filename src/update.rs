@@ -4,9 +4,9 @@
 
 use std::{
     env, fs,
-    io::{self, Cursor, Read},
+    io::{self, Cursor, IsTerminal, Read, Write},
     path::{Path, PathBuf},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use serde::Deserialize;
@@ -71,21 +71,81 @@ async fn release(http: &reqwest::Client, tag: Option<&str>) -> Result<Release, S
 }
 
 /// Retried: the asset CDN behind GitHub's redirect drops connections now and then.
-async fn download(http: &reqwest::Client, url: &str) -> Result<Vec<u8>, String> {
+/// `progress` draws a bar on stderr while the body arrives, when stderr is a terminal.
+async fn download(http: &reqwest::Client, url: &str, progress: bool) -> Result<Vec<u8>, String> {
+    let progress = progress && io::stderr().is_terminal();
     let mut last = String::new();
     for attempt in 0..3 {
         if attempt > 0 { tokio::time::sleep(Duration::from_secs(2)).await; }
+        let mut bar = progress.then(Progress::new);
         let result = async {
-            let response = http.get(url).send().await?.error_for_status()?;
-            response.bytes().await
+            let mut response = http.get(url).send().await?.error_for_status()?;
+            let total = response.content_length();
+            let mut body = Vec::with_capacity(total.unwrap_or(0) as usize);
+            while let Some(chunk) = response.chunk().await? {
+                body.extend_from_slice(&chunk);
+                if let Some(bar) = &mut bar { bar.update(body.len() as u64, total, false); }
+            }
+            if let Some(bar) = &mut bar { bar.update(body.len() as u64, total, true); }
+            Ok::<_, reqwest::Error>(body)
         }.await;
         match result {
-            Ok(bytes) => return Ok(bytes.to_vec()),
-            // reqwest's top-level message hides the cause ("error sending request"); the source names it.
-            Err(e) => last = std::error::Error::source(&e).map_or_else(|| e.to_string(), |cause| format!("{e}：{cause}")),
+            Ok(body) => return Ok(body),
+            Err(e) => {
+                // End a half-drawn bar so the next message starts on its own line.
+                if bar.is_some_and(|bar| bar.width > 0) { eprintln!(); }
+                // reqwest's top-level message hides the cause ("error sending request"); the source names it.
+                last = std::error::Error::source(&e).map_or_else(|| e.to_string(), |cause| format!("{e}：{cause}"));
+                if attempt < 2 { eprintln!("下载中断，重试（{}/2）：{last}", attempt + 1); }
+            }
         }
     }
     Err(format!("下载失败：{last}"))
+}
+
+/// One stderr line redrawn in place: `[#####-----]  45%  3.2/7.1 MB  1.2 MB/s`.
+/// Overwrites with `\r` and space padding rather than VT escapes, which Windows
+/// consoles do not process unless asked to.
+struct Progress {
+    start: Instant,
+    drawn: Option<Instant>,
+    /// Characters of the last line drawn; 0 before the first draw.
+    width: usize,
+}
+
+impl Progress {
+    const BAR: usize = 30;
+
+    fn new() -> Self {
+        Self { start: Instant::now(), drawn: None, width: 0 }
+    }
+
+    /// Redraws at most every 100 ms; `done` always draws and ends the line.
+    fn update(&mut self, received: u64, total: Option<u64>, done: bool) {
+        let now = Instant::now();
+        if !done && self.drawn.is_some_and(|at| now - at < Duration::from_millis(100)) { return; }
+        self.drawn = Some(now);
+        let elapsed = (now - self.start).as_secs_f64();
+        let speed = if elapsed > 0.0 { (received as f64 / elapsed) as u64 } else { 0 };
+        let line = match total.filter(|&total| total > 0) {
+            Some(total) => {
+                let ratio = (received as f64 / total as f64).min(1.0);
+                let filled = (ratio * Self::BAR as f64).round() as usize;
+                format!("[{}{}] {:>3.0}%  {:.1}/{}  {}/s", "#".repeat(filled), "-".repeat(Self::BAR - filled), ratio * 100.0, received as f64 / 1_048_576.0, mb(total), mb(speed))
+            }
+            None => format!("{}  {}/s", mb(received), mb(speed)),
+        };
+        let width = line.chars().count();
+        let mut err = io::stderr().lock();
+        let _ = write!(err, "\r{line}{:pad$}", "", pad = self.width.saturating_sub(width));
+        if done { let _ = writeln!(err); }
+        let _ = err.flush();
+        self.width = width;
+    }
+}
+
+fn mb(bytes: u64) -> String {
+    format!("{:.1} MB", bytes as f64 / 1_048_576.0)
 }
 
 /// `1.2.3` from `v1.2.3`; pre-release suffixes are ignored for ordering.
@@ -117,10 +177,10 @@ pub async fn run(requested: Option<&str>) -> Result<String, String> {
     let asset = release.assets.iter().find(|a| a.name.starts_with("ashira-core-") && a.name.ends_with(&suffix))
         .ok_or_else(|| format!("{} 里没有 {platform} 版 ashira-core", release.tag_name))?;
     eprintln!("下载 {}", asset.name);
-    let archive = download(&http, &asset.browser_download_url).await?;
+    let archive = download(&http, &asset.browser_download_url, true).await?;
     let sums = release.assets.iter().find(|a| a.name == "SHA256SUMS.txt")
         .ok_or_else(|| format!("{} 没有 SHA256SUMS.txt，无法校验，已取消", release.tag_name))?;
-    let sums = String::from_utf8(download(&http, &sums.browser_download_url).await?).map_err(|_| "SHA256SUMS.txt 不是文本")?;
+    let sums = String::from_utf8(download(&http, &sums.browser_download_url, false).await?).map_err(|_| "SHA256SUMS.txt 不是文本")?;
     verify(&archive, &asset.name, &sums)?;
     let binary = extract(&archive)?;
     let target = env::current_exe().map_err(|e| format!("找不到当前程序：{e}"))?;
