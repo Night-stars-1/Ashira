@@ -26,8 +26,6 @@ Linux x64 / macOS（Apple Silicon）：
 curl -fsSL https://raw.githubusercontent.com/Night-stars-1/Ashira/master/install.sh | sh
 ```
 
-脚本从最新的 [Release](https://github.com/Night-stars-1/Ashira/releases) 下载 `ashira-core`，校验 SHA256 后安装：Windows 装到 `%LOCALAPPDATA%\Programs\ashira` 并加入用户 PATH，Linux 和 macOS 装到 `~/.local/bin`。设置 `ASHIRA_VERSION=v0.2.0` 安装指定版本，`ASHIRA_INSTALL_DIR` 修改安装目录。
-
 更新到最新版本：
 
 ```sh
