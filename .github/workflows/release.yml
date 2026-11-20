@@ -1,0 +1,138 @@
+name: Release
+
+# Publishing a GitHub Release builds every target and attaches the files to it.
+# Running it by hand builds the same files as workflow artifacts, without a release.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  # Tag like v1.2.3 → 1.2.3; manual runs use the version in the manifests.
+  VERSION: ${{ github.event_name == 'release' && github.event.release.tag_name || '' }}
+
+jobs:
+  core:
+    name: Core (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux-x64, os: ubuntu-latest, target: x86_64-unknown-linux-gnu, bin: ashira }
+          - { name: windows-x64, os: windows-latest, target: x86_64-pc-windows-msvc, bin: ashira.exe }
+          - { name: macos-arm64, os: macos-latest, target: aarch64-apple-darwin, bin: ashira }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - name: Linux packages
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libwayland-dev libxkbcommon-dev
+      - run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: Package
+        shell: bash
+        run: |
+          name="ashira-${VERSION:-dev}-${{ matrix.name }}"
+          mkdir -p dist/"$name"
+          cp target/${{ matrix.target }}/release/${{ matrix.bin }} README.md dist/"$name"/
+          cd dist
+          if [ "$RUNNER_OS" = Windows ]; then 7z a "$name.zip" "$name" > /dev/null; else tar czf "$name.tar.gz" "$name"; fi
+          rm -r "$name"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: core-${{ matrix.name }}
+          path: dist/*
+
+  web:
+    name: Web
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - working-directory: web
+        run: bun install --frozen-lockfile && bun run build
+      - name: Package
+        run: |
+          name="ashira-web-${VERSION:-dev}"
+          mkdir -p dist && cp -r web/dist "dist/$name"
+          cd dist && zip -qr "$name.zip" "$name" && rm -r "$name"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web
+          path: dist/*
+
+  app:
+    name: App (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: android, os: ubuntu-latest }
+          - { name: windows-x64, os: windows-latest }
+    defaults:
+      run:
+        shell: bash
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+      - if: matrix.name == 'android'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.47.9
+          cache: true
+      - run: flutter pub get
+      - name: Version flags
+        id: version
+        run: |
+          # Release builds take the tag's version; the run number keeps Android version codes increasing.
+          if [ -n "$VERSION" ]; then echo "flags=--build-name=${VERSION#v} --build-number=${{ github.run_number }}" >> "$GITHUB_OUTPUT"; fi
+      - name: Build APK
+        if: matrix.name == 'android'
+        run: |
+          flutter build apk --release ${{ steps.version.outputs.flags }}
+          mkdir -p ../dist
+          cp build/app/outputs/flutter-apk/app-release.apk "../dist/ashira-app-${VERSION:-dev}-android.apk"
+      - name: Build Windows
+        if: matrix.name == 'windows-x64'
+        run: |
+          flutter build windows --release ${{ steps.version.outputs.flags }}
+          name="ashira-app-${VERSION:-dev}-windows-x64"
+          mkdir -p ../dist
+          cp -r build/windows/x64/runner/Release "../dist/$name"
+          cd ../dist && 7z a "$name.zip" "$name" > /dev/null && rm -r "$name"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: app-${{ matrix.name }}
+          path: dist/*
+
+  publish:
+    name: Attach to release
+    if: github.event_name == 'release'
+    needs: [core, web, app]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Upload
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd dist
+          sha256sum * > SHA256SUMS.txt
+          gh release upload "${{ github.event.release.tag_name }}" * --clobber -R "${{ github.repository }}"
