@@ -92,7 +92,8 @@ pub async fn start(shared: Arc<Shared>, commands: UnboundedSender<(Command, Canc
     let (broadcast, _) = broadcast::channel(1024);
     let default_cwd = shared.cwd();
     let default_model = shared.model().map(|model| model.client.name().to_owned()).unwrap_or_default();
-    let terminal_slots = (bound.ip().is_loopback() && std::env::var("ASHIRA_WEB_TERMINAL").as_deref() == Ok("1")).then(|| Semaphore::new(8));
+    // The terminal runs any command as this user: off unless ASHIRA_WEB_TERMINAL=1, then gated by the token like every route.
+    let terminal_slots = (std::env::var("ASHIRA_WEB_TERMINAL").as_deref() == Ok("1")).then(|| Semaphore::new(8));
     let terminal_shutdown = CancellationToken::new();
     let _shutdown = terminal_shutdown.clone().drop_guard();
     let hub = Arc::new(Hub { shared, commands, routing: StdMutex::default(), events: broadcast, default_cwd, default_model, terminal_slots, terminal_shutdown, token });
@@ -175,15 +176,8 @@ async fn terminal_upgrade(mut socket: TcpStream, hub: &Hub, method: &str, id: &s
         let (_, value) = matches.next()?;
         matches.next().is_none().then_some(value.as_str())
     };
-    let same_local_origin = header("origin").zip(header("host")).is_some_and(|(origin, host)| {
-        origin.split_once("://").is_some_and(|(scheme, authority)| matches!(scheme, "http" | "https") && authority.eq_ignore_ascii_case(host))
-            && reqwest::Url::parse(origin).is_ok_and(|url| {
-                url.username().is_empty() && url.password().is_none() && url.path() == "/" && url.query().is_none() && url.fragment().is_none()
-                    && matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"))
-            })
-    });
-    let Some(slots) = hub.terminal_slots.as_ref().filter(|_| same_local_origin && socket.peer_addr().is_ok_and(|addr| addr.ip().is_loopback())) else {
-        return write_response(&mut socket, 403, "Forbidden", "text/plain", b"Terminal requires an explicitly enabled same-origin loopback connection").await;
+    let Some(slots) = hub.terminal_slots.as_ref() else {
+        return write_response(&mut socket, 403, "Forbidden", "text/plain", b"Terminal is off; start the API with ASHIRA_WEB_TERMINAL=1").await;
     };
     let key = header("sec-websocket-key").filter(|key| STANDARD.decode(key).is_ok_and(|bytes| bytes.len() == 16));
     let Some(key) = key.filter(|_| method == "GET" && body.is_empty()

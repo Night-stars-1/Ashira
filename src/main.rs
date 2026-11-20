@@ -89,6 +89,7 @@ ENVIRONMENT:
     ASHIRA_SHELL       shell for the bash tool (default: Git Bash / bash)
     ASHIRA_HOME        data dir (default ~/.ashira)
     ASHIRA_API_TOKEN   required with --serve/--listen; clients send it as a Bearer header or ?token=
+    ASHIRA_WEB_TERMINAL=1  enable the web/App terminal: anyone with the token can run commands as you
 
 GLOBAL MEMORY:
     ~/.ashira/memory.json   saved preferences and facts, shared across projects and sessions

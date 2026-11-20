@@ -9,8 +9,8 @@ import '../api/client.dart';
 import 'theme.dart';
 
 /// The session's shell over `/v1/sessions/{id}/terminal`, like the web's TerminalView.
-/// The server only allows it from loopback with a matching `Origin` and with
-/// `ASHIRA_WEB_TERMINAL=1`; anything else closes with the web's explanation.
+/// The server opens it only with `ASHIRA_WEB_TERMINAL=1`; a refused or dropped
+/// connection shows the web's explanation.
 class SessionTerminal extends StatefulWidget {
   const SessionTerminal({super.key, required this.client, required this.sessionId, required this.cwd, required this.active});
   final AshiraClient client;
@@ -131,8 +131,7 @@ class _SessionTerminalState extends State<SessionTerminal> {
       queryParameters: widget.client.token.isEmpty ? null : {'token': widget.client.token},
     );
     try {
-      // Same origin as the server, which is what the endpoint requires.
-      final socket = await WebSocket.connect(url.toString(), headers: {'origin': '${base.scheme}://${base.authority}'});
+      final socket = await WebSocket.connect(url.toString());
       if (!mounted) {
         socket.close();
         return;
@@ -168,7 +167,7 @@ class _SessionTerminalState extends State<SessionTerminal> {
       _error = reason != null && reason.isNotEmpty
           ? reason
           : wasConnecting
-              ? '无法连接终端。请从本机打开，并确认 API 启动时设置了 ASHIRA_WEB_TERMINAL=1。'
+              ? '无法连接终端。请确认 API 启动时设置了 ASHIRA_WEB_TERMINAL=1。'
               : '终端连接已关闭。';
       _link = _Link.closed;
     });

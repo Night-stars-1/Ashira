@@ -56,7 +56,7 @@ function connect() {
   conn.onclose = (event) => {
     if (socket !== conn) return
     error.value = event.reason || (state.value === 'connecting'
-      ? '无法连接终端。请从本机网页打开，并确认 API 启动时设置了 ASHIRA_WEB_TERMINAL=1。'
+      ? '无法连接终端。请确认 API 启动时设置了 ASHIRA_WEB_TERMINAL=1。'
       : '终端连接已关闭。')
     state.value = 'closed'
     socket = undefined

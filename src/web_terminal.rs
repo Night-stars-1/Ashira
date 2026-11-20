@@ -1,4 +1,4 @@
-//! Bounded bridge between a same-origin local WebSocket and a native shell PTY.
+//! Bounded bridge between a token-authenticated WebSocket and a native shell PTY.
 use std::{io::{Read, Write}, path::PathBuf, time::Duration};
 
 use futures_util::{SinkExt, StreamExt};
