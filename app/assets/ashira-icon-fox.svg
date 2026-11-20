@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 128 128" role="img" aria-labelledby="title">
+  <title id="title">Ashira · 终端狐</title>
+  <defs>
+    <linearGradient id="tile" x2="1" y2="1">
+      <stop stop-color="#39294F"/>
+      <stop offset="1" stop-color="#1C152A"/>
+    </linearGradient>
+    <linearGradient id="fur" x2="0" y2="1">
+      <stop stop-color="#FFC889"/>
+      <stop offset="1" stop-color="#F58A62"/>
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="124" height="124" rx="29" fill="url(#tile)"/>
+  <path d="M26 61 25 32Q25 26 31 29L50 42Q64 37 78 42L97 29Q103 26 103 32L102 61 108 76Q110 80 105 83L70 103Q64 107 58 103L23 83Q18 80 20 76Z" fill="url(#fur)"/>
+  <path d="M33 38 45 46 34 56ZM95 38 83 46 94 56Z" fill="#A64F54"/>
+  <path d="M20 76Q36 69 51 82L64 94 77 82Q92 69 108 76 110 80 105 83L70 103Q64 107 58 103L23 83Q18 80 20 76Z" fill="#FFEDD9"/>
+  <path d="M44 57 54 64 44 71M72 71H84" fill="none" stroke="#302039" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M60 92H68Q70 92 69 94L65.5 98Q64 99.5 62.5 98L59 94Q58 92 60 92Z" fill="#302039"/>
+</svg>

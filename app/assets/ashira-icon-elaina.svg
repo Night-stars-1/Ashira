@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 128 128" role="img" aria-labelledby="title">
+  <title id="title">Ashira · 灰之旅人</title>
+  <defs>
+    <linearGradient id="tile" x2="1" y2="1">
+      <stop stop-color="#40364F"/>
+      <stop offset="1" stop-color="#201B2A"/>
+    </linearGradient>
+    <linearGradient id="silver" x2="0" y2="1">
+      <stop stop-color="#F5F1FA"/>
+      <stop offset="1" stop-color="#C2B9D3"/>
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="124" height="124" rx="29" fill="url(#tile)"/>
+  <g transform="translate(0 4)">
+    <path d="M98 41v10" fill="none" stroke="#D0A773" stroke-width="2"/>
+    <path d="m98 48 5 7-5 7-5-7Z" fill="#EBC88C"/>
+    <path d="M36 67C44 56 48 36 62 25Q67 21 73 26L86 37Q92 42 101 35C98 44 91 48 84 46L74 41C75 51 80 63 91 70C71 69 55 59 36 67Z" fill="url(#silver)"/>
+    <path d="M40 61C59 54 72 63 83 63Q87 68 91 70C71 69 55 59 36 67Z" fill="#D49CBA"/>
+    <path d="M17 81C31 69 46 67 62 71C80 76 94 80 111 65C103 84 91 94 75 94C56 94 38 80 17 81Z" fill="url(#silver)"/>
+    <path d="M17 81C34 73 47 75 62 81C81 88 96 83 111 65C103 84 91 94 75 94C56 94 38 80 17 81Z" fill="#A99CBE"/>
+  </g>
+</svg>

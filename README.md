@@ -34,6 +34,8 @@ flutter build apk --release
 flutter build windows --release
 ```
 
+Android、Windows 和 Web 使用同一款[「灰之旅人」图标](app/assets/ashira-icon-elaina.svg)。Web 的 SVG 副本位于 `web/public/favicon.svg`。
+
 ## 配置
 
 配置放在 `~/.ashira`（可用 `ASHIRA_HOME` 修改）。
