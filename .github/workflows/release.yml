@@ -16,7 +16,7 @@ env:
 
 jobs:
   core:
-    name: Core (${{ matrix.name }})
+    name: ashira-core (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -40,7 +40,7 @@ jobs:
       - name: Package
         shell: bash
         run: |
-          name="ashira-${VERSION:-dev}-${{ matrix.name }}"
+          name="ashira-core-${VERSION:-dev}-${{ matrix.name }}"
           mkdir -p dist/"$name"
           cp target/${{ matrix.target }}/release/${{ matrix.bin }} README.md dist/"$name"/
           cd dist
@@ -48,11 +48,11 @@ jobs:
           rm -r "$name"
       - uses: actions/upload-artifact@v7
         with:
-          name: core-${{ matrix.name }}
+          name: ashira-core-${{ matrix.name }}
           path: dist/*
 
   web:
-    name: Web
+    name: ashira-web
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -66,11 +66,11 @@ jobs:
           cd dist && zip -qr "$name.zip" "$name" && rm -r "$name"
       - uses: actions/upload-artifact@v7
         with:
-          name: web
+          name: ashira-web
           path: dist/*
 
   app:
-    name: App (${{ matrix.name }})
+    name: ashira-app (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -116,7 +116,7 @@ jobs:
           cd ../dist && 7z a "$name.zip" "$name" > /dev/null && rm -r "$name"
       - uses: actions/upload-artifact@v7
         with:
-          name: app-${{ matrix.name }}
+          name: ashira-app-${{ matrix.name }}
           path: dist/*
 
   publish:
