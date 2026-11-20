@@ -49,7 +49,7 @@ class AshiraState extends ChangeNotifier {
   StreamSubscription<AgentEvent>? _events;
   Timer? _reconnect;
   Timer? _notify;
-  Timer? _polling;
+  Timer? _listTimer;
   bool _disposed = false;
 
   bool get busy => turnId != null;
@@ -102,15 +102,13 @@ class AshiraState extends ChangeNotifier {
     asking = {...listing.asking.where((id) => id != shownId), if (question != null && shownId.isNotEmpty) shownId};
     archivedSessions = listing.archivedSessions;
     archivedFolders = listing.archivedFolders;
-    _pollOthers();
   }
 
-  /// Other sessions' turns send no events here; refresh the list until they end.
-  void _pollOthers() {
-    final others = running.any((id) => id != shownId);
-    if (others == (_polling != null)) return;
-    _polling?.cancel();
-    _polling = others ? Timer.periodic(const Duration(seconds: 3), (_) => unawaited(refresh())) : null;
+  /// The server announces every list change (`sessions_changed`), including other
+  /// devices' edits; a burst of them refreshes once.
+  void _listChanged() {
+    _listTimer?.cancel();
+    _listTimer = Timer(const Duration(milliseconds: 150), () => unawaited(refresh()));
   }
 
   Future<void> refresh() async {
@@ -222,6 +220,8 @@ class AshiraState extends ChangeNotifier {
             naming.remove(id);
           }
           _changed();
+        } else if (event.type == 'sessions_changed') {
+          _listChanged();
         } else {
           _onEvent(event);
         }
@@ -463,7 +463,7 @@ class AshiraState extends ChangeNotifier {
   void dispose() {
     _disposed = true;
     _notify?.cancel();
-    _polling?.cancel();
+    _listTimer?.cancel();
     _closeEvents();
     client.close();
     super.dispose();

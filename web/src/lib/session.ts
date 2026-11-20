@@ -1,4 +1,4 @@
-import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { api, ApiError, connection, parseEvent, parseReplyMetrics, type AgentEvent, type Archive, type ConfirmRequest, type QuestionAnswers, type QuestionRequest, type SessionNode, type Status } from './api'
 import { toast } from './toast'
 import type { Block, ReplyPart, TextFile } from '@/components/Transcript.vue'
@@ -94,12 +94,13 @@ export function useAshira() {
     if (turnId.value && shownId.value && question.value !== null) ids.add(shownId.value)
     return ids
   })
-  // Other sessions' turns send no events to this page; poll until they end.
-  let polling: ReturnType<typeof setInterval> | undefined
-  watch(() => listedRunning.value.some((id) => id !== shownId.value), (other) => {
-    clearInterval(polling)
-    polling = other ? setInterval(() => { void refresh().catch(() => {}) }, 3000) : undefined
-  })
+  // The server announces every list change (`sessions_changed`), including other pages'
+  // and other devices' edits; a burst of them refreshes once.
+  let listTimer: ReturnType<typeof setTimeout> | undefined
+  function listChanged() {
+    clearTimeout(listTimer)
+    listTimer = setTimeout(() => { void refresh().catch(() => {}) }, 150)
+  }
   const modelTitle = computed(() => titled(model.value, modelName.value))
   const sessionName = computed(() => shownId.value ? (sessionPrompt(tree.value, shownId.value) || '空会话') : '新会话')
 
@@ -240,7 +241,8 @@ export function useAshira() {
           if (event.title) eachSession((item) => { if (item.id === id && !item.renamed) item.prompt = event.title! })
           titling.delete(id)
         }
-      } else if (event) onEvent(event)
+      } else if (event?.type === 'sessions_changed') listChanged()
+      else if (event) onEvent(event)
     }
   }
 
@@ -390,7 +392,7 @@ export function useAshira() {
       }
     }
   })
-  onUnmounted(() => { source?.close(); clearInterval(polling) })
+  onUnmounted(() => { source?.close(); clearTimeout(listTimer) })
 
   return { status, tree, archive, blocks, draft, model, modelTitle, fast, connected, loading, naming, confirm, question,
     busy, hasReplyText, shownId, shownCwd, sessionName, needsConnection, runningIds, askingIds, send, openSession, decide, answer, interrupt, refresh, updateSettings, renameSession, setArchived }

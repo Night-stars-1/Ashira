@@ -116,8 +116,11 @@ pub async fn start(shared: Arc<Shared>, listener: TcpListener, token: String) ->
 /// Turns one runtime's agent events into frames for the shared event stream.
 async fn pump(hub: Arc<Hub>, runtime: Arc<Runtime>, mut events: tokio::sync::mpsc::UnboundedReceiver<Event>) {
     while let Some(event) = events.recv().await {
+        // A turn starting or ending changes which sessions the list marks as running.
+        let listed = matches!(event, Event::WebStarted | Event::BackgroundTurnStarted { .. } | Event::Done(_));
         let frame = encode(&runtime.shared, &mut runtime.routing.lock().expect("routing"), event);
         if let Some(frame) = frame { let _ = hub.events.send(frame); }
+        if listed { hub.sessions_changed(); }
     }
 }
 
@@ -237,6 +240,7 @@ async fn dispatch(hub: &Arc<Hub>, method: &str, path: &str, query: &str, body: &
         ("POST", "/v1/title") => {
             let id = json_body.get("id").and_then(Value::as_str).unwrap_or("");
             session::set_title(id, json_body.get("title").and_then(Value::as_str).unwrap_or(""))?;
+            hub.sessions_changed();
             Ok(Response::Json { status: 200, body: json!({"ok": true}) })
         }
         ("POST", "/v1/archive") => {
@@ -244,12 +248,14 @@ async fn dispatch(hub: &Arc<Hub>, method: &str, path: &str, query: &str, body: &
             let key = json_body.get("key").and_then(Value::as_str).unwrap_or("");
             let archived = json_body.get("archived").and_then(Value::as_bool).ok_or("archived must be true or false")?;
             session::set_archived(kind, key, archived)?;
+            hub.sessions_changed();
             Ok(Response::Json { status: 200, body: json!({"ok": true}) })
         }
         ("POST", "/v1/alias") => {
             let path = json_body.get("path").and_then(Value::as_str).unwrap_or("");
             let alias = json_body.get("alias").and_then(Value::as_str).unwrap_or("");
             session::set_alias(path, alias)?;
+            hub.sessions_changed();
             Ok(Response::Json { status: 200, body: json!({"ok": true}) })
         }
         ("GET", "/v1/browse") => Ok(Response::Json { status: 200, body: browse(query_value(query, "path").as_deref().unwrap_or("")).await? }),
@@ -265,6 +271,7 @@ async fn dispatch(hub: &Arc<Hub>, method: &str, path: &str, query: &str, body: &
                 session.persist()?;
                 Ok(json!({"sessionId": session.id(), "cwd": cwd}))
             }).await.map_err(|error| error.to_string())??;
+            hub.sessions_changed();
             Ok(Response::Json { status: 200, body: result })
         }
         ("GET", "/v1/models") => Ok(Response::Json { status: 200, body: models(hub) }),
@@ -938,6 +945,12 @@ impl Hub {
         self.runtimes.lock().expect("runtimes").get(id).cloned()
     }
 
+    /// Tells every open page that the session list changed (a session was created, renamed,
+    /// archived, or started or ended a turn), so sidebars refresh without polling.
+    fn sessions_changed(&self) {
+        let _ = self.events.send(Frame { session: Arc::from(""), json: Arc::from(json!({"type": "sessions_changed"}).to_string()) });
+    }
+
     /// Stops every session runtime, then the process-wide services.
     async fn close(&self) {
         let runtimes: Vec<_> = self.runtimes.lock().expect("runtimes").drain().map(|(_, runtime)| runtime).collect();
@@ -1267,12 +1280,16 @@ mod tests {
         (head.split_whitespace().nth(1).unwrap().parse().unwrap(), serde_json::from_str(body).unwrap())
     }
 
+    /// The next event for the session, skipping `sessions_changed`: list notices go to
+    /// every page and land wherever creates, renames and turn boundaries happen to fall.
     async fn next_event(lines: &mut BufReader<TcpStream>) -> Value {
         tokio::time::timeout(Duration::from_secs(3), async {
             loop {
                 let mut line = String::new();
                 assert_ne!(lines.read_line(&mut line).await.unwrap(), 0);
-                if let Some(json) = line.strip_prefix("data: ") { return serde_json::from_str(json).unwrap(); }
+                let Some(json) = line.strip_prefix("data: ") else { continue };
+                let event: Value = serde_json::from_str(json).unwrap();
+                if event["type"] != "sessions_changed" { return event; }
             }
         }).await.expect("SSE event")
     }
