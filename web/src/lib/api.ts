@@ -76,6 +76,9 @@ export type ReplyMetrics = {
 
 export type Status = UsageStatistics & {
   ok: boolean
+  /** The server's ashira version, and a newer release tag it can update to (null when current). */
+  version: string
+  update: string | null
   cwd: string
   sessionId: string
   model: string | null
@@ -226,6 +229,8 @@ function status(body: unknown): Status {
   const value = record(body)
   return {
     ok: value.ok === true,
+    version: text(value.version),
+    update: typeof value.update === 'string' ? value.update : null,
     cwd: text(value.cwd),
     sessionId: text(value.sessionId),
     model: typeof value.model === 'string' ? value.model : null,

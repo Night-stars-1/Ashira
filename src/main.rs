@@ -37,6 +37,7 @@ mod tools;
 mod title;
 mod transcript;
 mod tui;
+mod update;
 mod web_terminal;
 
 use std::{
@@ -61,6 +62,7 @@ const HELP: &str = "ashira — a fast terminal coding agent
 
 USAGE:
     ashira [OPTIONS] [PROMPT]
+    ashira update [VERSION]  Replace this program with the latest (or given) GitHub release
 
 OPTIONS:
     -p, --print <PROMPT>   Run one prompt non-interactively and print the result
@@ -161,8 +163,19 @@ fn main() -> ExitCode {
             runtime.shutdown_background();
             return match result { Ok(()) => ExitCode::SUCCESS, Err(error) => { eprintln!("ashira worker: {error}"); ExitCode::FAILURE } };
         }
+        Some(word) if word == std::ffi::OsStr::new("update") => {
+            let version = env::args().nth(2);
+            if env::args_os().len() > 3 || version.as_deref().is_some_and(|v| v.starts_with('-')) {
+                eprintln!("ashira: usage: ashira update [VERSION]");
+                return ExitCode::from(2);
+            }
+            let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("update runtime");
+            let result = runtime.block_on(update::run(version.as_deref()));
+            return match result { Ok(message) => { println!("{message}"); ExitCode::SUCCESS } Err(error) => { eprintln!("ashira update: {error}"); ExitCode::FAILURE } };
+        }
         _ => {}
     }
+    update::clean_leftover();
     let args = match parse_args() {
         Ok(a) => a,
         Err(e) => {
@@ -325,6 +338,13 @@ fn run(args: Args, cwd: std::path::PathBuf, rt: &tokio::runtime::Runtime) -> Res
                     let _ = shared.events.send(Event::Notice(format!("更新模型资料失败（{e}），继续使用缓存")));
                 }
             }
+        });
+    }
+    if print.is_none() {
+        // Newer release: a notice in the TUI and the web/App (cached for a day, see update.rs).
+        let shared = shared.clone();
+        rt.spawn(async move {
+            if let Some(notice) = update::notice().await { let _ = shared.events.send(Event::Notice(notice)); }
         });
     }
     if shared.model().is_none() && !shared.registry().source().is_file() {

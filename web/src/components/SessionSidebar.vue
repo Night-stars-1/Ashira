@@ -5,7 +5,7 @@ import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import type { SessionNode } from '@/lib/api'
 
-defineProps<{ tree: SessionNode[]; activeId: string; runningId: string; asking: boolean; connected: boolean }>()
+defineProps<{ tree: SessionNode[]; activeId: string; runningId: string; asking: boolean; connected: boolean; update?: string | null }>()
 const emit = defineEmits<{ resume: [id: string]; alias: [path: string, name: string]; rename: [id: string, title: string]; archive: [kind: 'session' | 'folder', key: string]; create: []; settings: [] }>()
 </script>
 
@@ -37,6 +37,7 @@ const emit = defineEmits<{ resume: [id: string]; alias: [path: string, name: str
       <p v-if="tree.length === 0" class="px-2 py-3 text-sm text-muted-foreground">还没有会话</p>
     </ScrollArea>
     <div class="border-t border-sidebar-border p-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
+      <p v-if="update" role="status" class="px-2 pb-2 text-xs text-muted-foreground">服务端有新版本 {{ update }}，运行 <code class="font-mono">ashira update</code> 更新</p>
       <Button class="w-full justify-start" variant="ghost" @click="emit('settings')">
         <Settings /> 设置
       </Button>

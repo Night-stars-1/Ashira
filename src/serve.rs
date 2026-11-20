@@ -433,6 +433,9 @@ async fn model_config(hub: &Hub) -> Result<Value, String> {
 async fn status(hub: &Hub) -> Value {
     with_statistics(json!({
         "ok": true,
+        "version": crate::update::CURRENT,
+        // A newer release tag the server can update to with `ashira update`, else null.
+        "update": crate::update::cached(),
         "cwd": hub.shared.cwd().display().to_string(),
         "sessionId": hub.shared.session_id(),
         "model": hub.shared.model().map(|model| model.client.name().to_owned()),
