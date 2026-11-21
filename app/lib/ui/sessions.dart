@@ -25,6 +25,9 @@ class SessionList extends StatelessWidget {
     required this.marks,
     required this.connected,
     this.serverUpdate,
+    this.restartPending = false,
+    this.restarting = false,
+    this.onRestart,
     required this.onSelect,
     required this.onCreate,
     required this.onSettings,
@@ -39,6 +42,9 @@ class SessionList extends StatelessWidget {
   final bool connected;
   /// A newer server release tag (`ashira update` installs it), else null.
   final String? serverUpdate;
+  /// `ashira update` replaced the server's program; [onRestart] restarts it into the new build.
+  final bool restartPending, restarting;
+  final VoidCallback? onRestart;
   final void Function(String id) onSelect;
   final VoidCallback onCreate, onSettings;
   /// Opens settings on 关于, where updates are shown and installed.
@@ -97,7 +103,24 @@ class SessionList extends StatelessWidget {
                   for (final node in tree) _Project(node: node, depth: 0, activeId: activeId, marks: marks, onSelect: onSelect, onAction: onAction),
                 ]),
         ),
-        // One quiet line when the App or the server has a newer release; 关于 has the details.
+        // A restart waiting for `ashira update`'s new build comes first; otherwise one quiet line
+        // when the App or the server has a newer release (关于 has the details).
+        if (restartPending)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 8, 4),
+            child: Row(children: [
+              Container(width: 6, height: 6, decoration: BoxDecoration(shape: BoxShape.circle, color: scheme.primary)),
+              const SizedBox(width: 8),
+              Expanded(child: Text('服务端已更新，重启后生效', maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 12, color: scheme.mutedForeground))),
+              FilledButton.icon(
+                onPressed: restarting ? null : onRestart,
+                icon: const Icon(Icons.restart_alt, size: 14),
+                label: Text(restarting ? '重启中' : '重启'),
+                style: FilledButton.styleFrom(minimumSize: const Size(0, 26), padding: const EdgeInsets.symmetric(horizontal: 8), textStyle: const TextStyle(fontSize: 12)),
+              ),
+            ]),
+          )
+        else
         ListenableBuilder(
           listenable: appUpdate,
           builder: (context, _) {

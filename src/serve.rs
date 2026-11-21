@@ -45,6 +45,8 @@ struct Hub {
     token: String,
     /// `--web`: the web build served on every non-`/v1` path, and what 更新网页 replaces.
     web: Option<PathBuf>,
+    /// Cancelled by `POST /v1/restart`: the server closes and `main` re-launches the new build.
+    restart: CancellationToken,
 }
 
 /// One session's agent: its own `Shared`, command queue and turn routing.
@@ -96,12 +98,12 @@ fn next_turn() -> String {
     format!("{now:x}-{:x}", NEXT.fetch_add(1, Ordering::Relaxed))
 }
 
-pub async fn start(shared: Arc<Shared>, listener: TcpListener, token: String, web: Option<PathBuf>) -> Result<(), String> {
+/// `Ok(true)`: a client asked to restart (`POST /v1/restart`); the caller re-launches the program.
+pub async fn start(shared: Arc<Shared>, listener: TcpListener, token: String, web: Option<PathBuf>) -> Result<bool, String> {
     let bound = listener.local_addr().map_err(|error| error.to_string())?;
     eprintln!("ashira api http://{bound}");
     if let Some(dir) = &web {
-        if crate::web::installed(dir) { eprintln!("ashira web http://{bound}/ ({})", dir.display()); }
-        else { eprintln!("ashira web: {} 还没有网页，可在命令行运行 `ashira update` 或打开 http://{bound}/ 安装", dir.display()); }
+        eprintln!("ashira web http://{bound}/ ({})", dir.display());
     }
     let (broadcast, _) = broadcast::channel(1024);
     let default_cwd = shared.cwd();
@@ -110,10 +112,12 @@ pub async fn start(shared: Arc<Shared>, listener: TcpListener, token: String, we
     let terminal_slots = (std::env::var("ASHIRA_WEB_TERMINAL").as_deref() == Ok("1")).then(|| Semaphore::new(8));
     let terminal_shutdown = CancellationToken::new();
     let _shutdown = terminal_shutdown.clone().drop_guard();
-    let hub = Arc::new(Hub { shared, runtimes: StdMutex::default(), events: broadcast, default_cwd, default_model, terminal_slots, terminal_shutdown, token, web });
+    let hub = Arc::new(Hub { shared, runtimes: StdMutex::default(), events: broadcast, default_cwd, default_model, terminal_slots, terminal_shutdown, token, web, restart: CancellationToken::new() });
     let result = tokio::select! {
-        result = accept(listener, hub.clone()) => result,
-        _ = tokio::signal::ctrl_c() => Ok(()),
+        result = accept(listener, hub.clone()) => result.map(|()| false),
+        _ = tokio::signal::ctrl_c() => Ok(false),
+        // A moment so the restart reply reaches the client before sessions close.
+        _ = hub.restart.cancelled() => { tokio::time::sleep(Duration::from_millis(300)).await; Ok(true) }
     };
     hub.close().await;
     result
@@ -349,6 +353,12 @@ async fn dispatch(hub: &Arc<Hub>, method: &str, path: &str, query: &str, body: &
             Ok(Response::Json { status: 200, body: crate::mcp::config::entry(&hub.shared.cwd(), &name)? })
         }
         ("GET", "/v1/memory") => Ok(Response::Json { status: 200, body: memory(hub).await? }),
+        ("POST", "/v1/restart") => {
+            // Turns in progress would be cut off mid-answer.
+            if hub.busy() { return Err("还有会话正在回复，结束后再重启".into()); }
+            hub.restart.cancel();
+            Ok(Response::Json { status: 200, body: json!({"ok": true}) })
+        }
         ("POST", "/v1/web/update") => {
             let dir = hub.web.clone().ok_or("服务端没有用 --web 托管网页")?;
             let tag = crate::update::install_web(&dir).await?;
@@ -503,6 +513,8 @@ async fn status(hub: &Hub) -> Value {
         "version": crate::update::CURRENT,
         // A newer release tag the server can update to with `ashira update`, else null.
         "update": crate::update::cached(),
+        // `ashira update` replaced the program while this one runs: a restart loads the new build.
+        "restartPending": crate::update::replaced_since_start(),
         // `--web`: the version the served page is, so it can tell it is behind the core.
         "web": hub.web.as_deref().map(|dir| json!({"version": crate::web::installed_version(dir)})),
         "cwd": hub.shared.cwd().display().to_string(),
@@ -1023,6 +1035,14 @@ impl Hub {
         let _ = self.events.send(Frame { session: Arc::from(""), json: Arc::from(json!({"type": "sessions_changed"}).to_string()) });
     }
 
+    /// Any session with a turn running or queued; a restart would cut it off.
+    fn busy(&self) -> bool {
+        self.runtimes.lock().expect("runtimes").values().any(|runtime| {
+            let routing = runtime.routing.lock().expect("routing");
+            routing.active.is_some() || routing.queued.is_some() || runtime.shared.busy()
+        })
+    }
+
     /// Stops every session runtime, then the process-wide services.
     async fn close(&self) {
         let runtimes: Vec<_> = self.runtimes.lock().expect("runtimes").drain().map(|(_, runtime)| runtime).collect();
@@ -1440,11 +1460,11 @@ mod tests {
         Arc::new(Shared::new(Registry::empty(), None, mcp, Plugins::empty(), root.to_path_buf(), events_tx, true, false))
     }
 
-    async fn serve(shared: Arc<Shared>, token: &str) -> (std::net::SocketAddr, tokio::task::JoinHandle<Result<(), String>>) {
+    async fn serve(shared: Arc<Shared>, token: &str) -> (std::net::SocketAddr, tokio::task::JoinHandle<Result<bool, String>>) {
         serve_web_dir(shared, token, None).await
     }
 
-    async fn serve_web_dir(shared: Arc<Shared>, token: &str, web: Option<PathBuf>) -> (std::net::SocketAddr, tokio::task::JoinHandle<Result<(), String>>) {
+    async fn serve_web_dir(shared: Arc<Shared>, token: &str, web: Option<PathBuf>) -> (std::net::SocketAddr, tokio::task::JoinHandle<Result<bool, String>>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         (addr, tokio::spawn(start(shared, listener, token.into(), web)))
@@ -1464,7 +1484,10 @@ mod tests {
         assert_eq!(status(exchange(addr, "GET /v1?token=s3cret HTTP/1.1\r\nConnection: close\r\n\r\n").await), "200");
         assert_eq!(status(exchange(addr, "GET /v1/sessions/x/terminal HTTP/1.1\r\nConnection: close\r\n\r\n").await), "401");
         assert_eq!(status(exchange(addr, "OPTIONS /v1 HTTP/1.1\r\nConnection: close\r\n\r\n").await), "204");
-        server.abort();
+        assert_eq!(status(exchange(addr, "POST /v1/restart HTTP/1.1\r\nConnection: close\r\n\r\n").await), "401");
+        // An authorized restart answers, then the server ends asking `main` to re-launch it.
+        assert_eq!(status(exchange(addr, "POST /v1/restart HTTP/1.1\r\nAuthorization: Bearer s3cret\r\nConnection: close\r\n\r\n").await), "200");
+        assert_eq!(tokio::time::timeout(Duration::from_secs(5), server).await.expect("server stops").unwrap(), Ok(true));
     }
 
     #[tokio::test]
@@ -1502,7 +1525,7 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let (broadcast, _) = broadcast::channel(1024);
-        let hub = Arc::new(Hub { shared: shared.clone(), runtimes: StdMutex::default(), events: broadcast, default_cwd: root.clone(), default_model: String::new(), terminal_slots: None, terminal_shutdown: CancellationToken::new(), token: TOKEN.into(), web: None });
+        let hub = Arc::new(Hub { shared: shared.clone(), runtimes: StdMutex::default(), events: broadcast, default_cwd: root.clone(), default_model: String::new(), terminal_slots: None, terminal_shutdown: CancellationToken::new(), token: TOKEN.into(), web: None, restart: CancellationToken::new() });
         let server = tokio::spawn(accept(listener, hub.clone()));
         let session = request(addr, "POST", "/v1/sessions", "{}").await.1["sessionId"].as_str().unwrap().to_owned();
         let path = format!("/v1/sessions/{session}");

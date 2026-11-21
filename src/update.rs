@@ -345,6 +345,34 @@ fn replace(target: &Path, binary: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
+/// The running program's file as it was at startup: `ashira update` replacing it changes this.
+static STARTED_AS: std::sync::OnceLock<Option<(SystemTime, u64)>> = std::sync::OnceLock::new();
+
+/// This program's path. Once `ashira update` replaced it, Linux reports the running (now
+/// unlinked) file as `<path> (deleted)`; the path itself holds the new build.
+pub fn program() -> io::Result<PathBuf> {
+    let exe = env::current_exe()?;
+    Ok(match exe.to_str().and_then(|path| path.strip_suffix(" (deleted)")) {
+        Some(path) => PathBuf::from(path),
+        None => exe,
+    })
+}
+
+fn executable_stamp() -> Option<(SystemTime, u64)> {
+    let meta = fs::metadata(program().ok()?).ok()?;
+    Some((meta.modified().ok()?, meta.len()))
+}
+
+/// Called once at startup, before anything can replace the file.
+pub fn remember_started() {
+    let _ = STARTED_AS.set(executable_stamp());
+}
+
+/// Whether the program on disk is no longer the one running (an update is waiting for a restart).
+pub fn replaced_since_start() -> bool {
+    matches!((STARTED_AS.get(), executable_stamp()), (Some(Some(started)), Some(now)) if *started != now)
+}
+
 /// Removes the previous executable that a Windows update had to leave behind while it ran.
 pub fn clean_leftover() {
     #[cfg(windows)]

@@ -8,7 +8,32 @@ const viewKey = 'ashira.session'
 export function useAshira() {
   const status = ref<Status | null>(null)
   /** The server's version and newer release, from `GET /v1`; session views don't carry them. */
-  const server = ref<{ version: string; update: string | null; web: Status['web'] }>({ version: '', update: null, web: null })
+  const server = ref<{ version: string; update: string | null; restartPending: boolean; web: Status['web'] }>({ version: '', update: null, restartPending: false, web: null })
+  const restarting = ref(false)
+  /** Asks the server to re-launch its updated program, waits until it answers again, then
+   *  reloads so the page (and a `--web` build the new core just installed) is current. */
+  async function restartServer() {
+    restarting.value = true
+    try {
+      await api.restart()
+      const before = server.value.version
+      for (let tries = 0; tries < 60; tries++) {
+        await new Promise((resolve) => setTimeout(resolve, 1000))
+        const status = await api.status().catch(() => null)
+        if (status && (status.version !== before || !status.restartPending)) { location.reload(); return }
+      }
+      throw new Error('服务端没有在 60 秒内恢复，请检查服务器')
+    } catch (reason) {
+      restarting.value = false
+      fail(reason, '重启失败')
+    }
+  }
+  /** Server-wide facts from `GET /v1`, re-read on every stream (re)connect so an
+   *  `ashira update` on the server shows its restart button on pages already open. */
+  async function refreshServer() {
+    const service = await api.status()
+    server.value = { version: service.version, update: service.update, restartPending: service.restartPending, web: service.web }
+  }
   const tree = ref<SessionNode[]>([])
   // Sessions with a turn running on the server, from the last list refresh.
   const listedRunning = ref<string[]>([])
@@ -223,7 +248,11 @@ export function useAshira() {
   function connect(id: string) {
     const stream = api.events(id)
     source = stream
-    stream.onopen = () => { if (source === stream) connected.value = true }
+    stream.onopen = () => {
+      if (source !== stream) return
+      connected.value = true
+      void refreshServer().catch(() => {})
+    }
     stream.onerror = () => {
       if (source !== stream) return
       // EventSource retries by itself; announce the drop once, not every retry.
@@ -374,7 +403,7 @@ export function useAshira() {
       listedAsking.value = listing.asking
       archive.value = listing.archive
       initialCwd.value = service.cwd
-      server.value = { version: service.version, update: service.update, web: service.web }
+      server.value = { version: service.version, update: service.update, restartPending: service.restartPending, web: service.web }
       if (mine !== view) return
       const ids = listing.tree.flatMap(function collect(node): string[] {
         return [...node.sessions.map((item) => item.id), ...node.children.flatMap(collect)]
@@ -397,7 +426,7 @@ export function useAshira() {
   })
   onUnmounted(() => { source?.close(); clearTimeout(listTimer) })
 
-  return { status, server, tree, archive, blocks, draft, model, modelTitle, fast, connected, loading, naming, confirm, question,
+  return { status, server, refreshServer, restarting, restartServer, tree, archive, blocks, draft, model, modelTitle, fast, connected, loading, naming, confirm, question,
     busy, hasReplyText, shownId, shownCwd, sessionName, needsConnection, runningIds, askingIds, send, openSession, decide, answer, interrupt, refresh, updateSettings, renameSession, setArchived }
 }
 

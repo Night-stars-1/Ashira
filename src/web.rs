@@ -25,6 +25,12 @@ pub fn installed(dir: &Path) -> bool {
     dir.join("index.html").is_file()
 }
 
+/// Empty, or installed by `ashira` at a release other than this core's. A hand-copied
+/// build (no version marker) is the owner's choice and is left alone.
+pub fn needs_install(dir: &Path) -> bool {
+    !installed(dir) || installed_version(dir).is_some_and(|version| version != crate::update::CURRENT)
+}
+
 /// The release version (`0.2.4`) the installer put there; None for a hand-copied build.
 pub fn installed_version(dir: &Path) -> Option<String> {
     fs::read_to_string(dir.join(MARKER)).ok().map(|text| text.trim().to_owned()).filter(|text| !text.is_empty())

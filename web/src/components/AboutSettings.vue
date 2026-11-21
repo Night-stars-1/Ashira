@@ -7,7 +7,8 @@ import { Button } from '@/components/ui/button'
 import { api } from '@/lib/api'
 import { checkWebUpdate, newer, webUpdate, webVersion } from '@/lib/update'
 
-const props = defineProps<{ serverVersion: string; serverUpdate: string | null; hosted: boolean }>()
+const props = defineProps<{ serverVersion: string; serverUpdate: string | null; hosted: boolean; restartPending: boolean; restarting: boolean }>()
+const emit = defineEmits<{ restart: [] }>()
 
 const releases = 'https://github.com/Night-stars-1/Ashira/releases'
 const shown = (version: string) => (version ? `v${version.replace(/^v/, '')}` : '未知')
@@ -85,7 +86,11 @@ const notesOpen = ref(false)
           <p class="text-sm">服务端</p>
           <p class="text-xs text-muted-foreground tabular-nums">{{ shown(serverVersion) }}</p>
         </div>
-        <Badge v-if="serverBehind" variant="default" title="在服务器上运行 ashira update 更新">可更新到 {{ serverBehind }}</Badge>
+        <template v-if="restartPending">
+          <Badge variant="default">已更新，待重启</Badge>
+          <Button type="button" size="sm" :disabled="restarting" @click="emit('restart')">{{ restarting ? '重启中…' : '重启' }}</Button>
+        </template>
+        <Badge v-else-if="serverBehind" variant="default" title="在服务器上运行 ashira update 更新">可更新到 {{ serverBehind }}</Badge>
         <Badge v-else-if="serverVersion" variant="secondary">已是最新</Badge>
       </li>
     </ul>

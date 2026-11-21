@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../state/ashira_state.dart';
@@ -116,19 +118,23 @@ class _HomePageState extends State<HomePage> {
         marks: SessionMarks(running: state.running, asking: state.asking, naming: state.naming),
         connected: state.connected,
         serverUpdate: state.serverUpdate,
+        restartPending: state.restartPending,
+        restarting: state.restarting,
+        onRestart: state.restartServer,
         onSelect: _select,
         onCreate: _create,
-        onSettings: () {
-          _scaffold.currentState?.closeDrawer();
-          showSettings(context, state, onDisconnect: widget.onDisconnect);
-        },
-        onAbout: () {
-          _scaffold.currentState?.closeDrawer();
-          showSettings(context, state, onDisconnect: widget.onDisconnect, tab: 'about');
-        },
+        onSettings: () => _settings(),
+        onAbout: () => _settings(tab: 'about'),
         onCollapse: collapsible ? () => setState(() => _sessionsOpen = false) : null,
         onAction: _action,
       );
+
+  /// Opens settings, re-reading the server's state first so a pending restart shows there.
+  void _settings({String tab = 'models'}) {
+    _scaffold.currentState?.closeDrawer();
+    unawaited(state.refreshServer().catchError((Object _) {}));
+    showSettings(context, state, onDisconnect: widget.onDisconnect, tab: tab);
+  }
 
   Widget? _files({bool windowButtons = false}) => state.shownId.isEmpty
       ? null

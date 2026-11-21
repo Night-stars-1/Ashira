@@ -187,6 +187,7 @@ fn main() -> ExitCode {
         _ => {}
     }
     update::clean_leftover();
+    update::remember_started();
     let args = match parse_args() {
         Ok(a) => a,
         Err(e) => {
@@ -383,18 +384,45 @@ fn run(args: Args, cwd: std::path::PathBuf, rt: &tokio::runtime::Runtime) -> Res
     });
     if let Some((listen, api_token, web_dir)) = api {
         let addr: std::net::SocketAddr = listen.parse().map_err(|error| format!("--listen: {error}"))?;
-        let listener = rt.block_on(tokio::net::TcpListener::bind(addr)).map_err(|error| error.to_string())?;
+        // A restart's new process can start before the old one has let go of the port.
+        let listener = rt.block_on(async {
+            let restarted = env::var_os(RESTARTED).is_some();
+            let mut tries = 0;
+            loop {
+                match tokio::net::TcpListener::bind(addr).await {
+                    Err(error) if restarted && error.kind() == std::io::ErrorKind::AddrInUse && tries < 50 => {
+                        tries += 1;
+                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    }
+                    result => break result,
+                }
+            }
+        }).map_err(|error| error.to_string())?;
         // Each session gets its own runtime; this agent only stays idle as the template's
         // owner. Its events (process-wide notices) have no session page to go to.
         drop(cmd_tx);
         let mut ev_rx = ev_rx;
         rt.spawn(async move { while ev_rx.recv().await.is_some() {} });
+        // An empty folder, or one at another release (the core was just updated), gets this
+        // core's web build in the background; the API serves meanwhile, and if it fails the
+        // install page in its place still offers it.
+        if let Some(dir) = web_dir.clone().filter(|dir| web::needs_install(dir)) {
+            eprintln!("ashira web: 正在下载 v{} 的网页到 {} …", update::CURRENT, dir.display());
+            rt.spawn(async move {
+                match update::install_web(&dir).await {
+                    Ok(tag) => eprintln!("ashira web: 已安装 {tag}"),
+                    Err(error) => eprintln!("ashira web: 网页下载失败：{error}（打开网页可重试，或运行 `ashira update`）"),
+                }
+            });
+        }
         let serve_result = rt.block_on(serve::start(shared.clone(), listener, api_token, web_dir));
         rt.block_on(async {
             agent_task.await.ok();
             mcp.shutdown().await;
         });
-        serve_result?;
+        if serve_result? {
+            relaunch()?;
+        }
         return Ok(ExitCode::SUCCESS);
     }
     let result = tui::run(shared.clone(), cmd_tx, ev_rx, tui::Startup { session_id, resumed, notices, replay, initial_prompt });
@@ -412,6 +440,36 @@ fn run(args: Args, cwd: std::path::PathBuf, rt: &tokio::runtime::Runtime) -> Res
         println!("\n使用以下命令恢复此会话：\n{command}");
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// Marks the process `relaunch` starts, so it waits for the port its parent is releasing.
+const RESTARTED: &str = "ASHIRA_RESTARTED";
+
+/// `POST /v1/restart`: starts the program now on disk (the updated build) with the same
+/// arguments, environment and directory. Its output goes where this process's went when that
+/// was a file or terminal; a pipe that closes as this process exits (a supervisor capturing
+/// it) would end the new one at its first log line, so then it writes nowhere.
+fn relaunch() -> Result<(), String> {
+    let exe = update::program().map_err(|error| format!("找不到当前程序：{error}"))?;
+    eprintln!("ashira: 正在重启 {}", exe.display());
+    let mut command = std::process::Command::new(&exe);
+    command.args(env::args_os().skip(1)).env(RESTARTED, "1").stdin(std::process::Stdio::null());
+    if !io::stderr().is_terminal() {
+        command.stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // Outlives this process's console and job instead of closing with it.
+        const DETACHED_PROCESS: u32 = 0x0000_0008;
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+        const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
+        if command.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB).spawn().is_ok() { return Ok(()); }
+        // A job that forbids breakaway: start inside it instead.
+        command.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
+    }
+    command.spawn().map_err(|error| format!("重启失败：{error}"))?;
+    Ok(())
 }
 
 fn resume_command(session: &Session, cwd: &std::path::Path) -> Option<String> {

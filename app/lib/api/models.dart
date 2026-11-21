@@ -72,6 +72,7 @@ class Status {
     this.statistics = const Statistics(),
     this.version = '',
     this.update,
+    this.restartPending = false,
   });
   factory Status.fromJson(Object? json) {
     final m = asMap(json);
@@ -88,6 +89,7 @@ class Status {
       statistics: Statistics.fromJson(m),
       version: str(m['version']),
       update: optStr(m['update']),
+      restartPending: m['restartPending'] == true,
     );
   }
   final String cwd, sessionId;
@@ -100,6 +102,8 @@ class Status {
   /// The server's ashira version, and a newer release tag it can update to (null when current).
   final String version;
   final String? update;
+  /// `ashira update` replaced the program while it runs; a restart loads the new build.
+  final bool restartPending;
 
   Status copyWith({String? model, String? modelName, int? context, Statistics? statistics}) => Status(
         cwd: cwd,
@@ -114,6 +118,7 @@ class Status {
         statistics: statistics ?? this.statistics,
         version: version,
         update: update,
+        restartPending: restartPending,
       );
 }
 

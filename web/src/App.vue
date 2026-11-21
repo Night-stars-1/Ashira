@@ -33,7 +33,7 @@ const aliasPath = ref('')
 const aliasName = ref('')
 const aliasError = ref('')
 const {
-  status, server, tree, archive, blocks, draft, model, modelTitle, fast, connected, loading, naming, confirm, question,
+  status, server, refreshServer, restarting, restartServer, tree, archive, blocks, draft, model, modelTitle, fast, connected, loading, naming, confirm, question,
   busy, hasReplyText, shownId, shownCwd, sessionName, needsConnection, runningIds, askingIds, send, openSession, decide, answer, interrupt, refresh, updateSettings, renameSession, setArchived,
 } = useAshira()
 
@@ -70,6 +70,7 @@ function showSettings(tab?: SettingsTab) {
   drawer.value = null
   if (tab) settingsTab.value = tab
   settingsOpen.value = true
+  void refreshServer().catch(() => {})
 }
 
 function selectSession(id: string) {
@@ -127,8 +128,8 @@ function saveRename() {
     <!-- Folds away to the left; the chat header brings it back. -->
     <div v-if="desktop" class="flex shrink-0 overflow-hidden border-sidebar-border transition-[width] duration-200 ease-out motion-reduce:transition-none" :class="sessionsOpen ? 'w-64 border-r' : 'w-0'">
       <div class="flex w-64 shrink-0">
-        <SessionSidebar :tree="tree" :active-id="shownId" :running="runningIds" :asking="askingIds" :connected="connected" :update="server.update" collapsible
-          @resume="selectSession" @alias="openAlias" @rename="openRename" @archive="(kind, key) => setArchived(kind, key, true)" @create="showProjectPicker" @settings="showSettings()" @about="showSettings('about')" @collapse="sessionsOpen = false" />
+        <SessionSidebar :tree="tree" :active-id="shownId" :running="runningIds" :asking="askingIds" :connected="connected" :update="server.update" :restart-pending="server.restartPending" :restarting="restarting" collapsible
+          @resume="selectSession" @alias="openAlias" @rename="openRename" @archive="(kind, key) => setArchived(kind, key, true)" @create="showProjectPicker" @settings="showSettings()" @about="showSettings('about')" @collapse="sessionsOpen = false" @restart="restartServer" />
       </div>
     </div>
 
@@ -139,8 +140,8 @@ function saveRename() {
         :aria-describedby="undefined"
       >
         <DialogTitle class="sr-only">{{ drawer === 'sessions' ? '会话列表' : '项目文件' }}</DialogTitle>
-        <SessionSidebar v-if="drawer === 'sessions'" :tree="tree" :active-id="shownId" :running="runningIds" :asking="askingIds" :connected="connected" :update="server.update"
-          @resume="selectSession" @alias="openAlias" @rename="openRename" @archive="(kind, key) => setArchived(kind, key, true)" @create="showProjectPicker" @settings="showSettings()" @about="showSettings('about')" />
+        <SessionSidebar v-if="drawer === 'sessions'" :tree="tree" :active-id="shownId" :running="runningIds" :asking="askingIds" :connected="connected" :update="server.update" :restart-pending="server.restartPending" :restarting="restarting"
+          @resume="selectSession" @alias="openAlias" @rename="openRename" @archive="(kind, key) => setArchived(kind, key, true)" @create="showProjectPicker" @settings="showSettings()" @about="showSettings('about')" @restart="restartServer" />
         <FilesSidebar v-else-if="drawer === 'files' && shownId" :key="shownId" class="w-full flex-1 border-0"
           :session-id="shownId" :cwd="shownCwd" :active="filePath" @open="openFile" />
       </DialogContent>
@@ -187,6 +188,9 @@ function saveRename() {
       :server-version="server.version"
       :server-update="server.update"
       :hosted="server.web !== null"
+      :restart-pending="server.restartPending"
+      :restarting="restarting"
+      @restart="restartServer"
       @restore="(kind, key) => setArchived(kind, key, false)"
     />
     <UsageDialog v-model:open="usageOpen" :status="status" :blocks="blocks" />

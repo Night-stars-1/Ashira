@@ -1,13 +1,13 @@
 <script setup lang="ts">
-import { ChevronRight, ChevronsLeft, Plus, Settings } from '@lucide/vue'
+import { ChevronRight, ChevronsLeft, Plus, RotateCw, Settings } from '@lucide/vue'
 import SessionTree from '@/components/SessionTree.vue'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import type { SessionNode } from '@/lib/api'
 import { webUpdate } from '@/lib/update'
 
-defineProps<{ tree: SessionNode[]; activeId: string; running: Set<string>; asking: Set<string>; connected: boolean; update?: string | null; collapsible?: boolean }>()
-const emit = defineEmits<{ resume: [id: string]; alias: [path: string, name: string]; rename: [id: string, title: string]; archive: [kind: 'session' | 'folder', key: string]; create: []; settings: []; about: []; collapse: [] }>()
+defineProps<{ tree: SessionNode[]; activeId: string; running: Set<string>; asking: Set<string>; connected: boolean; update?: string | null; restartPending?: boolean; restarting?: boolean; collapsible?: boolean }>()
+const emit = defineEmits<{ resume: [id: string]; alias: [path: string, name: string]; rename: [id: string, title: string]; archive: [kind: 'session' | 'folder', key: string]; create: []; settings: []; about: []; collapse: []; restart: [] }>()
 </script>
 
 <template>
@@ -41,8 +41,16 @@ const emit = defineEmits<{ resume: [id: string]; alias: [path: string, name: str
       <p v-if="tree.length === 0" class="px-2 py-3 text-sm text-muted-foreground">还没有会话</p>
     </ScrollArea>
     <div class="border-t border-sidebar-border p-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
+      <!-- `ashira update` already replaced the program: one tap restarts into it. -->
+      <div v-if="restartPending" class="mb-1 flex items-center gap-2 rounded-md px-2 py-1 text-xs text-muted-foreground">
+        <span class="size-1.5 shrink-0 rounded-full bg-primary" aria-hidden="true" />
+        <span class="min-w-0 flex-1 truncate">服务端已更新，重启后生效</span>
+        <Button type="button" size="xs" :disabled="restarting" @click="emit('restart')">
+          <RotateCw :class="restarting && 'motion-safe:animate-spin'" /> {{ restarting ? '重启中' : '重启' }}
+        </Button>
+      </div>
       <button
-        v-if="update || webUpdate.available"
+        v-else-if="update || webUpdate.available"
         type="button"
         class="mb-1 flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
         @click="emit('about')"

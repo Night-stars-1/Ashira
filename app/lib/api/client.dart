@@ -72,6 +72,9 @@ class AshiraClient {
 
   Future<Status> status() async => Status.fromJson(await _get('/v1'));
 
+  /// The server re-launches its program (the build `ashira update` installed).
+  Future<void> restart() => _post('/v1/restart');
+
   Future<SessionListing> sessions() async => SessionListing.fromJson(await _get('/v1/sessions'));
 
   Future<void> alias(String path, String alias) => _post('/v1/alias', {'path': path, 'alias': alias});

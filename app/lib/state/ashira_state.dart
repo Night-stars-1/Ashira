@@ -19,9 +19,12 @@ class AshiraState extends ChangeNotifier {
   final AshiraClient client;
 
   Status? status;
-  /// The server's version and the newer release it can update to, from the first `GET /v1`.
+  /// The server's version, the newer release it can update to, and whether `ashira update`
+  /// already replaced its program (a restart loads it); from `GET /v1`.
   String serverVersion = '';
   String? serverUpdate;
+  bool restartPending = false;
+  bool restarting = false;
   List<SessionNode> tree = const [];
 
   /// Sessions whose turn runs on the server, and those waiting on an answer. The open
@@ -79,8 +82,7 @@ class AshiraState extends ChangeNotifier {
       final service = results[0] as Status;
       _list(results[1] as SessionListing);
       initialCwd = service.cwd;
-      serverVersion = service.version;
-      serverUpdate = service.update;
+      _server(service);
       if (mine != _view) return;
       final ids = [for (final root in tree) ...root.allSessions.map((item) => item.id)];
       final previous = await ConnectionSettings.lastSession();
@@ -97,6 +99,48 @@ class AshiraState extends ChangeNotifier {
         loading = false;
         _fail(reason, '无法连接 Ashira');
       }
+    }
+  }
+
+  void _server(Status service) {
+    serverVersion = service.version;
+    serverUpdate = service.update;
+    restartPending = service.restartPending;
+  }
+
+  /// Re-reads the server-wide facts, so an `ashira update` on the server shows its restart
+  /// button on an App that is already open.
+  Future<void> refreshServer() async {
+    _server(await client.status());
+    _changed();
+  }
+
+  /// Asks the server to re-launch its updated program and waits until it answers again.
+  Future<void> restartServer() async {
+    restarting = true;
+    _changed();
+    try {
+      await client.restart();
+      final before = serverVersion;
+      for (var tries = 0; tries < 60; tries++) {
+        await Future<void>.delayed(const Duration(seconds: 1));
+        final Status service;
+        try {
+          service = await client.status();
+        } catch (_) {
+          continue;
+        }
+        if (service.version != before || !service.restartPending) {
+          _server(service);
+          return;
+        }
+      }
+      throw Exception('服务端没有在 60 秒内恢复，请检查服务器');
+    } catch (reason) {
+      _fail(reason, '重启失败');
+    } finally {
+      restarting = false;
+      _changed();
     }
   }
 
@@ -209,6 +253,8 @@ class AshiraState extends ChangeNotifier {
       (event) {
         if (mine != _view) return;
         if (event.type == 'ready' || event.type == 'lag') {
+          // A (re)connect can follow a server restart or `ashira update`: re-read its state too.
+          if (event.type == 'ready') unawaited(refreshServer().catchError((Object _) {}));
           connected = true;
           _changed();
           _syncHistory().catchError((Object reason) {

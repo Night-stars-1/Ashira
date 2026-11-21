@@ -21,7 +21,8 @@ class AboutSettings extends StatelessWidget {
     final scheme = Theme.of(context).colorScheme;
     final muted = TextStyle(fontSize: 12, color: scheme.mutedForeground);
     return ListenableBuilder(
-      listenable: appUpdate,
+      // The App updater and the server's version / restart state.
+      listenable: Listenable.merge([appUpdate, state]),
       builder: (context, _) {
         final release = appUpdate.available;
         final busy = appUpdate.checking || appUpdate.progress != null || appUpdate.restarting;
@@ -69,8 +70,14 @@ class AboutSettings extends StatelessWidget {
               title: '服务端',
               version: _shown(state.serverVersion),
               trailing: [
-                if (serverBehind != null) Tooltip(message: '在服务器上运行 ashira update 更新', child: StatusTag('可更新到 $serverBehind', accent: true))
-                else if (state.serverVersion.isNotEmpty) const StatusTag('已是最新'),
+                if (state.restartPending) ...[
+                  const StatusTag('已更新，待重启', accent: true),
+                  const SizedBox(width: 8),
+                  FilledButton(onPressed: state.restarting ? null : state.restartServer, child: Text(state.restarting ? '重启中…' : '重启')),
+                ] else if (serverBehind != null)
+                  Tooltip(message: '在服务器上运行 ashira update 更新', child: StatusTag('可更新到 $serverBehind', accent: true))
+                else if (state.serverVersion.isNotEmpty)
+                  const StatusTag('已是最新'),
               ],
             ),
           ]),
