@@ -42,12 +42,12 @@ class AshiraClient {
   Uri rawUri(String sessionId, String path) =>
       _uri('${_session(sessionId)}/raw', {'path': path, if (token.isNotEmpty) 'token': token});
 
-  Future<Object?> _send(String method, String path, {Map<String, String>? query, Object? body}) async {
+  Future<Object?> _send(String method, String path, {Map<String, String>? query, Object? body, Duration timeout = const Duration(seconds: 30)}) async {
     final http.Response response;
     try {
       final request = http.Request(method, _uri(path, query))..headers.addAll(_headers);
       if (body != null) request.body = jsonEncode(body);
-      response = await http.Response.fromStream(await _http.send(request).timeout(const Duration(seconds: 30)));
+      response = await http.Response.fromStream(await _http.send(request).timeout(timeout));
     } on TimeoutException {
       throw ApiException('连接 $baseUrl 超时');
     } on Exception catch (error) {
@@ -74,6 +74,13 @@ class AshiraClient {
 
   /// The server re-launches its program (the build `ashira update` installed).
   Future<void> restart() => _post('/v1/restart');
+
+  /// `ashira update` on the server: the latest release replaces its program; [restart] switches to it.
+  /// Downloads can take minutes, past the usual request timeout.
+  Future<void> updateServer() => _send('POST', '/v1/update', body: const <String, dynamic>{}, timeout: const Duration(minutes: 10));
+
+  /// The running update's download, else null.
+  Future<UpdateProgress?> updateProgress() async => UpdateProgress.fromJson(asMap(await _get('/v1/update'))['download']);
 
   Future<SessionListing> sessions() async => SessionListing.fromJson(await _get('/v1/sessions'));
 

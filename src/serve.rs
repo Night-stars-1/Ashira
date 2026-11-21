@@ -7,7 +7,7 @@
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex as StdMutex, atomic::{AtomicU64, Ordering}},
+    sync::{Arc, Mutex as StdMutex, atomic::{AtomicBool, AtomicU64, Ordering}},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -47,6 +47,8 @@ struct Hub {
     web: Option<PathBuf>,
     /// Cancelled by `POST /v1/restart`: the server closes and `main` re-launches the new build.
     restart: CancellationToken,
+    /// `POST /v1/update` is downloading; a second request is refused instead of racing it.
+    updating: AtomicBool,
 }
 
 /// One session's agent: its own `Shared`, command queue and turn routing.
@@ -112,7 +114,7 @@ pub async fn start(shared: Arc<Shared>, listener: TcpListener, token: String, we
     let terminal_slots = (std::env::var("ASHIRA_WEB_TERMINAL").as_deref() == Ok("1")).then(|| Semaphore::new(8));
     let terminal_shutdown = CancellationToken::new();
     let _shutdown = terminal_shutdown.clone().drop_guard();
-    let hub = Arc::new(Hub { shared, runtimes: StdMutex::default(), events: broadcast, default_cwd, default_model, terminal_slots, terminal_shutdown, token, web, restart: CancellationToken::new() });
+    let hub = Arc::new(Hub { shared, runtimes: StdMutex::default(), events: broadcast, default_cwd, default_model, terminal_slots, terminal_shutdown, token, web, restart: CancellationToken::new(), updating: AtomicBool::new(false) });
     let result = tokio::select! {
         result = accept(listener, hub.clone()) => result.map(|()| false),
         _ = tokio::signal::ctrl_c() => Ok(false),
@@ -366,6 +368,22 @@ async fn dispatch(hub: &Arc<Hub>, method: &str, path: &str, query: &str, body: &
             if hub.busy() { return Err("还有会话正在回复，结束后再重启".into()); }
             hub.restart.cancel();
             Ok(Response::Json { status: 200, body: json!({"ok": true}) })
+        }
+        ("GET", "/v1/update") => {
+            // What `POST /v1/update` is doing, polled for its progress bar.
+            let download = crate::update::downloading().map(|(received, total)| json!({"received": received, "total": total}));
+            Ok(Response::Json { status: 200, body: json!({"updating": hub.updating.load(Ordering::Acquire), "download": download}) })
+        }
+        ("POST", "/v1/update") => {
+            // The same as `ashira update` on the server: the latest release replaces this
+            // program (and the `--web` page); `POST /v1/restart` then switches to it.
+            if crate::update::replaced_since_start() { return Err("服务端已更新，重启后生效".into()); }
+            if hub.updating.swap(true, Ordering::AcqRel) { return Err("正在更新服务端".into()); }
+            // Reset even when the client hangs up and this future is dropped mid-download.
+            struct Done<'a>(&'a AtomicBool);
+            impl Drop for Done<'_> { fn drop(&mut self) { self.0.store(false, Ordering::Release); } }
+            let _done = Done(&hub.updating);
+            Ok(Response::Json { status: 200, body: json!({"message": crate::update::run(None).await?}) })
         }
         ("POST", "/v1/web/update") => {
             let dir = hub.web.clone().ok_or("服务端没有用 --web 托管网页")?;
@@ -1547,7 +1565,7 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let (broadcast, _) = broadcast::channel(1024);
-        let hub = Arc::new(Hub { shared: shared.clone(), runtimes: StdMutex::default(), events: broadcast, default_cwd: root.clone(), default_model: String::new(), terminal_slots: None, terminal_shutdown: CancellationToken::new(), token: TOKEN.into(), web: None, restart: CancellationToken::new() });
+        let hub = Arc::new(Hub { shared: shared.clone(), runtimes: StdMutex::default(), events: broadcast, default_cwd: root.clone(), default_model: String::new(), terminal_slots: None, terminal_shutdown: CancellationToken::new(), token: TOKEN.into(), web: None, restart: CancellationToken::new(), updating: AtomicBool::new(false) });
         let server = tokio::spawn(accept(listener, hub.clone()));
         let session = request(addr, "POST", "/v1/sessions", "{}").await.1["sessionId"].as_str().unwrap().to_owned();
         let path = format!("/v1/sessions/{session}");

@@ -71,6 +71,34 @@ async fn release(http: &reqwest::Client, tag: Option<&str>) -> Result<Release, S
     serde_json::from_slice(&body).map_err(|e| format!("无法解析 Release 信息：{e}"))
 }
 
+/// The download in progress: bytes received and size if known. `GET /v1/update` reads it.
+static DOWNLOADING: std::sync::Mutex<Option<(u64, Option<u64>)>> = std::sync::Mutex::new(None);
+
+/// `(received, total)` of the download in progress, else `None`.
+pub fn downloading() -> Option<(u64, Option<u64>)> {
+    *DOWNLOADING.lock().ok()?
+}
+
+/// Publishes one download's progress; cleared when dropped, even if the download is abandoned.
+struct Published;
+
+impl Published {
+    fn start(total: Option<u64>) -> Self {
+        if let Ok(mut slot) = DOWNLOADING.lock() { *slot = Some((0, total)); }
+        Self
+    }
+
+    fn received(&self, bytes: u64) {
+        if let Ok(mut slot) = DOWNLOADING.lock() && let Some(state) = slot.as_mut() { state.0 = bytes; }
+    }
+}
+
+impl Drop for Published {
+    fn drop(&mut self) {
+        if let Ok(mut slot) = DOWNLOADING.lock() { *slot = None; }
+    }
+}
+
 /// Retried: the asset CDN behind GitHub's redirect drops connections now and then.
 /// `progress` draws a bar on stderr while the body arrives, when stderr is a terminal.
 async fn download(http: &reqwest::Client, url: &str, progress: bool) -> Result<Vec<u8>, String> {
@@ -83,8 +111,10 @@ async fn download(http: &reqwest::Client, url: &str, progress: bool) -> Result<V
             let mut response = http.get(url).send().await?.error_for_status()?;
             let total = response.content_length();
             let mut body = Vec::with_capacity(total.unwrap_or(0) as usize);
+            let published = Published::start(total);
             while let Some(chunk) = response.chunk().await? {
                 body.extend_from_slice(&chunk);
+                published.received(body.len() as u64);
                 if let Some(bar) = &mut bar { bar.update(body.len() as u64, total, false); }
             }
             if let Some(bar) = &mut bar { bar.update(body.len() as u64, total, true); }

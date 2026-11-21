@@ -1,12 +1,15 @@
 <script setup lang="ts">
 import { ChevronRight, ChevronsLeft, Plus, RotateCw, Settings } from '@lucide/vue'
+import { computed } from 'vue'
 import SessionTree from '@/components/SessionTree.vue'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import type { SessionNode } from '@/lib/api'
 import { webUpdate } from '@/lib/update'
 
-defineProps<{ tree: SessionNode[]; activeId: string; running: Set<string>; asking: Set<string>; connected: boolean; update?: string | null; restartPending?: boolean; restarting?: boolean; collapsible?: boolean }>()
+const props = defineProps<{ tree: SessionNode[]; activeId: string; running: Set<string>; asking: Set<string>; connected: boolean; update?: string | null; hosted?: boolean; restartPending?: boolean; restarting?: boolean; collapsible?: boolean }>()
+/** A page the core serves follows the core, so only a standalone page has its own update. */
+const webAvailable = computed(() => props.hosted ? null : webUpdate.available)
 const emit = defineEmits<{ resume: [id: string]; alias: [path: string, name: string]; rename: [id: string, title: string]; archive: [kind: 'session' | 'folder', key: string]; fold: [path: string, folded: boolean]; create: []; settings: []; about: []; collapse: []; restart: [] }>()
 </script>
 
@@ -51,13 +54,13 @@ const emit = defineEmits<{ resume: [id: string]; alias: [path: string, name: str
         </Button>
       </div>
       <button
-        v-else-if="update || webUpdate.available"
+        v-else-if="update || webAvailable"
         type="button"
         class="mb-1 flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
         @click="emit('about')"
       >
         <span class="size-1.5 shrink-0 rounded-full bg-primary" aria-hidden="true" />
-        <span class="min-w-0 flex-1 truncate">{{ update && webUpdate.available ? '服务端和网页有新版本' : update ? `服务端有新版本 ${update}` : `网页有新版本 ${webUpdate.available?.tag}` }}</span>
+        <span class="min-w-0 flex-1 truncate">{{ update && webAvailable ? '服务端和网页有新版本' : update ? `服务端有新版本 ${update}` : `网页有新版本 ${webAvailable?.tag}` }}</span>
         <ChevronRight class="size-3.5 shrink-0" aria-hidden="true" />
       </button>
       <Button class="w-full justify-start" variant="ghost" @click="emit('settings')">

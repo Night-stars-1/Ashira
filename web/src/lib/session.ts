@@ -1,5 +1,5 @@
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
-import { api, ApiError, connection, parseEvent, parseReplyMetrics, type AgentEvent, type Archive, type ConfirmRequest, type QuestionAnswers, type QuestionRequest, type SessionNode, type Status } from './api'
+import { api, ApiError, connection, parseEvent, parseReplyMetrics, type AgentEvent, type Archive, type ConfirmRequest, type QuestionAnswers, type QuestionRequest, type SessionNode, type Status, type UpdateProgress } from './api'
 import { toast } from './toast'
 import type { Block, ReplyPart, TextFile } from '@/components/Transcript.vue'
 
@@ -10,6 +10,25 @@ export function useAshira() {
   /** The server's version and newer release, from `GET /v1`; session views don't carry them. */
   const server = ref<{ version: string; update: string | null; restartPending: boolean; web: Status['web'] }>({ version: '', update: null, restartPending: false, web: null })
   const restarting = ref(false)
+  const updating = ref(false)
+  /** The server update's download while it runs, polled for the progress bar. */
+  const updateProgress = ref<UpdateProgress | null>(null)
+  /** Has the server replace its program with the latest release; its restart button follows. */
+  async function updateServer() {
+    updating.value = true
+    // Between files (checksum, unpack, replace) nothing downloads: keep the last one shown.
+    const poll = setInterval(() => { api.updateProgress().then((progress) => { if (updating.value && progress) updateProgress.value = progress }, () => {}) }, 500)
+    try {
+      await api.updateServer()
+      await refreshServer()
+    } catch (reason) {
+      fail(reason, '更新服务端失败')
+    } finally {
+      clearInterval(poll)
+      updating.value = false
+      updateProgress.value = null
+    }
+  }
   /** Asks the server to re-launch its updated program, waits until it answers again, then
    *  reloads so the page (and a `--web` build the new core just installed) is current. */
   async function restartServer() {
@@ -434,7 +453,7 @@ export function useAshira() {
   })
   onUnmounted(() => { source?.close(); clearTimeout(listTimer) })
 
-  return { status, server, refreshServer, restarting, restartServer, tree, archive, blocks, draft, model, modelTitle, fast, connected, loading, naming, confirm, question,
+  return { status, server, refreshServer, restarting, restartServer, updating, updateProgress, updateServer, tree, archive, blocks, draft, model, modelTitle, fast, connected, loading, naming, confirm, question,
     busy, hasReplyText, shownId, shownCwd, sessionName, needsConnection, runningIds, askingIds, send, openSession, decide, answer, interrupt, refresh, updateSettings, renameSession, setArchived, setFolded }
 }
 

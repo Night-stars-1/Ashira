@@ -25,6 +25,9 @@ class AshiraState extends ChangeNotifier {
   String? serverUpdate;
   bool restartPending = false;
   bool restarting = false;
+  bool updating = false;
+  /// The server update's download while it runs, polled for the progress bar.
+  UpdateProgress? updateProgress;
   List<SessionNode> tree = const [];
 
   /// Sessions whose turn runs on the server, and those waiting on an answer. The open
@@ -113,6 +116,33 @@ class AshiraState extends ChangeNotifier {
   Future<void> refreshServer() async {
     _server(await client.status());
     _changed();
+  }
+
+  /// Has the server replace its program with the latest release; its restart button follows.
+  Future<void> updateServer() async {
+    updating = true;
+    _changed();
+    // Between files (checksum, unpack, replace) nothing downloads: keep the last one shown.
+    final poll = Timer.periodic(const Duration(milliseconds: 500), (_) async {
+      try {
+        final progress = await client.updateProgress();
+        if (updating && progress != null) {
+          updateProgress = progress;
+          _changed();
+        }
+      } catch (_) {}
+    });
+    try {
+      await client.updateServer();
+      _server(await client.status());
+    } catch (reason) {
+      _fail(reason, '更新服务端失败');
+    } finally {
+      poll.cancel();
+      updating = false;
+      updateProgress = null;
+      _changed();
+    }
   }
 
   /// Asks the server to re-launch its updated program and waits until it answers again.

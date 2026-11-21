@@ -131,6 +131,8 @@ export type McpServer = { name: string; status: string; kind: string; source: st
 export type MemoryEntry = { key: string; value: string }
 export type McpForm = { name: string; type: 'stdio' | 'http' | 'sse'; command: string; args: string; url: string; headers: string }
 export type ModelItem = { selector: string; provider: string; id: string; name: string | null; context: number; input: number | null; output: number | null; efforts: string[]; fast: boolean }
+/** A server update's download: bytes so far, and its size when known. */
+export type UpdateProgress = { received: number; total: number | null }
 /** How a provider gets its key; a stored literal key is never sent to the page. */
 export type ProviderKey =
   | { kind: 'env'; value: string; unset?: boolean }
@@ -482,8 +484,15 @@ export const api = {
     const type = body.type === 'http' || body.type === 'sse' ? body.type : 'stdio'
     return { name: text(body.name), type, command: text(body.command), args: text(body.args), url: text(body.url), headers: text(body.headers), source: text(body.source) }
   },
-  /** `--web` hosts: the server downloads this core's web build and swaps the folder. */
-  updateWeb: async () => text(record(await request('/v1/web/update', { method: 'POST' })).version),
+  /** `ashira update` on the server: the latest release replaces its program; a restart switches to it. */
+  updateServer: async () => text(record(await request('/v1/update', { method: 'POST' })).message),
+  /** The running update's download (`total` null when the size is unknown), else null. */
+  updateProgress: async (): Promise<UpdateProgress | null> => {
+    const download = record(await request('/v1/update')).download
+    if (!download || typeof download !== 'object') return null
+    const row = record(download)
+    return { received: number(row.received), total: metric(row.total) }
+  },
   /** The server re-launches its program (the build `ashira update` installed). */
   restart: async () => { await request('/v1/restart', { method: 'POST' }) },
   usage: async (): Promise<UsageReport> => {

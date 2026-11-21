@@ -4,11 +4,18 @@ import { computed, ref } from 'vue'
 import Markdown from '@/components/Markdown.vue'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { api } from '@/lib/api'
+import type { UpdateProgress } from '@/lib/api'
 import { checkWebUpdate, newer, webUpdate, webVersion } from '@/lib/update'
 
-const props = defineProps<{ serverVersion: string; serverUpdate: string | null; hosted: boolean; restartPending: boolean; restarting: boolean }>()
-const emit = defineEmits<{ restart: [] }>()
+const props = defineProps<{ serverVersion: string; serverUpdate: string | null; hosted: boolean; restartPending: boolean; restarting: boolean; updating: boolean; updateProgress: UpdateProgress | null }>()
+const emit = defineEmits<{ restart: []; update: [] }>()
+
+/** The bar under the server row while it updates: a share when the size is known, else indeterminate. */
+const progress = computed(() => {
+  if (!props.updating) return null
+  const download = props.updateProgress
+  return { percent: download?.total ? Math.min(100, Math.round((download.received / download.total) * 100)) : null }
+})
 
 const releases = 'https://github.com/Night-stars-1/Ashira/releases'
 const shown = (version: string) => (version ? `v${version.replace(/^v/, '')}` : '未知')
@@ -17,32 +24,13 @@ const shown = (version: string) => (version ? `v${version.replace(/^v/, '')}` : 
 const serverBehind = computed(() => props.serverUpdate
   || (webUpdate.latest && props.serverVersion && newer(webUpdate.latest.tag, props.serverVersion) ? webUpdate.latest.tag : null))
 
-/** Served by the core (`--web`): the page follows the core's version, and the core installs it.
- *  A local `dev` build is the developer's own and is never offered a replacement. */
-const behindCore = computed(() => props.hosted && webVersion !== 'dev' && !!props.serverVersion && newer(props.serverVersion, webVersion))
-
+/** A page the core serves (`--web`) is the core's own: it updates and restarts with it, so it has no row. */
 const webState = computed(() => {
   if (webVersion === 'dev') return { label: '开发版', variant: 'outline' as const }
-  if (props.hosted) return behindCore.value ? { label: `可更新到 ${shown(props.serverVersion)}`, variant: 'default' as const } : { label: '已是最新', variant: 'secondary' as const }
   if (webUpdate.available) return { label: `可更新到 ${webUpdate.available.tag}`, variant: 'default' as const }
   if (webUpdate.latest) return { label: '已是最新', variant: 'secondary' as const }
   return { label: '未检查', variant: 'outline' as const }
 })
-
-const installing = ref(false)
-const installError = ref('')
-/** The core swaps its web folder; a reload then loads the new build. */
-async function installWeb() {
-  installing.value = true
-  installError.value = ''
-  try {
-    await api.updateWeb()
-    location.reload()
-  } catch (reason) {
-    installError.value = `更新网页失败：${reason instanceof Error ? reason.message : String(reason)}`
-    installing.value = false
-  }
-}
 
 /** Release notes start folded; the header row toggles them. */
 const notesOpen = ref(false)
@@ -65,33 +53,41 @@ const notesOpen = ref(false)
     </header>
 
     <p v-if="webUpdate.error" role="alert" class="text-sm text-destructive">{{ webUpdate.error }}</p>
-    <p v-if="installError" role="alert" class="text-sm text-destructive">{{ installError }}</p>
 
     <ul class="flex flex-col divide-y rounded-lg border">
-      <li class="flex items-center gap-3 px-3 py-3">
+      <li v-if="!hosted" class="flex items-center gap-3 px-3 py-3">
         <div class="min-w-0 flex-1">
           <p class="text-sm">网页</p>
           <p class="text-xs text-muted-foreground tabular-nums">{{ webVersion === 'dev' ? '本地构建' : shown(webVersion) }}</p>
         </div>
         <Badge :variant="webState.variant">{{ webState.label }}</Badge>
-        <Button v-if="behindCore" type="button" size="sm" :disabled="installing" @click="installWeb">
-          {{ installing ? '更新中…' : '更新网页' }}
-        </Button>
-        <Button v-else-if="!hosted && webUpdate.available" as="a" size="sm" :href="webUpdate.available.url" target="_blank" rel="noreferrer noopener">
+        <Button v-if="webUpdate.available" as="a" size="sm" :href="webUpdate.available.url" target="_blank" rel="noreferrer noopener">
           下载 <ExternalLink />
         </Button>
       </li>
-      <li class="flex items-center gap-3 px-3 py-3">
-        <div class="min-w-0 flex-1">
-          <p class="text-sm">服务端</p>
-          <p class="text-xs text-muted-foreground tabular-nums">{{ shown(serverVersion) }}</p>
+      <li class="flex flex-col gap-2 px-3 py-3">
+        <div class="flex items-center gap-3">
+          <div class="min-w-0 flex-1">
+            <p class="text-sm">服务端</p>
+            <p class="text-xs text-muted-foreground tabular-nums">{{ shown(serverVersion) }}</p>
+          </div>
+          <template v-if="restartPending">
+            <Badge variant="default">已更新，待重启</Badge>
+            <Button type="button" size="sm" :disabled="restarting" @click="emit('restart')">{{ restarting ? '重启中…' : '重启' }}</Button>
+          </template>
+          <template v-else-if="serverBehind">
+            <Badge variant="default">可更新到 {{ serverBehind }}</Badge>
+            <Button type="button" size="sm" :disabled="updating" @click="emit('update')">{{ updating ? '更新中…' : '更新' }}</Button>
+          </template>
+          <Badge v-else-if="serverVersion" variant="secondary">已是最新</Badge>
         </div>
-        <template v-if="restartPending">
-          <Badge variant="default">已更新，待重启</Badge>
-          <Button type="button" size="sm" :disabled="restarting" @click="emit('restart')">{{ restarting ? '重启中…' : '重启' }}</Button>
-        </template>
-        <Badge v-else-if="serverBehind" variant="default" title="在服务器上运行 ashira update 更新">可更新到 {{ serverBehind }}</Badge>
-        <Badge v-else-if="serverVersion" variant="secondary">已是最新</Badge>
+        <div v-if="progress" class="flex items-center gap-3">
+          <div role="progressbar" aria-label="服务端更新进度" aria-valuemin="0" aria-valuemax="100" :aria-valuenow="progress.percent ?? undefined" class="h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-muted">
+            <div v-if="progress.percent !== null" class="h-full rounded-full bg-primary transition-[width] duration-300 ease-out motion-reduce:transition-none" :style="{ width: `${progress.percent}%` }" />
+            <div v-else class="h-full w-1/3 rounded-full bg-primary motion-safe:animate-pulse" />
+          </div>
+          <span class="w-9 shrink-0 text-right text-xs text-muted-foreground tabular-nums">{{ progress.percent !== null ? `${progress.percent}%` : '' }}</span>
+        </div>
       </li>
     </ul>
 

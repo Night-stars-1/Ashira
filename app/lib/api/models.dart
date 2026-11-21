@@ -12,6 +12,20 @@ double num0(Object? value) => value is num ? value.toDouble() : 0;
 int int0(Object? value) => value is num ? value.toInt() : 0;
 double? metric(Object? value) => value is num && value.isFinite && value >= 0 ? value.toDouble() : null;
 
+/// A server update's download from `GET /v1/update`: bytes so far, and its size when known.
+class UpdateProgress {
+  const UpdateProgress({required this.received, this.total});
+  static UpdateProgress? fromJson(Object? json) {
+    if (json is! Map) return null;
+    final m = asMap(json);
+    final total = int0(m['total']);
+    return UpdateProgress(received: int0(m['received']), total: total > 0 ? total : null);
+  }
+
+  final int received;
+  final int? total;
+}
+
 class Usage {
   const Usage({this.input = 0, this.output = 0, this.cacheRead = 0, this.cacheWrite = 0});
   factory Usage.fromJson(Object? json) {

@@ -106,10 +106,8 @@ class AppUpdate extends ChangeNotifier {
         throw const _Notice('安装包已被清理，请重新下载');
       }
       if (Platform.isAndroid) {
-        if (!(await _channel.invokeMethod<bool>('canInstall') ?? false)) {
-          await _channel.invokeMethod('allowInstall');
-          throw const _Notice('请在系统设置里允许 Ashira 安装应用，然后再点一次安装');
-        }
+        // The system page answers when the user comes back; granted, the install goes on.
+        if (!(await _channel.invokeMethod<bool>('canInstall') ?? false) && !(await _channel.invokeMethod<bool>('allowInstall') ?? false)) return;
         await _channel.invokeMethod('install', {'path': file.path});
       } else {
         await _swapWindows(file, file.parent);

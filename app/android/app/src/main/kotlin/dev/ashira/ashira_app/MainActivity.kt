@@ -11,16 +11,22 @@ import io.flutter.plugin.common.MethodChannel
 import java.io.File
 
 class MainActivity : FlutterActivity() {
+    /// The `allowInstall` call waiting for the user to come back from the permission page.
+    private var pendingAllow: MethodChannel.Result? = null
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         // In-app update: hands a downloaded APK to the system installer.
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "dev.ashira/update").setMethodCallHandler { call, result ->
             when (call.method) {
-                "canInstall" -> result.success(Build.VERSION.SDK_INT < Build.VERSION_CODES.O || packageManager.canRequestPackageInstalls())
+                "canInstall" -> result.success(canInstall())
                 "allowInstall" -> {
-                    // Android 8+: the user grants "install unknown apps" for Ashira once.
-                    startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName")))
-                    result.success(null)
+                    // Android 8+: the user grants "install unknown apps" for Ashira once; the
+                    // call answers whether they did when they return to the App.
+                    pendingAllow?.success(canInstall())
+                    pendingAllow = result
+                    @Suppress("DEPRECATION")
+                    startActivityForResult(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName")), ALLOW_INSTALL)
                 }
                 "install" -> {
                     val path = call.argument<String>("path")
@@ -38,5 +44,22 @@ class MainActivity : FlutterActivity() {
                 else -> result.notImplemented()
             }
         }
+    }
+
+    private fun canInstall() = Build.VERSION.SDK_INT < Build.VERSION_CODES.O || packageManager.canRequestPackageInstalls()
+
+    @Deprecated("Deprecated in Java")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        @Suppress("DEPRECATION")
+        super.onActivityResult(requestCode, resultCode, data)
+        // The settings page returns no result code; whether the switch is on is the answer.
+        if (requestCode == ALLOW_INSTALL) {
+            pendingAllow?.success(canInstall())
+            pendingAllow = null
+        }
+    }
+
+    private companion object {
+        const val ALLOW_INSTALL = 4021
     }
 }

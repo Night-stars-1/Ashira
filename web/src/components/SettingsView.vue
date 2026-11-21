@@ -14,11 +14,11 @@ import AboutSettings from '@/components/AboutSettings.vue'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Switch } from '@/components/ui/switch'
 import { wrapToolOutput } from '@/lib/display'
-import { api, type Archive, type McpForm, type McpServer, type MemoryEntry } from '@/lib/api'
+import { api, type Archive, type McpForm, type McpServer, type MemoryEntry, type UpdateProgress } from '@/lib/api'
 
 const open = defineModel<boolean>('open', { required: true })
-const props = defineProps<{ archive: Archive; serverVersion: string; serverUpdate: string | null; hosted: boolean; restartPending: boolean; restarting: boolean }>()
-const emit = defineEmits<{ restore: [kind: 'session' | 'folder', key: string]; restart: [] }>()
+const props = defineProps<{ archive: Archive; serverVersion: string; serverUpdate: string | null; hosted: boolean; restartPending: boolean; restarting: boolean; updating: boolean; updateProgress: UpdateProgress | null }>()
+const emit = defineEmits<{ restore: [kind: 'session' | 'folder', key: string]; restart: []; update: [] }>()
 
 export type SettingsTab = 'models' | 'usage' | 'display' | 'plugins' | 'mcp' | 'memory' | 'archive' | 'connection' | 'about'
 type Tab = SettingsTab
@@ -244,7 +244,7 @@ watch(open, (value) => { if (value) void load() })
                 <Switch v-model="wrapToolOutput" />
               </label>
             </div>
-            <AboutSettings v-else-if="tab === 'about'" :server-version="props.serverVersion" :server-update="props.serverUpdate" :hosted="props.hosted" :restart-pending="props.restartPending" :restarting="props.restarting" @restart="emit('restart')" />
+            <AboutSettings v-else-if="tab === 'about'" :server-version="props.serverVersion" :server-update="props.serverUpdate" :hosted="props.hosted" :restart-pending="props.restartPending" :restarting="props.restarting" :updating="props.updating" :update-progress="props.updateProgress" @restart="emit('restart')" @update="emit('update')" />
             <template v-else-if="tab === 'archive'">
               <Empty v-if="props.archive.folders.length === 0 && props.archive.sessions.length === 0" title="没有归档" description="在会话列表里用「…」或右键归档会话和文件夹，归档后可在这里还原。" />
               <template v-if="props.archive.folders.length">

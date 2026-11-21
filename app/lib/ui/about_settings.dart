@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../api/models.dart';
 import '../state/app_update.dart';
 import '../state/ashira_state.dart';
 import 'markdown.dart';
@@ -74,11 +75,14 @@ class AboutSettings extends StatelessWidget {
                   const StatusTag('已更新，待重启', accent: true),
                   const SizedBox(width: 8),
                   FilledButton(onPressed: state.restarting ? null : state.restartServer, child: Text(state.restarting ? '重启中…' : '重启')),
-                ] else if (serverBehind != null)
-                  Tooltip(message: '在服务器上运行 ashira update 更新', child: StatusTag('可更新到 $serverBehind', accent: true))
-                else if (state.serverVersion.isNotEmpty)
+                ] else if (serverBehind != null) ...[
+                  StatusTag('可更新到 $serverBehind', accent: true),
+                  const SizedBox(width: 8),
+                  FilledButton(onPressed: state.updating ? null : state.updateServer, child: Text(state.updating ? '更新中…' : '更新')),
+                ] else if (state.serverVersion.isNotEmpty)
                   const StatusTag('已是最新'),
               ],
+              below: state.updating ? _UpdateBar(progress: state.updateProgress) : null,
             ),
           ]),
           if (appUpdate.latestNotes.isNotEmpty) ...[
@@ -110,26 +114,61 @@ class AboutSettings extends StatelessWidget {
 }
 
 class _Row extends StatelessWidget {
-  const _Row({required this.title, required this.version, required this.trailing});
+  const _Row({required this.title, required this.version, required this.trailing, this.below});
   final String title, version;
   final List<Widget> trailing;
+  /// Shown under the row, e.g. the server update's progress.
+  final Widget? below;
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
-      child: Row(children: [
-        Expanded(
-          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text(title, style: const TextStyle(fontSize: 14)),
-            const SizedBox(height: 2),
-            Text(version, style: TextStyle(fontSize: 12, color: scheme.mutedForeground, fontFeatures: const [FontFeature.tabularFigures()])),
-          ]),
-        ),
-        ...trailing,
+      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        Row(children: [
+          Expanded(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(title, style: const TextStyle(fontSize: 14)),
+              const SizedBox(height: 2),
+              Text(version, style: TextStyle(fontSize: 12, color: scheme.mutedForeground, fontFeatures: const [FontFeature.tabularFigures()])),
+            ]),
+          ),
+          ...trailing,
+        ]),
+        if (below != null) ...[const SizedBox(height: 8), below!],
       ]),
     );
+  }
+}
+
+/// The server update's download, its percentage on the right; indeterminate until the size is known.
+class _UpdateBar extends StatelessWidget {
+  const _UpdateBar({required this.progress});
+  final UpdateProgress? progress;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final download = progress;
+    final total = download?.total;
+    final share = download != null && total != null ? (download.received / total).clamp(0.0, 1.0) : null;
+    return Row(children: [
+      Expanded(
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(3),
+          child: LinearProgressIndicator(value: share, minHeight: 6, backgroundColor: scheme.surfaceContainerHighest, color: scheme.primary),
+        ),
+      ),
+      SizedBox(
+        width: 44,
+        child: Text(
+          share == null ? '' : '${(share * 100).round()}%',
+          textAlign: TextAlign.right,
+          style: TextStyle(fontSize: 12, color: scheme.mutedForeground, fontFeatures: const [FontFeature.tabularFigures()]),
+        ),
+      ),
+    ]);
   }
 }
 
