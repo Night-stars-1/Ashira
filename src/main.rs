@@ -39,6 +39,7 @@ mod title;
 mod transcript;
 mod tui;
 mod update;
+mod web;
 mod web_terminal;
 
 use std::{
@@ -63,7 +64,8 @@ const HELP: &str = "ashira — a fast terminal coding agent
 
 USAGE:
     ashira [OPTIONS] [PROMPT]
-    ashira update [VERSION]  Replace this program with the latest (or given) GitHub release
+    ashira update [VERSION]  Replace this program with the latest (or given) GitHub release,
+                             and the --web folder with the same release's web build
 
 OPTIONS:
     -p, --print <PROMPT>   Run one prompt non-interactively and print the result
@@ -77,6 +79,8 @@ OPTIONS:
     -y, --yes              Run dangerous commands without asking
         --serve            Serve the HTTP API instead of the TUI (default 127.0.0.1:8787)
         --listen <ADDR>    API listen address, implies --serve
+        --web <DIR>        Also serve the web client from DIR on the API port (implies --serve);
+                           remembered as config.yml `web:`, an empty DIR offers to install it
     -h, --help             Show this help
     -V, --version          Show version
 
@@ -112,11 +116,12 @@ struct Args {
     models: Option<(String, bool)>,
     yes: bool,
     serve: Option<String>,
+    web: Option<String>,
     prompt: Option<String>,
 }
 
 fn parse_args() -> Result<Args, String> {
-    let mut a = Args { print: None, resume: None, list: false, model: None, models: None, yes: false, serve: None, prompt: None };
+    let mut a = Args { print: None, resume: None, list: false, model: None, models: None, yes: false, serve: None, web: None, prompt: None };
     let mut it = env::args().skip(1).peekable();
     let mut rest = Vec::new();
     while let Some(arg) = it.next() {
@@ -138,10 +143,14 @@ fn parse_args() -> Result<Args, String> {
             "-y" | "--yes" => a.yes = true,
             "--serve" => a.serve = Some("127.0.0.1:8787".into()),
             "--listen" => a.serve = Some(it.next().ok_or("--listen needs host:port")?),
+            "--web" => a.web = Some(it.next().ok_or("--web needs a folder")?),
             "--" => rest.extend(it.by_ref()),
             s if s.starts_with('-') && s.len() > 1 => return Err(format!("unknown option {s} (see --help)")),
             _ => rest.push(arg),
         }
+    }
+    if a.web.is_some() && a.serve.is_none() {
+        a.serve = Some("127.0.0.1:8787".into());
     }
     if !rest.is_empty() {
         a.prompt = Some(rest.join(" "));
@@ -217,7 +226,9 @@ fn run(args: Args, cwd: std::path::PathBuf, rt: &tokio::runtime::Runtime) -> Res
     // Checked first so a missing token fails before any startup work.
     let api = match args.serve.clone() {
         Some(listen) => Some((listen, env::var("ASHIRA_API_TOKEN").ok().map(|token| token.trim().to_owned()).filter(|token| !token.is_empty())
-            .ok_or("--serve 需要设置 ASHIRA_API_TOKEN（网页和 App 连接时填写同一个值），例如：ASHIRA_API_TOKEN=<随机字符串> ashira --serve")?)),
+            .ok_or("--serve 需要设置 ASHIRA_API_TOKEN（网页和 App 连接时填写同一个值），例如：ASHIRA_API_TOKEN=<随机字符串> ashira --serve")?,
+            // `--web DIR`, else the folder a previous `--web` saved in config.yml.
+            web::folder(args.web.as_deref())?)),
         None => None,
     };
     let registry = Registry::load();
@@ -370,7 +381,7 @@ fn run(args: Args, cwd: std::path::PathBuf, rt: &tokio::runtime::Runtime) -> Res
             let _ = shared.events.send(Event::Notice(warning));
         }
     });
-    if let Some((listen, api_token)) = api {
+    if let Some((listen, api_token, web_dir)) = api {
         let addr: std::net::SocketAddr = listen.parse().map_err(|error| format!("--listen: {error}"))?;
         let listener = rt.block_on(tokio::net::TcpListener::bind(addr)).map_err(|error| error.to_string())?;
         // Each session gets its own runtime; this agent only stays idle as the template's
@@ -378,7 +389,7 @@ fn run(args: Args, cwd: std::path::PathBuf, rt: &tokio::runtime::Runtime) -> Res
         drop(cmd_tx);
         let mut ev_rx = ev_rx;
         rt.spawn(async move { while ev_rx.recv().await.is_some() {} });
-        let serve_result = rt.block_on(serve::start(shared.clone(), listener, api_token));
+        let serve_result = rt.block_on(serve::start(shared.clone(), listener, api_token, web_dir));
         rt.block_on(async {
             agent_task.await.ok();
             mcp.shutdown().await;

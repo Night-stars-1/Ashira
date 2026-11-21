@@ -62,6 +62,7 @@ fn read_at(models: &Path, settings: &Path) -> Result<Value, String> {
             "key": key_view(p),
             "discovery": p.get("discovery").and_then(|d| d.get("type")).and_then(Value::as_str).is_some(),
             "models": models,
+            "imageModel": text("imageModel"),
         })
     }).collect();
     let settings: Mapping = load(settings)?;
@@ -159,6 +160,11 @@ fn save_provider_at(models: &Path, settings: &Path, previous: &str, form: &Value
     let old: Vec<Value> = provider.get("models").and_then(Value::as_array).cloned().unwrap_or_default();
     let rebuilt: Vec<Value> = models_list.iter().map(|m| old.iter().find(|o| o["id"] == m.as_str()).cloned().unwrap_or_else(|| json!({"id": m}))).collect();
     if rebuilt.is_empty() { provider.shift_remove("models"); } else { provider.insert("models".into(), Value::Array(rebuilt)); }
+    // This provider's own image model for `generate_image`; empty falls back to modelRoles.image.
+    match form["imageModel"].as_str().map(str::trim).filter(|value| !value.is_empty()) {
+        Some(selector) => { provider.insert("imageModel".into(), json!(selector)); }
+        None => { provider.shift_remove("imageModel"); }
+    }
 
     // An edit or rename keeps the provider's place in the file; a new one goes last.
     match file.providers.get_index_of(previous).filter(|_| !previous.is_empty()) {
@@ -167,6 +173,15 @@ fn save_provider_at(models: &Path, settings: &Path, previous: &str, form: &Value
             file.providers.shift_insert(index, id.to_owned(), provider);
         }
         None => { file.providers.insert(id.to_owned(), provider); }
+    }
+    // A renamed provider keeps working wherever another provider names it as its image model.
+    if !previous.is_empty() && previous != id {
+        for other in file.providers.values_mut() {
+            if let Some(rest) = other.get("imageModel").and_then(Value::as_str).and_then(|s| s.strip_prefix(&format!("{previous}/"))) {
+                let renamed = json!(format!("{id}/{rest}"));
+                other.insert("imageModel".into(), renamed);
+            }
+        }
     }
     write(models, &file)?;
     if !previous.is_empty() && previous != id { rename_roles(settings, previous, id)?; }
@@ -228,7 +243,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("ashira-models-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
         std::fs::create_dir_all(&dir).unwrap();
         let (models, settings) = (dir.join("models.yml"), dir.join("config.yml"));
-        std::fs::write(&models, "providers:\n  zeta:\n    api: openai-responses\n    baseUrl: https://a.example/v1\n    apiKey: sk-secret-literal\n    authHeader: true\n    discovery:\n      type: openai-models-list\n    modelOverrides:\n      gpt-x:\n        cost: {input: 1, output: 2}\n    models:\n      - id: gpt-x\n        contextWindow: 9000\n  alpha:\n    api: anthropic-messages\n    baseUrl: https://b.example\n    apiKey: '!get-key'\n    models:\n      - id: claude-y\n").unwrap();
+        std::fs::write(&models, "providers:\n  zeta:\n    api: openai-responses\n    baseUrl: https://a.example/v1\n    apiKey: sk-secret-literal\n    authHeader: true\n    discovery:\n      type: openai-models-list\n    modelOverrides:\n      gpt-x:\n        cost: {input: 1, output: 2}\n    models:\n      - id: gpt-x\n        contextWindow: 9000\n  alpha:\n    api: anthropic-messages\n    baseUrl: https://b.example\n    apiKey: '!get-key'\n    imageModel: zeta/gpt-x\n    models:\n      - id: claude-y\n").unwrap();
         std::fs::write(&settings, "modelRoles:\n  default: zeta/gpt-x\n  task: alpha/claude-y\nmemory:\n  auto: true\n").unwrap();
         let ids = |path: &Path| load::<ModelsFile>(path).unwrap().providers.keys().cloned().collect::<Vec<_>>();
 
@@ -238,6 +253,7 @@ mod tests {
         assert_eq!(view["providers"][1]["key"], json!({"kind": "command", "value": "get-key"}));
         assert_eq!(view["roles"]["default"].as_str(), Some("zeta/gpt-x"));
         assert_eq!(view["roles"]["title"].as_str(), Some(""), "every role is listed, unset ones empty");
+        assert_eq!((view["providers"][0]["imageModel"].as_str(), view["providers"][1]["imageModel"].as_str()), (Some(""), Some("zeta/gpt-x")));
 
         // Rename + edit without retyping the key: key, overrides, per-model fields and position survive.
         let form = json!({"id": "renamed", "api": "openai-completions", "baseUrl": "https://a2.example/v1/", "key": {"kind": "literal", "value": ""}, "discovery": false, "models": ["gpt-x", "gpt-new"]});
@@ -249,6 +265,7 @@ mod tests {
         assert_eq!(p["modelOverrides"]["gpt-x"]["cost"]["output"], 2);
         assert_eq!(p["models"], json!([{"id": "gpt-x", "contextWindow": 9000}, {"id": "gpt-new"}]));
         assert!(p.get("discovery").is_none());
+        assert_eq!(file.providers["alpha"]["imageModel"].as_str(), Some("renamed/gpt-x"), "another provider's image model follows the rename");
         let roles: Mapping = load(&settings).unwrap();
         assert_eq!((roles["modelRoles"]["default"].as_str(), roles["memory"]["auto"].as_bool()), (Some("renamed/gpt-x"), Some(true)));
 
@@ -267,6 +284,13 @@ mod tests {
         // Roles left out of a save keep their value.
         save_roles_at(&settings, &json!({"default": "third/m"})).unwrap();
         assert_eq!(load::<Mapping>(&settings).unwrap()["modelRoles"]["title"].as_str(), Some("third/small"));
+        // Empty clears the provider's own image model back to modelRoles.image.
+        let mut cleared = json!({"id": "alpha", "api": "anthropic-messages", "baseUrl": "https://b.example", "key": {"kind": "command", "value": ""}, "discovery": false, "models": ["claude-y"], "imageModel": ""});
+        save_provider_at(&models, &settings, "alpha", &cleared).unwrap();
+        assert!(load::<ModelsFile>(&models).unwrap().providers["alpha"].get("imageModel").is_none());
+        cleared["imageModel"] = json!("third/img");
+        save_provider_at(&models, &settings, "alpha", &cleared).unwrap();
+        assert_eq!(load::<ModelsFile>(&models).unwrap().providers["alpha"]["imageModel"].as_str(), Some("third/img"));
         remove_provider_at(&models, "alpha").unwrap();
         assert_eq!(ids(&models), ["renamed", "third"]);
         // The registry still loads what the form wrote.

@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
 import '../api/client.dart';
 import '../api/models.dart';
 import '../state/ashira_state.dart';
+import '../state/display_prefs.dart';
+import 'about_settings.dart';
 import 'dialogs.dart';
 import 'format.dart';
 import 'model_settings.dart';
@@ -10,25 +12,27 @@ import 'theme.dart';
 import 'usage_settings.dart';
 import 'widgets.dart';
 
-Future<void> showSettings(BuildContext context, AshiraState state, {required VoidCallback onDisconnect}) => showPanel(
+/// `tab` opens a given section (the sidebar's update hint opens 关于).
+Future<void> showSettings(BuildContext context, AshiraState state, {required VoidCallback onDisconnect, String tab = 'models'}) => showPanel(
       context,
       title: '设置',
       width: 860,
-      builder: (_) => _Settings(state, onDisconnect: onDisconnect),
+      builder: (_) => _Settings(state, onDisconnect: onDisconnect, initialTab: tab),
     );
 
-const _tabs = [('models', '模型'), ('usage', '用量'), ('plugins', '插件'), ('mcp', 'MCP'), ('memory', '记忆'), ('archive', '归档'), ('connection', '连接')];
+const _tabs = [('models', '模型'), ('usage', '用量'), ('display', '显示'), ('plugins', '插件'), ('mcp', 'MCP'), ('memory', '记忆'), ('archive', '归档'), ('connection', '连接'), ('about', '关于')];
 
 class _Settings extends StatefulWidget {
-  const _Settings(this.state, {required this.onDisconnect});
+  const _Settings(this.state, {required this.onDisconnect, required this.initialTab});
   final AshiraState state;
   final VoidCallback onDisconnect;
+  final String initialTab;
   @override
   State<_Settings> createState() => _SettingsState();
 }
 
 class _SettingsState extends State<_Settings> {
-  String _tab = 'models';
+  late String _tab = widget.initialTab;
   AshiraClient get _client => widget.state.client;
   List<String> _plugins = [];
   String _pluginNote = '';
@@ -288,6 +292,27 @@ class _SettingsState extends State<_Settings> {
               SelectableText(entry.value, style: TextStyle(fontSize: 13, color: scheme.mutedForeground, height: 1.5)),
             ])),
         ],
+      'display' => [
+          ListenableBuilder(
+            listenable: displayPrefs,
+            builder: (context, _) => Bordered(children: [
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                child: Row(children: [
+                  Expanded(
+                    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      const Text('工具输出自动换行', style: TextStyle(fontSize: 14)),
+                      const SizedBox(height: 2),
+                      Text('关闭后长行保持完整，左右滚动查看', style: small),
+                    ]),
+                  ),
+                  Toggle(label: '工具输出自动换行', value: displayPrefs.wrapToolOutput, onChanged: displayPrefs.setWrapToolOutput),
+                ]),
+              ),
+            ]),
+          ),
+        ],
+      'about' => [AboutSettings(state: widget.state)],
       _ => [
           Bordered(children: [
             InfoRow('服务器', _client.baseUrl),
@@ -341,22 +366,36 @@ class _SettingsState extends State<_Settings> {
         width: 148,
         padding: const EdgeInsets.all(8),
         decoration: BoxDecoration(border: Border(right: BorderSide(color: scheme.border))),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-          for (final (id, label) in _tabs)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 4),
-              child: CompactRow(
-                selected: _tab == id,
-                onTap: () => setState(() => _tab = id),
-                padding: const EdgeInsets.symmetric(horizontal: 10),
-                child: Align(alignment: Alignment.centerLeft, child: Text(label, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500))),
+        // One highlight slides to the chosen row instead of each row lighting up in place.
+        child: Stack(children: [
+          AnimatedPositioned(
+            duration: const Duration(milliseconds: 200),
+            curve: Curves.easeOutCubic,
+            left: 0,
+            right: 0,
+            top: _tabs.indexWhere((tab) => tab.$1 == _tab) * (_navRow + 4),
+            height: _navRow,
+            child: DecoratedBox(decoration: BoxDecoration(color: scheme.muted, borderRadius: BorderRadius.circular(radius))),
+          ),
+          Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+            for (final (id, label) in _tabs)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 4),
+                child: CompactRow(
+                  onTap: () => setState(() => _tab = id),
+                  padding: const EdgeInsets.symmetric(horizontal: 10),
+                  child: Align(alignment: Alignment.centerLeft, child: Text(label, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500))),
+                ),
               ),
-            ),
+          ]),
         ]),
       ),
       Expanded(child: body),
     ]);
   }
+
+  /// [CompactRow]'s height; the sliding highlight steps by it plus the 4px gap.
+  static double get _navRow => isDesktop ? 32 : 40;
 }
 
 class _McpForm extends StatefulWidget {

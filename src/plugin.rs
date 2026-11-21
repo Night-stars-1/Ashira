@@ -291,7 +291,7 @@ impl Plugins {
                 Err(error) => warnings.push(format!("{} after_tool: {error}", plugin.manifest.name)),
             }
         }
-        let patched = changed.then(|| crate::tools::Output { text, is_error, file: output.file.clone() });
+        let patched = changed.then(|| crate::tools::Output { text, is_error, file: output.file.clone(), image: output.image.clone() });
         (patched, join_warnings(warnings))
     }
 

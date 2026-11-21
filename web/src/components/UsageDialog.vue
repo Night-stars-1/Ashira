@@ -14,6 +14,18 @@ const compact = new Intl.NumberFormat('zh-CN', { notation: 'compact', maximumFra
 const dollars = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 4 })
 const percent = new Intl.NumberFormat('zh-CN', { style: 'percent', maximumFractionDigits: 1 })
 
+/** Session average output speed: all finished replies' output over their generation time. */
+const rate = computed(() => {
+  let output = 0
+  let ms = 0
+  for (const block of props.blocks) {
+    if (block.kind !== 'assistant' || block.live || !block.metrics?.usage || !block.metrics.durationMs) continue
+    output += block.metrics.usage.output
+    ms += block.metrics.durationMs
+  }
+  return output && ms ? { rate: output * 1000 / ms, output, ms } : null
+})
+
 /** This session only: its own replies plus the subagents it started. */
 const summary = computed(() => {
   const status = props.status
@@ -28,7 +40,7 @@ const summary = computed(() => {
     { label: '缓存命中', value: prompt ? percent.format(cacheRead / prompt) : '—', title: `输入中 ${tokens.format(cacheRead)} / ${tokens.format(prompt)} tokens 来自缓存` },
     { label: '费用', value: unknown ? (cost > 0 ? `≥ ${dollars.format(cost)}` : '未知') : dollars.format(cost), title: unknown ? '部分请求没有单价，未计入' : '' },
     { label: '请求', value: tokens.format(status.requests.main + status.requests.child), title: `主代理 ${status.requests.main} · 子代理 ${status.requests.child}` },
-    { label: '上下文', value: status.window ? `${Math.round(status.context / status.window * 100)}%` : compact.format(status.context), title: `${tokens.format(status.context)} / ${status.window ? tokens.format(status.window) : '—'} tokens` },
+    { label: 'TPS', value: rate.value ? rate.value.rate.toFixed(1) : '—', title: rate.value ? `平均输出速度：${tokens.format(rate.value.output)} tokens / ${(rate.value.ms / 1000).toFixed(1)} 秒` : '还没有带耗时的回复' },
   ]
 })
 </script>
@@ -38,7 +50,7 @@ const summary = computed(() => {
     <DialogContent class="flex max-h-[85dvh] flex-col gap-0 overflow-hidden p-0 sm:max-w-2xl">
       <DialogHeader class="shrink-0 px-5 pt-5 pb-4 pr-12">
         <DialogTitle>本会话用量</DialogTitle>
-        <DialogDescription>只统计这个会话（含它启动的子代理）。所有会话的用量在 设置 → 用量。</DialogDescription>
+        <DialogDescription class="sr-only">本会话及其子代理的用量</DialogDescription>
       </DialogHeader>
       <ScrollArea v-if="status" type="auto" class="grid min-h-0 min-w-0 grid-rows-[minmax(0,1fr)]" viewport-class="h-auto min-h-0 px-5 pb-5">
         <div class="grid min-w-0 gap-4">

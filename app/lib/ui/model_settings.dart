@@ -106,7 +106,7 @@ class _ModelSettingsState extends State<ModelSettings> {
   Future<void> _edit([ProviderConfig? provider]) async {
     final config = _config;
     if (config == null) return;
-    final saved = await showDialog<bool>(context: context, builder: (_) => _ProviderForm(client: widget.client, apis: config.apis, editing: provider));
+    final saved = await showDialog<bool>(context: context, builder: (_) => _ProviderForm(client: widget.client, apis: config.apis, models: _models, editing: provider));
     if (saved == true) await _load();
   }
 
@@ -346,9 +346,11 @@ class _ModelSearchState extends State<_ModelSearch> {
 
 /// Add or edit one provider. Fetching lists the connection's models without saving.
 class _ProviderForm extends StatefulWidget {
-  const _ProviderForm({required this.client, required this.apis, this.editing});
+  const _ProviderForm({required this.client, required this.apis, required this.models, this.editing});
   final AshiraClient client;
   final List<String> apis;
+  /// Every known model, for this provider's image model.
+  final List<ModelItem> models;
   final ProviderConfig? editing;
   @override
   State<_ProviderForm> createState() => _ProviderFormState();
@@ -363,6 +365,8 @@ class _ProviderFormState extends State<_ProviderForm> {
   late String _api = widget.editing?.api.isNotEmpty == true ? widget.editing!.api : 'openai-completions';
   late String _keyKind = switch (widget.editing?.key.kind) { null || 'missing' => 'literal', final kind => kind };
   late bool _discovery = widget.editing?.discovery ?? true;
+  /// This provider's own `generate_image` model; '' uses modelRoles.image.
+  late String _imageModel = widget.editing?.imageModel ?? '';
   List<String>? _fetched;
   bool _fetching = false;
   bool _saving = false;
@@ -403,6 +407,7 @@ class _ProviderFormState extends State<_ProviderForm> {
         keyKind: _keyKind,
         keyValue: _key.text.trim(),
         discovery: _discovery,
+        imageModel: _imageModel,
         models: _listed,
       );
 
@@ -457,19 +462,18 @@ class _ProviderFormState extends State<_ProviderForm> {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final small = TextStyle(fontSize: 12, color: scheme.mutedForeground);
-    Widget label(String text) => Padding(padding: const EdgeInsets.only(bottom: 4, top: 12), child: Text(text, style: small));
+    Widget label(String text, {bool first = false}) => Padding(padding: EdgeInsets.only(bottom: 4, top: first ? 0 : 12), child: Text(text, style: small));
     final fetched = _fetched ?? const [];
     final terms = _search.text.trim().toLowerCase().split(RegExp(r'\s+')).where((term) => term.isNotEmpty);
     final shown = fetched.where((id) => terms.every(id.toLowerCase().contains)).toList();
     final listed = _listed;
     return SmallDialog(
       title: widget.editing == null ? '添加服务商' : '编辑 ${widget.editing!.id}',
-      description: '保存后会立即生效，并重新获取模型列表。',
       body: ConstrainedBox(
         constraints: BoxConstraints(maxHeight: MediaQuery.sizeOf(context).height * .6),
         child: SingleChildScrollView(
           child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-            label('服务商 ID'),
+            label('服务商 ID', first: true),
             TextField(controller: _id, decoration: const InputDecoration(hintText: 'openai'), autocorrect: false),
             label('接口类型'),
             SelectField<String>(
@@ -554,6 +558,13 @@ class _ProviderFormState extends State<_ProviderForm> {
               autocorrect: false,
               style: monoStyle(context).copyWith(fontSize: 12),
               decoration: const InputDecoration(hintText: '一行一个\ngpt-4.1\ngpt-4.1-mini'),
+            ),
+            Padding(padding: const EdgeInsets.only(top: 12, bottom: 4), child: Text('生成图片模型', style: small)),
+            ModelSearchField(
+              models: widget.models,
+              value: _imageModel,
+              placeholder: '跟随「模型分工 → 生成图片」',
+              onChanged: (model) => setState(() => _imageModel = model),
             ),
             if (_error.isNotEmpty) Padding(padding: const EdgeInsets.only(top: 8), child: Text(_error, style: TextStyle(fontSize: 13, color: scheme.error))),
           ]),

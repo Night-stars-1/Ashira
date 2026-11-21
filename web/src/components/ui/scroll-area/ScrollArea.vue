@@ -10,9 +10,9 @@ import {
 } from 'reka-ui'
 import ScrollBar from './ScrollBar.vue'
 
-const props = defineProps<ScrollAreaRootProps & { class?: HTMLAttributes['class']; viewportClass?: HTMLAttributes['class'] }>()
+const props = defineProps<ScrollAreaRootProps & { class?: HTMLAttributes['class']; viewportClass?: HTMLAttributes['class']; scrollX?: boolean }>()
 
-const delegatedProps = reactiveOmit(props, 'class', 'viewportClass')
+const delegatedProps = reactiveOmit(props, 'class', 'viewportClass', 'scrollX')
 </script>
 
 <template>
@@ -29,6 +29,7 @@ const delegatedProps = reactiveOmit(props, 'class', 'viewportClass')
       <slot />
     </ScrollAreaViewport>
     <ScrollBar />
+    <ScrollBar v-if="scrollX" orientation="horizontal" />
     <ScrollAreaCorner />
   </ScrollAreaRoot>
 </template>

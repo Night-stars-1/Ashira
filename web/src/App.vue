@@ -6,7 +6,7 @@ import FilesSidebar from '@/components/FilesSidebar.vue'
 import ProjectPicker from '@/components/ProjectPicker.vue'
 import ModelPicker from '@/components/ModelPicker.vue'
 import SessionSidebar from '@/components/SessionSidebar.vue'
-import SettingsView from '@/components/SettingsView.vue'
+import SettingsView, { type SettingsTab } from '@/components/SettingsView.vue'
 import UsageDialog from '@/components/UsageDialog.vue'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -14,6 +14,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { api } from '@/lib/api'
 import ConnectionForm from '@/components/ConnectionForm.vue'
 import { useAshira } from '@/lib/session'
+import { checkWebUpdate } from '@/lib/update'
 import Toasts from '@/components/Toasts.vue'
 import FilesSidebarSkeleton from '@/components/FilesSidebarSkeleton.vue'
 
@@ -21,8 +22,10 @@ const FileEditor = defineAsyncComponent(() => import('@/components/FileEditor.vu
 const modelsOpen = ref(false)
 const pickerOpen = ref(false)
 const settingsOpen = ref(false)
+const settingsTab = ref<SettingsTab>('models')
 const usageOpen = ref(false)
 const filesOpen = useLocalStorage('ashira.filesOpen', true)
+const sessionsOpen = useLocalStorage('ashira.sessionsOpen', true)
 const desktop = useMediaQuery('(min-width: 64rem)')
 const drawer = ref<'sessions' | 'files' | null>(null)
 const filePath = ref('')
@@ -30,9 +33,12 @@ const aliasPath = ref('')
 const aliasName = ref('')
 const aliasError = ref('')
 const {
-  status, tree, archive, blocks, draft, model, modelTitle, fast, connected, loading, naming, confirm, question,
+  status, server, tree, archive, blocks, draft, model, modelTitle, fast, connected, loading, naming, confirm, question,
   busy, hasReplyText, shownId, shownCwd, sessionName, needsConnection, runningIds, askingIds, send, openSession, decide, answer, interrupt, refresh, updateSettings, renameSession, setArchived,
 } = useAshira()
+
+// Hint only: a newer web release shows a download link in the sidebar.
+void checkWebUpdate()
 
 function chooseModel(selector: string) {
   return updateSettings((id) => api.model(id, selector))
@@ -59,8 +65,10 @@ function showProjectPicker() {
   pickerOpen.value = true
 }
 
-function showSettings() {
+/** Opens settings, on `tab` when given (the sidebar's update hint opens 关于). */
+function showSettings(tab?: SettingsTab) {
   drawer.value = null
+  if (tab) settingsTab.value = tab
   settingsOpen.value = true
 }
 
@@ -116,9 +124,12 @@ function saveRename() {
 
 <template>
   <div class="flex h-dvh min-w-0 overflow-hidden bg-background text-foreground">
-    <div v-if="desktop" class="flex w-64 shrink-0 border-r border-sidebar-border">
-      <SessionSidebar :tree="tree" :active-id="shownId" :running="runningIds" :asking="askingIds" :connected="connected" :update="status?.update"
-        @resume="selectSession" @alias="openAlias" @rename="openRename" @archive="(kind, key) => setArchived(kind, key, true)" @create="showProjectPicker" @settings="showSettings" />
+    <!-- Folds away to the left; the chat header brings it back. -->
+    <div v-if="desktop" class="flex shrink-0 overflow-hidden border-sidebar-border transition-[width] duration-200 ease-out motion-reduce:transition-none" :class="sessionsOpen ? 'w-64 border-r' : 'w-0'">
+      <div class="flex w-64 shrink-0">
+        <SessionSidebar :tree="tree" :active-id="shownId" :running="runningIds" :asking="askingIds" :connected="connected" :update="server.update" collapsible
+          @resume="selectSession" @alias="openAlias" @rename="openRename" @archive="(kind, key) => setArchived(kind, key, true)" @create="showProjectPicker" @settings="showSettings()" @about="showSettings('about')" @collapse="sessionsOpen = false" />
+      </div>
     </div>
 
     <Dialog :open="drawer !== null" @update:open="(open) => { if (!open) drawer = null }">
@@ -128,8 +139,8 @@ function saveRename() {
         :aria-describedby="undefined"
       >
         <DialogTitle class="sr-only">{{ drawer === 'sessions' ? '会话列表' : '项目文件' }}</DialogTitle>
-        <SessionSidebar v-if="drawer === 'sessions'" :tree="tree" :active-id="shownId" :running="runningIds" :asking="askingIds" :connected="connected" :update="status?.update"
-          @resume="selectSession" @alias="openAlias" @rename="openRename" @archive="(kind, key) => setArchived(kind, key, true)" @create="showProjectPicker" @settings="showSettings" />
+        <SessionSidebar v-if="drawer === 'sessions'" :tree="tree" :active-id="shownId" :running="runningIds" :asking="askingIds" :connected="connected" :update="server.update"
+          @resume="selectSession" @alias="openAlias" @rename="openRename" @archive="(kind, key) => setArchived(kind, key, true)" @create="showProjectPicker" @settings="showSettings()" @about="showSettings('about')" />
         <FilesSidebar v-else-if="drawer === 'files' && shownId" :key="shownId" class="w-full flex-1 border-0"
           :session-id="shownId" :cwd="shownCwd" :active="filePath" @open="openFile" />
       </DialogContent>
@@ -150,6 +161,9 @@ function saveRename() {
       :connected="connected"
       :loading="loading"
       :files-open="desktop && filesOpen"
+      :sessions-collapsed="desktop && !sessionsOpen"
+      :context-tokens="status?.context ?? 0"
+      :context-window="status?.window ?? null"
       :question="question"
       @update:draft="draft = $event"
       @interrupt="interrupt"
@@ -157,6 +171,7 @@ function saveRename() {
       @open-models="showModels"
       @open-usage="usageOpen = true"
       @open-sessions="drawer = 'sessions'"
+      @expand-sessions="sessionsOpen = true"
       @toggle-files="toggleFiles"
     />
 
@@ -167,7 +182,11 @@ function saveRename() {
 
     <SettingsView
       v-model:open="settingsOpen"
+      v-model:tab="settingsTab"
       :archive="archive"
+      :server-version="server.version"
+      :server-update="server.update"
+      :hosted="server.web !== null"
       @restore="(kind, key) => setArchived(kind, key, false)"
     />
     <UsageDialog v-model:open="usageOpen" :status="status" :blocks="blocks" />

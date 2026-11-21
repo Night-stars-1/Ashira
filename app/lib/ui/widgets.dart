@@ -21,7 +21,9 @@ class PanelHeader extends StatelessWidget {
 class CompactRow extends StatefulWidget {
   const CompactRow({super.key, required this.child, this.onTap, this.onLongPress, this.selected = false, this.padding = const EdgeInsets.symmetric(horizontal: 8)});
   final Widget child;
-  final VoidCallback? onTap, onLongPress;
+  final VoidCallback? onTap;
+  /// Long press or right click, with where it happened in the row (for a context menu).
+  final void Function(Offset position)? onLongPress;
   final bool selected;
   final EdgeInsets padding;
   @override
@@ -30,10 +32,12 @@ class CompactRow extends StatefulWidget {
 
 class _CompactRowState extends State<CompactRow> {
   bool _pressed = false;
+  Offset _at = Offset.zero;
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    final menu = widget.onLongPress;
     return Transform.translate(
       offset: Offset(0, _pressed ? 1 : 0),
       child: Material(
@@ -42,8 +46,10 @@ class _CompactRowState extends State<CompactRow> {
         child: InkWell(
           borderRadius: BorderRadius.circular(radius),
           onTap: widget.onTap,
-          onLongPress: widget.onLongPress,
-          onSecondaryTap: widget.onLongPress,
+          onTapDown: (details) => _at = details.localPosition,
+          onSecondaryTapDown: (details) => _at = details.localPosition,
+          onLongPress: menu == null ? null : () => menu(_at),
+          onSecondaryTap: menu == null ? null : () => menu(_at),
           onHighlightChanged: (pressed) => setState(() => _pressed = pressed),
           // Padding eases like the web Button's `transition-all` (150ms, Tailwind's ease). The
           // session rows rely on it: on hover the time hides at once while the right padding
@@ -131,16 +137,23 @@ class Pill extends StatelessWidget {
 }
 
 class StatusTag extends StatelessWidget {
-  const StatusTag(this.text, {super.key, this.destructive = false});
+  const StatusTag(this.text, {super.key, this.destructive = false, this.accent = false});
   final String text;
   final bool destructive;
+  /// Calls for action (an available update): primary fill.
+  final bool accent;
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    final (background, foreground) = destructive
+        ? (scheme.error.withValues(alpha: .15), scheme.error)
+        : accent
+            ? (scheme.primary, scheme.onPrimary)
+            : (scheme.muted, scheme.onSurface);
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-      decoration: BoxDecoration(color: destructive ? scheme.error.withValues(alpha: .15) : scheme.muted, borderRadius: BorderRadius.circular(6)),
-      child: Text(text, style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: destructive ? scheme.error : scheme.onSurface)),
+      decoration: BoxDecoration(color: background, borderRadius: BorderRadius.circular(6)),
+      child: Text(text, style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: foreground)),
     );
   }
 }

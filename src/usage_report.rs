@@ -21,9 +21,13 @@ struct Bucket {
     /// Requests whose price was unknown; their cost is missing from `cost`.
     unknown: u64,
     requests: u64,
+    /// Output tokens and generation time of requests that logged a duration, for TPS;
+    /// legacy per-turn records have no time and stay out of both.
+    timed_output: u64,
+    duration_ms: u64,
 }
 
-/// `{buckets: [{hour, model, input, output, cacheRead, cacheWrite, cost, unknown, requests}], sessions}`;
+/// `{buckets: [{hour, model, input, output, cacheRead, cacheWrite, cost, unknown, requests, timedOutput, durationMs}], sessions}`;
 /// `hour` is unix seconds / 3600.
 pub fn report(registry: &Registry) -> Value {
     let files = session::all_files();
@@ -36,6 +40,7 @@ pub fn report(registry: &Registry) -> Value {
         "hour": hour, "model": model,
         "input": b.usage.input, "output": b.usage.output, "cacheRead": b.usage.cache_read, "cacheWrite": b.usage.cache_write,
         "cost": b.cost, "unknown": b.unknown, "requests": b.requests,
+        "timedOutput": b.timed_output, "durationMs": b.duration_ms,
     })).collect();
     json!({"buckets": rows, "sessions": sessions})
 }
@@ -73,6 +78,10 @@ fn scan(path: &Path, registry: &Registry, buckets: &mut BTreeMap<(u64, String), 
                     _ => bucket.unknown += 1,
                 }
                 bucket.requests += 1;
+                if let Some(usage) = stats.usage.filter(|usage| usage.output > 0 && stats.duration_ms > 0) {
+                    bucket.timed_output += usage.output;
+                    bucket.duration_ms += stats.duration_ms;
+                }
                 any = true;
             }
             Some("usage") if !ledger => {
@@ -134,6 +143,7 @@ mod tests {
         assert!(scan(&path, &Registry::empty(), &mut buckets));
         let a = &buckets[&(5, "p/a".to_owned())];
         assert_eq!((a.usage.input, a.requests, a.cost, a.unknown), (30, 2, 0.5, 1));
+        assert_eq!((a.timed_output, a.duration_ms), (2, 2));
         let b = &buckets[&(2, "p/b".to_owned())];
         assert_eq!((b.usage.input, b.requests, b.cost), (30, 1, 1.0));
         assert_eq!(buckets.len(), 2);
@@ -145,6 +155,8 @@ mod tests {
         assert!(scan(&old, &Registry::empty(), &mut buckets));
         let c = &buckets[&(1, "p/c".to_owned())];
         assert_eq!((c.usage.input, c.usage.output, c.unknown), (4, 2, 1));
+        // No request times before the ledger, so no TPS either.
+        assert_eq!((c.timed_output, c.duration_ms), (0, 0));
         std::fs::remove_dir_all(dir).unwrap();
     }
 

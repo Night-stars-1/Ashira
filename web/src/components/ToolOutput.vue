@@ -6,6 +6,7 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import type { ToolCard } from '@/components/Transcript.vue'
 import WorkspaceImage from '@/components/WorkspaceImage.vue'
 import { generatedImages } from '@/lib/api'
+import { wrapToolOutput } from '@/lib/display'
 
 type TodoTask = { content: string; status: string; reason: string }
 type TodoPhase = { name: string; tasks: TodoTask[] }
@@ -127,17 +128,18 @@ function todoLabel(status: string) {
         </div>
       </dl>
     </div>
-    <ScrollArea v-else-if="tool.output" class="border-t" viewport-class="max-h-64">
-      <div v-if="numbered" class="px-3 py-2 font-mono text-xs">
+    <!-- 设置 → 显示: unwrapped lines keep their width and scroll sideways. -->
+    <ScrollArea v-else-if="tool.output" class="border-t" viewport-class="max-h-64" :scroll-x="!wrapToolOutput">
+      <div v-if="numbered" class="px-3 py-2 font-mono text-xs" :class="!wrapToolOutput && 'w-max min-w-full'">
         <template v-for="(row, rowIndex) in numbered" :key="rowIndex">
           <div v-if="row.n" class="flex gap-2">
             <span class="w-6 shrink-0 text-right text-muted-foreground tabular-nums">{{ row.n }}</span>
-            <span class="min-w-0 flex-1 whitespace-pre-wrap">{{ row.text }}</span>
+            <span class="min-w-0 flex-1" :class="wrapToolOutput ? 'whitespace-pre-wrap' : 'whitespace-pre'">{{ row.text }}</span>
           </div>
-          <p v-else-if="row.text" class="mt-1 text-muted-foreground whitespace-pre-wrap">{{ row.text }}</p>
+          <p v-else-if="row.text" class="mt-1 text-muted-foreground" :class="wrapToolOutput ? 'whitespace-pre-wrap' : 'whitespace-pre'">{{ row.text }}</p>
         </template>
       </div>
-      <pre v-else class="px-3 py-2 font-mono text-xs whitespace-pre-wrap">{{ tool.output }}</pre>
+      <pre v-else class="px-3 py-2 font-mono text-xs" :class="wrapToolOutput ? 'whitespace-pre-wrap' : 'w-max min-w-full whitespace-pre [overflow-wrap:normal]'">{{ tool.output }}</pre>
     </ScrollArea>
   </div>
 </template>

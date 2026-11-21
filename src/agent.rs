@@ -193,10 +193,11 @@ impl Model {
         Arc::new(Model { client, tools: Mutex::new(ToolCache { generation: u64::MAX, image: false, parent: Arc::default(), task: Arc::default(), scout: Arc::default() }) })
     }
 
-    /// `image_role`: `modelRoles.image` is set. Either that or this model being on Responses
-    /// (which can run the provider's built-in image tool) offers `generate_image`.
-    fn tools(&self, mcp: &Mcp, plugins: &crate::plugin::Plugins, role: Option<Role>, interactive: bool, image_role: bool) -> Arc<Value> {
-        let image = image_role || self.client.on_responses();
+    /// `image_model`: this chat's provider has an image model (its `imageModel` or
+    /// `modelRoles.image`). Either that or this model being on Responses (which can run the
+    /// provider's built-in image tool) offers `generate_image`.
+    fn tools(&self, mcp: &Mcp, plugins: &crate::plugin::Plugins, role: Option<Role>, interactive: bool, image_model: bool) -> Arc<Value> {
+        let image = image_model || self.client.on_responses();
         let generation = mcp.generation();
         let mut t = self.tools.lock().expect("tools lock");
         if t.generation != generation || t.image != image {
@@ -210,7 +211,8 @@ impl Model {
                 scout: Arc::new(self.client.wire_tools(tools::definitions(Some(Role::Scout), &defs, &[], interactive, image))),
             };
         }
-        match role { None => t.parent.clone(), Some(Role::Task) => t.task.clone(), Some(Role::Scout) => t.scout.clone() }
+        // A shell job runs no model, so it never asks for tools; treat it like a task to stay total.
+        match role { None => t.parent.clone(), Some(Role::Task | Role::Shell) => t.task.clone(), Some(Role::Scout) => t.scout.clone() }
     }
 }
 
@@ -461,10 +463,11 @@ impl Shared {
         }
     }
 
-    /// Whether `modelRoles.image` is set. `generate_image` is offered then, or when the
-    /// model is on Responses (see `Model::tools`); a broken role surfaces when the tool runs.
-    pub fn has_image_role(&self) -> bool {
-        self.registry().role("image").is_some_and(|value| !value.trim().is_empty())
+    /// Whether a chat on `provider` has an image model (its `imageModel` or `modelRoles.image`).
+    /// `generate_image` is offered then, or when the model is on Responses (see `Model::tools`);
+    /// a broken selector surfaces when the tool runs.
+    pub fn has_image_model(&self, provider: &str) -> bool {
+        self.registry().has_image_model(provider)
     }
 
     pub fn turn_token(&self) -> CancellationToken { self.root.child_token() }
@@ -568,7 +571,7 @@ impl Shared {
         let base: Arc<str> = Arc::from(base);
         let mcp: Arc<str> = if role == Some(Role::Scout) { Arc::from("") } else { self.mcp.instructions() };
         let mut cached = self.full_system.lock().expect("system lock");
-        let slot = &mut cached[match role { None => 0, Some(Role::Task) => 1, Some(Role::Scout) => 2 }];
+        let slot = &mut cached[match role { None => 0, Some(Role::Task | Role::Shell) => 1, Some(Role::Scout) => 2 }];
         if let Some(c) = slot
             && c.base == base && c.mcp == mcp && c.memory == memory
         {
@@ -659,20 +662,19 @@ impl Agent {
         Ok(())
     }
 
-    /// `generate_image`: the `modelRoles.image` model's `images/generations` endpoint, or
-    /// without one the agent's own Responses model through the provider's built-in tool.
-    /// Recorded like any other request so its cost shows in the usage figures.
+    /// `generate_image`: the image model for this chat's provider (`providers.<id>.imageModel`,
+    /// else `modelRoles.image`) through its `images/generations` endpoint, or without one the
+    /// agent's own Responses model through the provider's built-in tool. Recorded like any
+    /// other request so its cost shows in the usage figures.
     async fn generate_image(&self, input: &Value, cancel: &CancellationToken) -> Output {
         use crate::image_gen::Source;
         self.shared.reload_registry();
-        let (model, source) = match self.shared.registry().resolve_role("image") {
+        let current = match self.current_model() { Ok(model) => model, Err(error) => return Output::err(error) };
+        let (model, source) = match self.shared.registry().resolve_image(current.client.provider()) {
             Some(Ok(resolved)) => match Client::new(resolved) { Ok(client) => (Model::new(client), Source::Images), Err(error) => return Output::err(error) },
             Some(Err(error)) => return Output::err(error),
-            None => match self.current_model() {
-                Ok(model) if model.client.on_responses() => (model, Source::Hosted),
-                Ok(_) => return Output::err("no image model: set modelRoles.image in config.yml (or Settings → 模型 → 生成图片)"),
-                Err(error) => return Output::err(error),
-            },
+            None if current.client.on_responses() => (current, Source::Hosted),
+            None => return Output::err("no image model: set modelRoles.image in config.yml, or this provider's imageModel (Settings → 模型)"),
         };
         let client = &model.client;
         let request_id = match self.begin_request(client, crate::stats::Kind::Image, cancel).await { Ok(id) => id, Err(error) => return Output::err(error) };
@@ -708,7 +710,7 @@ impl Agent {
         }
         let role = self.identity.as_ref().map(|identity| identity.role);
         if self.history.len() <= 1 && role != Some(Role::Scout) { self.shared.mcp.wait_settled(Duration::from_millis(1500), false).await; }
-        Ok((self.shared.system(role).await?, model.tools(&self.shared.mcp, &self.shared.plugins, role, self.shared.interactive, self.shared.has_image_role())))
+        Ok((self.shared.system(role).await?, model.tools(&self.shared.mcp, &self.shared.plugins, role, self.shared.interactive, self.shared.has_image_model(model.client.provider()))))
     }
 
     async fn receive_messages(&mut self, cancel: &CancellationToken) -> Result<bool, String> {
@@ -1073,7 +1075,10 @@ impl Agent {
         }
         let text = if name == "todo" { out.text } else { tools::truncate(out.text, None) };
         self.shared.emit(Event::ToolEnd { call: call_info, output: text.clone(), is_error: out.is_error, file: out.file });
-        json!({ "type": "tool_result", "tool_use_id": call["id"], "content": text, "is_error": out.is_error })
+        // A picture rides in the result as Anthropic content blocks; the other wires move
+        // it to a user message (see openai.rs / responses.rs).
+        let content = match out.image { Some(image) => json!([{ "type": "text", "text": text }, image]), None => json!(text) };
+        json!({ "type": "tool_result", "tool_use_id": call["id"], "content": content, "is_error": out.is_error })
     }
 
     async fn execute(&self, name: &str, input: &Value, cancel: &CancellationToken, call: Arc<ToolCall>) -> Output {
@@ -1118,7 +1123,11 @@ impl Agent {
                     return Output::err(denied);
                 }
                 if cancel.is_cancelled() { return Output::err("cancelled"); }
-                tools::bash(input, cancel, &self.shared.cwd()).await
+                // Only the root agent receives job results; children keep the plain timeout.
+                match tools::bash(input, cancel, &self.shared.cwd(), self.identity.is_none()).await {
+                    tools::Bash::Done(output) => output,
+                    tools::Bash::Background(running) => self.background_shell(input, running),
+                }
             }
             "read" => match input["path"].as_str().and_then(|p| p.strip_prefix("mcp://")) {
                 Some(uri) => self.shared.mcp.read_resource(uri, cancel).await,
@@ -1178,6 +1187,56 @@ impl Agent {
             if let Some(patched) = patched { out = patched; }
         }
         out
+    }
+
+    /// Moves a running `bash` command into the job list. Output streams to the job's
+    /// transcript file; the finished output is delivered like a subagent report, so `wait`,
+    /// `task_status`, `task_cancel` and the automatic resume all apply.
+    fn background_shell(&self, input: &Value, mut running: tools::Running) -> Output {
+        let command = input["command"].as_str().unwrap_or_default();
+        let name = input.get("i").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty())
+            .map(|s| s.chars().take(80).collect())
+            .unwrap_or_else(|| command.lines().next().unwrap_or("bash").chars().take(80).collect::<String>());
+        let so_far = running.text();
+        let Some(model) = self.shared.model() else { return Output::err("no active model") };
+        let (lease, log) = {
+            let _gate = self.shared.launch.lock().unwrap();
+            match self.shared.subagents.create_shell(self.shared.subagents.owner(), name, command.to_owned(), model) {
+                Ok(created) => created,
+                Err(error) => return Output::err(error),
+            }
+        };
+        let manager = self.shared.subagents.clone();
+        let id = lease.identity.id.clone();
+        let handle = tokio::spawn(async move {
+            if let Some(dir) = log.parent() { let _ = tokio::fs::create_dir_all(dir).await; }
+            let mut file = std::fs::File::create(&log).ok();
+            if let Some(file) = &mut file { let _ = std::io::Write::write_all(file, running.text().as_bytes()); }
+            let deadline = tokio::time::Instant::now() + tools::BACKGROUND_LIMIT;
+            let finished = running.run_until_with(deadline, &lease.cancel, |chunk| {
+                if let Some(file) = &mut file { let _ = std::io::Write::write_all(file, chunk); }
+            }).await;
+            // A failed command is still a finished job: its output, with the exit code, is the
+            // report. Cancelled and timed-out ones keep what they printed and say why they ended.
+            let result = match finished {
+                Some(output) => Ok(output.text),
+                None => {
+                    let why = if lease.cancel.is_cancelled() { "cancelled".to_owned() } else { format!("timed out after {}s in the background", tools::BACKGROUND_LIMIT.as_secs()) };
+                    let printed = running.text();
+                    running.kill(&why).await;
+                    if printed.trim().is_empty() { Err(why) } else { Err(format!("{why}; output so far:\n{}", tools::truncate(printed, Some(&log)))) }
+                }
+            };
+            manager.finish(&lease, result).await;
+        });
+        self.shared.subagents.track(handle);
+        let shown = tools::truncate(so_far, None);
+        Output::ok(json!({
+            "job": id,
+            "status": "running",
+            "note": "Still running, moved to the background. Its output arrives later as subagent-results data; use wait, task_status or task_cancel with this id.",
+            "output_so_far": shown,
+        }).to_string())
     }
 
     fn job_status(&self, input: &Value) -> Output {
@@ -1595,7 +1654,7 @@ pub async fn handle_worker_request(shared: Arc<Shared>, run: &subagents::RunLeas
             if params["first"] == true && run.identity.role != Role::Scout { shared.mcp.wait_settled(Duration::from_millis(1500), false).await; }
             let base = shared.system(Some(run.identity.role)).await?;
             let system = format!("{base}\n\nYour stable agent ID is {} (run {}). The parent is agent://parent. Your role is {}. Discover peers with read agent://.", run.identity.id, run.endpoint.generation, run.identity.role.as_str());
-            let tools = run.model.tools(&shared.mcp, &crate::plugin::Plugins::empty(), Some(run.identity.role), false, shared.has_image_role());
+            let tools = run.model.tools(&shared.mcp, &crate::plugin::Plugins::empty(), Some(run.identity.role), false, shared.has_image_model(run.model.client.provider()));
             Ok(json!({"system":system,"tools":tools.as_ref()}))
         }
         "run_tool" => {

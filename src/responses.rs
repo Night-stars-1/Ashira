@@ -96,16 +96,15 @@ impl Serialize for Input<'_> {
                 }
                 continue;
             }
+            // Function outputs are text; pictures a tool returned follow as the user's input.
+            let mut tool_images = Vec::new();
             for b in blocks.iter().filter(|b| b["type"] == "tool_result") {
-                let text = match &b["content"] {
-                    Value::String(t) => Cow::Borrowed(t.as_str()),
-                    other => Cow::Owned(other.to_string()),
-                };
-                let output = if b["is_error"] == true { Cow::Owned(format!("Error: {text}")) } else { text };
+                let (output, images) = crate::api::tool_result_parts(b);
+                tool_images.extend(images);
                 seq.serialize_element(&Item::FunctionCallOutput { call_id: b["tool_use_id"].as_str().unwrap_or_default(), output })?;
             }
             let mut parts = Vec::new();
-            for b in blocks {
+            for b in tool_images.into_iter().chain(blocks.iter().filter(|b| b["type"] != "tool_result")) {
                 match b["type"].as_str() {
                     Some("text") => {
                         if let Some(text) = b["text"].as_str() {

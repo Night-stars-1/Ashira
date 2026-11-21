@@ -7,6 +7,8 @@ const viewKey = 'ashira.session'
 
 export function useAshira() {
   const status = ref<Status | null>(null)
+  /** The server's version and newer release, from `GET /v1`; session views don't carry them. */
+  const server = ref<{ version: string; update: string | null; web: Status['web'] }>({ version: '', update: null, web: null })
   const tree = ref<SessionNode[]>([])
   // Sessions with a turn running on the server, from the last list refresh.
   const listedRunning = ref<string[]>([])
@@ -203,7 +205,7 @@ export function useAshira() {
       question.value = null
       const current = blocks.value.at(-1)
       if (current?.kind === 'assistant') current.live = false
-      if (event.ok === false) toast(event.error || '回合失败')
+      if (event.ok === false && event.error !== 'cancelled') toast(event.error || '回合失败')
       const mine = view
       void syncHistory().catch((reason: unknown) => { if (mine === view) fail(reason, '无法加载会话') })
       void refresh().catch(() => {})
@@ -372,6 +374,7 @@ export function useAshira() {
       listedAsking.value = listing.asking
       archive.value = listing.archive
       initialCwd.value = service.cwd
+      server.value = { version: service.version, update: service.update, web: service.web }
       if (mine !== view) return
       const ids = listing.tree.flatMap(function collect(node): string[] {
         return [...node.sessions.map((item) => item.id), ...node.children.flatMap(collect)]
@@ -394,7 +397,7 @@ export function useAshira() {
   })
   onUnmounted(() => { source?.close(); clearTimeout(listTimer) })
 
-  return { status, tree, archive, blocks, draft, model, modelTitle, fast, connected, loading, naming, confirm, question,
+  return { status, server, tree, archive, blocks, draft, model, modelTitle, fast, connected, loading, naming, confirm, question,
     busy, hasReplyText, shownId, shownCwd, sessionName, needsConnection, runningIds, askingIds, send, openSession, decide, answer, interrupt, refresh, updateSettings, renameSession, setArchived }
 }
 

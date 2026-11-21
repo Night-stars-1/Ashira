@@ -1,6 +1,7 @@
 //! `ashira update [VERSION]`: replaces this executable with a GitHub Release build of
-//! ashira-core, checked against the release's SHA256SUMS.txt. Startup also checks for
-//! a newer release in the background, at most once a day.
+//! ashira-core, checked against the release's SHA256SUMS.txt, and moves the `--web`
+//! folder (config.yml `web:`) to the same release. Startup also checks for a newer
+//! release in the background, at most once a day.
 
 use std::{
     env, fs,
@@ -171,22 +172,106 @@ pub async fn run(requested: Option<&str>) -> Result<String, String> {
     let release = release(&http, tag.as_deref()).await?;
     if tag.is_none() && !newer(&release.tag_name, CURRENT) {
         remember(&release.tag_name);
-        return Ok(format!("已是最新版本 v{CURRENT}"));
+        let mut message = format!("已是最新版本 v{CURRENT}");
+        // The core is current but its page may lag (copied by hand, or a failed earlier update).
+        if let Some(dir) = crate::config::web_dir().filter(|dir| crate::web::installed_version(dir).as_deref() != Some(CURRENT)) {
+            match install_web(&dir).await {
+                Ok(tag) => message.push_str(&format!("\n网页已更新到 {tag}（{}）", dir.display())),
+                Err(error) => message.push_str(&format!("\n网页没有更新：{error}")),
+            }
+        }
+        return Ok(message);
     }
     let suffix = format!("-{platform}.{ARCHIVE}");
     let asset = release.assets.iter().find(|a| a.name.starts_with("ashira-core-") && a.name.ends_with(&suffix))
         .ok_or_else(|| format!("{} 里没有 {platform} 版 ashira-core", release.tag_name))?;
     eprintln!("下载 {}", asset.name);
     let archive = download(&http, &asset.browser_download_url, true).await?;
-    let sums = release.assets.iter().find(|a| a.name == "SHA256SUMS.txt")
-        .ok_or_else(|| format!("{} 没有 SHA256SUMS.txt，无法校验，已取消", release.tag_name))?;
-    let sums = String::from_utf8(download(&http, &sums.browser_download_url, false).await?).map_err(|_| "SHA256SUMS.txt 不是文本")?;
+    let sums = checksums(&http, &release).await?;
     verify(&archive, &asset.name, &sums)?;
     let binary = extract(&archive)?;
     let target = env::current_exe().map_err(|e| format!("找不到当前程序：{e}"))?;
     replace(&target, &binary)?;
     remember(&release.tag_name);
-    Ok(format!("已更新到 {}（{}）", release.tag_name, target.display()))
+    let mut message = format!("已更新到 {}（{}）", release.tag_name, target.display());
+    // The page follows the core: a newer page may call routes an older core lacks.
+    if let Some(dir) = crate::config::web_dir() {
+        match install_web_from(&http, &release, &sums, &dir).await {
+            Ok(()) => message.push_str(&format!("\n网页已更新到 {}（{}）", release.tag_name, dir.display())),
+            Err(error) => message.push_str(&format!("\n网页没有更新：{error}")),
+        }
+    }
+    Ok(message)
+}
+
+async fn checksums(http: &reqwest::Client, release: &Release) -> Result<String, String> {
+    let sums = release.assets.iter().find(|a| a.name == "SHA256SUMS.txt")
+        .ok_or_else(|| format!("{} 没有 SHA256SUMS.txt，无法校验，已取消", release.tag_name))?;
+    String::from_utf8(download(http, &sums.browser_download_url, false).await?).map_err(|_| "SHA256SUMS.txt 不是文本".into())
+}
+
+/// Puts the web build of this core's release into `dir`, for the page's 更新网页 button.
+pub async fn install_web(dir: &Path) -> Result<String, String> {
+    let http = http()?;
+    let release = release(&http, Some(&normalize_tag(CURRENT))).await?;
+    let sums = checksums(&http, &release).await?;
+    install_web_from(&http, &release, &sums, dir).await?;
+    Ok(release.tag_name)
+}
+
+async fn install_web_from(http: &reqwest::Client, release: &Release, sums: &str, dir: &Path) -> Result<(), String> {
+    let asset = release.assets.iter().find(|a| a.name.starts_with("ashira-web-") && a.name.ends_with(".zip"))
+        .ok_or_else(|| format!("{} 里没有网页包", release.tag_name))?;
+    let archive = download(http, &asset.browser_download_url, false).await?;
+    verify(&archive, &asset.name, sums)?;
+    let (dir, tag) = (dir.to_path_buf(), release.tag_name.clone());
+    tokio::task::spawn_blocking(move || replace_web(&archive, &dir, &tag)).await.map_err(|e| e.to_string())?
+}
+
+/// Unpacks next to `dir`, then swaps the folders, so a failed unpack leaves the old page
+/// in place and a browser never loads half of each.
+fn replace_web(archive: &[u8], dir: &Path, tag: &str) -> Result<(), String> {
+    let parent = dir.parent().ok_or("网页目录无效")?;
+    let name = dir.file_name().ok_or("网页目录无效")?.to_string_lossy().into_owned();
+    let staged = parent.join(format!(".{name}.new"));
+    let old = parent.join(format!(".{name}.old"));
+    let _ = fs::remove_dir_all(&staged);
+    let _ = fs::remove_dir_all(&old);
+    fs::create_dir_all(&staged).map_err(|e| format!("无法写入 {}：{e}", parent.display()))?;
+    let result = unpack_web(archive, &staged).and_then(|()| {
+        crate::web::mark(&staged, tag).map_err(|e| e.to_string())?;
+        if dir.exists() { fs::rename(dir, &old).map_err(|e| format!("无法替换 {}：{e}", dir.display()))?; }
+        fs::rename(&staged, dir).map_err(|e| {
+            let _ = fs::rename(&old, dir);
+            format!("无法替换 {}：{e}", dir.display())
+        })
+    });
+    let _ = fs::remove_dir_all(&staged);
+    let _ = fs::remove_dir_all(&old);
+    result
+}
+
+/// The zip holds one folder (`ashira-web-<tag>/`); its contents go straight into `into`.
+fn unpack_web(archive: &[u8], into: &Path) -> Result<(), String> {
+    let invalid = |e: &dyn std::fmt::Display| format!("网页包损坏：{e}");
+    let mut zip = zip::ZipArchive::new(Cursor::new(archive)).map_err(|e| invalid(&e))?;
+    for index in 0..zip.len() {
+        let mut file = zip.by_index(index).map_err(|e| invalid(&e))?;
+        // `enclosed_name` rejects absolute paths and `..`; the first component is the wrapper folder.
+        let Some(path) = file.enclosed_name() else { return Err(invalid(&"非法路径")) };
+        let relative: PathBuf = path.components().skip(1).collect();
+        if relative.as_os_str().is_empty() { continue; }
+        let target = into.join(relative);
+        if file.is_dir() {
+            fs::create_dir_all(&target).map_err(|e| e.to_string())?;
+            continue;
+        }
+        if let Some(parent) = target.parent() { fs::create_dir_all(parent).map_err(|e| e.to_string())?; }
+        let mut out = fs::File::create(&target).map_err(|e| e.to_string())?;
+        io::copy(&mut file, &mut out).map_err(|e| invalid(&e))?;
+    }
+    if !crate::web::installed(into) { return Err("网页包里没有 index.html".into()); }
+    Ok(())
 }
 
 fn verify(data: &[u8], name: &str, sums: &str) -> Result<(), String> {
@@ -336,5 +421,35 @@ mod tests {
         assert!(verify(data, "ashira-core-v1.0.0-linux-x64.tar.gz", &sums).is_ok());
         assert!(verify(b"tampered", "ashira-core-v1.0.0-linux-x64.tar.gz", &sums).is_err());
         assert!(verify(data, "missing.zip", &sums).is_err());
+    }
+
+    #[test]
+    fn web_update_swaps_the_folder_and_keeps_it_on_a_bad_archive() {
+        use std::io::Write as _;
+        let root = std::env::temp_dir().join(format!("ashira-webup-{}-{}", std::process::id(), SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
+        let dir = root.join("web");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("index.html"), "old").unwrap();
+        fs::write(dir.join("stale.js"), "gone after update").unwrap();
+
+        let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        let options = zip::write::SimpleFileOptions::default();
+        zip.start_file("ashira-web-v0.3.0/index.html", options).unwrap();
+        zip.write_all(b"new").unwrap();
+        zip.start_file("ashira-web-v0.3.0/assets/app.js", options).unwrap();
+        zip.write_all(b"js").unwrap();
+        let archive = zip.finish().unwrap().into_inner();
+
+        replace_web(&archive, &dir, "v0.3.0").unwrap();
+        assert_eq!(fs::read_to_string(dir.join("index.html")).unwrap(), "new");
+        assert_eq!(fs::read_to_string(dir.join("assets/app.js")).unwrap(), "js");
+        assert!(!dir.join("stale.js").exists());
+        assert_eq!(crate::web::installed_version(&dir).as_deref(), Some("0.3.0"));
+
+        // A broken archive leaves the installed page untouched.
+        assert!(replace_web(b"not a zip", &dir, "v0.4.0").is_err());
+        assert_eq!(fs::read_to_string(dir.join("index.html")).unwrap(), "new");
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 1, "no staging folders left behind");
+        fs::remove_dir_all(&root).unwrap();
     }
 }

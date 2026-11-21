@@ -106,6 +106,11 @@ impl Client {
         &self.selector
     }
 
+    /// The `models.yml` provider id this model belongs to.
+    pub fn provider(&self) -> &str {
+        &self.cfg.provider
+    }
+
     pub fn fast_enabled(&self) -> bool { self.cfg.fast }
 
     /// Whether the next request sends `service_tier=fast`, including an explicit extraBody value.
@@ -539,6 +544,21 @@ impl Decoder for AnthropicStream {
     }
 }
 
+/// A `tool_result`'s text (prefixed `Error: ` when it failed) and its image blocks, for
+/// wires whose tool outputs carry text only and send pictures in a following user turn.
+pub(crate) fn tool_result_parts(block: &Value) -> (Cow<'_, str>, Vec<&Value>) {
+    let (text, images): (Cow<'_, str>, Vec<&Value>) = match &block["content"] {
+        Value::String(text) => (Cow::Borrowed(text.as_str()), Vec::new()),
+        Value::Array(parts) => (
+            Cow::Owned(parts.iter().filter(|p| p["type"] == "text").filter_map(|p| p["text"].as_str()).collect::<Vec<_>>().join("\n")),
+            parts.iter().filter(|p| p["type"] == "image").collect(),
+        ),
+        other => (Cow::Owned(other.to_string()), Vec::new()),
+    };
+    let text = if block["is_error"] == true { Cow::Owned(format!("Error: {text}")) } else { text };
+    (text, images)
+}
+
 /// Parses accumulated tool-call JSON; output cut off by max_tokens is kept
 /// under `_invalid_json` so the agent can report it to the model.
 pub fn parse_input(raw: String) -> Value {
@@ -785,5 +805,27 @@ mod tests {
         assert_eq!(tier(Api::AnthropicMessages, "claude-sonnet-5", true, None), None);
         assert_eq!(tier(Api::OpenaiResponses, "gpt-6.1-sol", true, Some("priority")).as_deref(), Some("priority"));
         assert_eq!(tier(Api::OpenaiResponses, "gpt-6.1-sol", false, Some("fast")).as_deref(), Some("fast"));
+    }
+
+    #[test]
+    fn tool_result_images_follow_as_user_input_on_openai_wires() {
+        let image = json!({"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "AAAA"}});
+        let history = [
+            json!({"role": "user", "content": [{"type": "text", "text": "look"}]}),
+            json!({"role": "assistant", "content": [{"type": "tool_use", "id": "r1", "name": "read", "input": {"path": "a.png"}}]}),
+            json!({"role": "user", "content": [{"type": "tool_result", "tool_use_id": "r1", "content": [{"type": "text", "text": "a.png: 2×2"}, image], "is_error": false}]}),
+        ];
+        let chat = serde_json::to_value(openai::Messages { system: "s", history: &history, extra_user: None }).unwrap();
+        let chat = chat.as_array().unwrap();
+        let tool = chat.iter().position(|m| m["role"] == "tool").unwrap();
+        assert_eq!(chat[tool]["content"], "a.png: 2×2");
+        assert_eq!(chat[tool + 1]["role"], "user");
+        assert_eq!(chat[tool + 1]["content"][0]["image_url"]["url"], "data:image/png;base64,AAAA");
+
+        let items = serde_json::to_value(responses::Input { history: &history, extra_user: None, source: "p/m" }).unwrap();
+        let items = items.as_array().unwrap();
+        let output = items.iter().position(|i| i["type"] == "function_call_output").unwrap();
+        assert_eq!(items[output]["output"], "a.png: 2×2");
+        assert_eq!(items[output + 1]["content"][0]["type"], "input_image");
     }
 }

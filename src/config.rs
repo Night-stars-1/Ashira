@@ -211,6 +211,9 @@ struct Provider {
     model_overrides: IndexMap<String, ModelDef>,
     #[serde(default)]
     models: Vec<ModelDef>,
+    /// `generate_image` for chats on this provider: a selector (any provider's model);
+    /// unset falls back to `modelRoles.image`.
+    image_model: Option<String>,
     #[serde(flatten)]
     rest: Map<String, Value>,
 }
@@ -440,8 +443,8 @@ pub(crate) fn read_settings(path: &Path) -> Result<Value, String> {
     Ok(value)
 }
 
-fn settings_memory_auto(value: &Value, path: &Path) -> Result<bool, String> {
-    let Some(memory) = value.get("memory") else { return Ok(false) };
+fn settings_memory_auto(settings: &Map<String, Value>, path: &Path) -> Result<bool, String> {
+    let Some(memory) = settings.get("memory") else { return Ok(false) };
     let memory = memory.as_object().ok_or_else(|| format!("Invalid settings {}: memory must be a mapping", path.display()))?;
     match memory.get("auto") {
         None => Ok(false),
@@ -450,7 +453,7 @@ fn settings_memory_auto(value: &Value, path: &Path) -> Result<bool, String> {
 }
 
 fn memory_auto_at(path: &Path) -> Result<bool, String> {
-    settings_memory_auto(&read_settings(path)?, path)
+    settings_memory_auto(read_settings(path)?.as_object().expect("settings root validated"), path)
 }
 
 /// Read the current automatic memory setting without depending on the model registry.
@@ -466,6 +469,35 @@ pub async fn set_memory_auto(enabled: bool) -> Result<(), String> {
 }
 
 fn set_memory_auto_at(path: &Path, enabled: bool) -> Result<(), String> {
+    edit_settings(path, |root| {
+        settings_memory_auto(root, path)?;
+        if root.get("memory").and_then(|m| m.get("auto")).and_then(Value::as_bool) == Some(enabled) {
+            return Ok(false);
+        }
+        let memory = root.entry("memory").or_insert_with(|| Value::Object(Map::new()));
+        memory.as_object_mut().expect("memory mapping validated").insert("auto".into(), Value::Bool(enabled));
+        Ok(true)
+    })
+}
+
+/// config.yml `web:`, the folder `--web` serves and `ashira update` keeps current.
+pub fn web_dir() -> Option<PathBuf> {
+    let settings = read_settings(&settings_path()).ok()?;
+    settings.get("web")?.as_str().map(str::trim).filter(|dir| !dir.is_empty()).map(PathBuf::from)
+}
+
+pub fn set_web_dir(dir: &Path) -> Result<(), String> {
+    let dir = dir.to_string_lossy().into_owned();
+    edit_settings(&settings_path(), |root| {
+        if root.get("web").and_then(Value::as_str) == Some(dir.as_str()) { return Ok(false); }
+        root.insert("web".into(), Value::String(dir));
+        Ok(true)
+    })
+}
+
+/// Changes config.yml under its lock, keeping every other key; `edit` returns whether it
+/// changed anything, and an unchanged file is not rewritten.
+fn edit_settings(path: &Path, edit: impl FnOnce(&mut Map<String, Value>) -> Result<bool, String>) -> Result<(), String> {
     let parent = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
     fs::create_dir_all(parent).map_err(|e| format!("Cannot create settings directory {}: {e}", parent.display()))?;
     let mut lock_name = path.as_os_str().to_os_string();
@@ -475,13 +507,9 @@ fn set_memory_auto_at(path: &Path, enabled: bool) -> Result<(), String> {
         .map_err(|e| format!("Cannot open settings lock {}: {e}", lock_path.display()))?;
     lock.lock().map_err(|e| format!("Cannot lock settings {}: {e}", lock_path.display()))?;
     let mut value = read_settings(path)?;
-    settings_memory_auto(&value, path)?;
-    if value.get("memory").and_then(|m| m.get("auto")).and_then(Value::as_bool) == Some(enabled) {
+    if !edit(value.as_object_mut().expect("settings root validated"))? {
         return Ok(());
     }
-    let root = value.as_object_mut().expect("settings root validated");
-    let memory = root.entry("memory").or_insert_with(|| Value::Object(Map::new()));
-    memory.as_object_mut().expect("memory mapping validated").insert("auto".into(), Value::Bool(enabled));
     let yaml = serde_saphyr::to_string(&value).map_err(|e| format!("Cannot serialize settings {}: {e}", path.display()))?;
     write_settings_atomic(path, yaml.as_bytes())
 }
@@ -671,14 +699,35 @@ impl Registry {
     /// First resolvable selector of a comma-separated role value.
     pub fn resolve_role(&self, name: &str) -> Option<Result<Resolved, String>> {
         let value = self.roles.get(name)?;
+        Some(self.first_of(value).map_err(|e| format!("modelRoles.{name} `{value}`: {e}")))
+    }
+
+    /// The image model for a chat on `provider`: its `imageModel`, else `modelRoles.image`.
+    pub fn resolve_image(&self, provider: &str) -> Option<Result<Resolved, String>> {
+        match self.image_model(provider) {
+            Some(value) => Some(self.first_of(value).map_err(|e| format!("providers.{provider}.imageModel `{value}`: {e}"))),
+            None => self.resolve_role("image"),
+        }
+    }
+
+    /// Whether a chat on `provider` has an image model to call (its own or the global one).
+    pub fn has_image_model(&self, provider: &str) -> bool {
+        self.image_model(provider).or_else(|| self.role("image")).is_some_and(|value| !value.trim().is_empty())
+    }
+
+    fn image_model(&self, provider: &str) -> Option<&str> {
+        self.providers.get(provider)?.image_model.as_deref().filter(|value| !value.trim().is_empty())
+    }
+
+    fn first_of(&self, value: &str) -> Result<Resolved, String> {
         let mut last = None;
         for sel in value.split(',').map(str::trim).filter(|s| !s.is_empty()) {
             match self.resolve(sel) {
-                Ok(r) => return Some(Ok(r)),
+                Ok(r) => return Ok(r),
                 Err(e) => last = Some(e),
             }
         }
-        Some(Err(format!("modelRoles.{name} `{value}`: {}", last.unwrap_or_else(|| "empty".into()))))
+        Err(last.unwrap_or_else(|| "empty".into()))
     }
 
     /// Startup model: `modelRoles.default`, else the first model that resolves.
@@ -1086,5 +1135,22 @@ mod settings_tests {
             assert_eq!(fs::read(&path).unwrap(), invalid.as_bytes());
         }
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_providers_image_model_wins_over_the_global_role() {
+        let yaml = "providers:\n  a:\n    api: openai-completions\n    baseUrl: https://a.example/v1\n    apiKey: k\n    imageModel: b/img-own\n    models: [{id: chat}]\n  b:\n    api: openai-completions\n    baseUrl: https://b.example/v1\n    apiKey: k\n    models: [{id: img-own}, {id: img-global}, {id: chat}]\n";
+        let home = env::temp_dir();
+        let registry = |roles: Option<&str>| Registry::parse(yaml, home.join("models.yml"), roles, &home.join("config.yml"), home.join("models-cache.json"), Cache::default()).unwrap();
+
+        let global = registry(Some("modelRoles:\n  image: b/img-global\n"));
+        assert_eq!(global.resolve_image("a").unwrap().unwrap().id, "img-own");
+        assert_eq!(global.resolve_image("b").unwrap().unwrap().id, "img-global", "no own image model: the global role");
+        assert!(global.has_image_model("b"));
+
+        let none = registry(None);
+        assert_eq!(none.resolve_image("a").unwrap().unwrap().id, "img-own");
+        assert!(none.resolve_image("b").is_none() && !none.has_image_model("b"), "nothing set: the tool is only offered on Responses");
+        assert!(none.warnings.iter().all(|w| !w.contains("imageModel")), "imageModel is a known provider field");
     }
 }

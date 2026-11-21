@@ -27,6 +27,7 @@ class _HomePageState extends State<HomePage> {
   final _scaffold = GlobalKey<ScaffoldState>();
   int? _shownConfirm;
   bool _filesOpen = true;
+  bool _sessionsOpen = true;
   String _activeFile = '';
 
   /// 对话 or 终端. The terminal mounts on first use and then stays alive, like the web's
@@ -109,17 +110,23 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  Widget _sessions() => SessionList(
+  Widget _sessions({bool collapsible = false}) => SessionList(
         tree: state.tree,
         activeId: state.shownId,
         marks: SessionMarks(running: state.running, asking: state.asking, naming: state.naming),
         connected: state.connected,
+        serverUpdate: state.serverUpdate,
         onSelect: _select,
         onCreate: _create,
         onSettings: () {
           _scaffold.currentState?.closeDrawer();
           showSettings(context, state, onDisconnect: widget.onDisconnect);
         },
+        onAbout: () {
+          _scaffold.currentState?.closeDrawer();
+          showSettings(context, state, onDisconnect: widget.onDisconnect, tab: 'about');
+        },
+        onCollapse: collapsible ? () => setState(() => _sessionsOpen = false) : null,
         onAction: _action,
       );
 
@@ -154,10 +161,15 @@ class _HomePageState extends State<HomePage> {
         final files = _files(windowButtons: filesShown);
         final header = WindowDrag(
           child: PanelHeader(
-            padding: EdgeInsets.only(left: wide ? 24 : 4, right: filesShown || !customFrame ? (wide ? 24 : 4) : 0),
+            padding: EdgeInsets.only(left: wide ? (_sessionsOpen ? 24 : 12) : 4, right: filesShown || !customFrame ? (wide ? 24 : 4) : 0),
             children: [
-              if (!wide) IconButton(tooltip: '会话列表', icon: const Icon(Icons.menu), onPressed: () => _scaffold.currentState?.openDrawer()),
-              if (!wide) const SizedBox(width: 4),
+              if (!wide || !_sessionsOpen)
+                IconButton(
+                  tooltip: wide ? '展开会话列表' : '会话列表',
+                  icon: Icon(wide ? Icons.keyboard_double_arrow_right : Icons.menu),
+                  onPressed: () => wide ? setState(() => _sessionsOpen = true) : _scaffold.currentState?.openDrawer(),
+                ),
+              if (!wide || !_sessionsOpen) const SizedBox(width: 4),
               if (state.naming.contains(state.shownId))
                 Padding(
                   padding: const EdgeInsets.only(right: 8),
@@ -204,8 +216,11 @@ class _HomePageState extends State<HomePage> {
           Composer(
             key: ValueKey('composer-${state.shownId}'),
             enabled: hasSession && state.connected,
+            hasSession: hasSession,
             busy: state.busy,
             model: state.modelTitle,
+            context: state.status?.context ?? 0,
+            window: state.status?.window,
             error: state.error,
             onSend: state.send,
             onInterrupt: state.interrupt,
@@ -223,7 +238,7 @@ class _HomePageState extends State<HomePage> {
               children: [
                 conversation,
                 if (_terminalOpened && hasSession)
-                  SessionTerminal(key: ValueKey('terminal-${state.shownId}'), client: state.client, sessionId: state.shownId, cwd: state.cwd, active: terminal)
+                  SessionTerminal(key: ValueKey('terminal-${state.shownId}'), client: state.client, sessionId: state.shownId, active: terminal)
                 else
                   const SizedBox.shrink(),
               ],
@@ -247,7 +262,15 @@ class _HomePageState extends State<HomePage> {
             bottom: false,
             child: wide
                 ? Row(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-                    side(_sessions(), left: true),
+                    ClipRect(
+                      child: AnimatedAlign(
+                        duration: const Duration(milliseconds: 200),
+                        curve: Curves.easeOutCubic,
+                        alignment: Alignment.centerRight,
+                        widthFactor: _sessionsOpen ? 1 : 0,
+                        child: side(_sessions(collapsible: true), left: true),
+                      ),
+                    ),
                     Expanded(child: chat),
                     // Slides open and shut instead of popping; the panel keeps its width
                     // while the clip grows, so its contents do not reflow mid-animation.

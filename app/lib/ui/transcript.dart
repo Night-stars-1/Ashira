@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 
 import '../api/models.dart';
+import '../state/display_prefs.dart';
 import 'markdown.dart';
 import 'text_file_card.dart';
 import 'theme.dart';
@@ -23,17 +24,12 @@ class Transcript extends StatefulWidget {
 class _TranscriptState extends State<Transcript> {
   final _scroll = ScrollController();
   bool _follow = true;
+  /// Set while this widget moves the view, so those scrolls never count as the reader's.
+  bool _pinning = false;
 
   @override
   void initState() {
     super.initState();
-    _scroll.addListener(() {
-      if (!_scroll.hasClients) return;
-      final position = _scroll.position;
-      final follow = position.pixels >= position.maxScrollExtent - 48;
-      // Rebuild only when the 「回到底部」 button should appear or go.
-      if (follow != _follow) setState(() => _follow = follow);
-    });
     _pin();
   }
 
@@ -43,16 +39,40 @@ class _TranscriptState extends State<Transcript> {
     if (_follow) _pin();
   }
 
+  /// Only a drag, wheel or scrollbar move by the reader decides following: content growing
+  /// below (streaming, `AnimatedSize`, a lazily measured long history) moves the bottom
+  /// away without them scrolling, and is followed instead.
+  bool _onScroll(ScrollNotification notification) {
+    if (_pinning || notification.depth != 0) return false;
+    final position = notification.metrics;
+    final atBottom = position.pixels >= position.maxScrollExtent - 2;
+    final user = notification is ScrollUpdateNotification && notification.dragDetails != null
+        || notification is UserScrollNotification;
+    if (atBottom && !_follow) setState(() => _follow = true);
+    if (!atBottom && _follow && user) setState(() => _follow = false);
+    return false;
+  }
+
+  /// The list's extent changed (new rows measured, a card animating): stay at the bottom.
+  bool _onMetrics(ScrollMetricsNotification notification) {
+    if (_follow && notification.depth == 0) _pin();
+    return false;
+  }
+
   void _pin() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (_scroll.hasClients) _scroll.jumpTo(_scroll.position.maxScrollExtent);
+      if (!mounted || !_follow || !_scroll.hasClients) return;
+      final position = _scroll.position;
+      if (position.pixels == position.maxScrollExtent) return;
+      _pinning = true;
+      _scroll.jumpTo(position.maxScrollExtent);
+      _pinning = false;
     });
   }
 
   void _toBottom() {
-    if (!_scroll.hasClients) return;
-    _scroll.animateTo(_scroll.position.maxScrollExtent, duration: const Duration(milliseconds: 250), curve: Curves.easeOut);
     setState(() => _follow = true);
+    _pin();
   }
 
   @override
@@ -71,23 +91,29 @@ class _TranscriptState extends State<Transcript> {
     final wide = MediaQuery.sizeOf(context).width >= 640;
     final scheme = Theme.of(context).colorScheme;
     return Stack(children: [
-      Scrollbar(
-        controller: _scroll,
-        child: ListView.builder(
-          controller: _scroll,
-          padding: EdgeInsets.symmetric(horizontal: wide ? 24 : 12, vertical: wide ? 24 : 16),
-          itemCount: count,
-          itemBuilder: (context, index) {
-            final child = index < rows.length
-                ? switch (rows[index]) {
-                    final _Turn turn => _TurnView(turn, key: ValueKey(turn.key)),
-                    final block => _BlockView(block: block as Block, onOpenAgent: widget.onOpenAgent),
-                  }
-                : _Activity(widget.activity);
-            return Center(
-              child: ConstrainedBox(constraints: const BoxConstraints(maxWidth: 768), child: Padding(padding: const EdgeInsets.only(bottom: 16), child: child)),
-            );
-          },
+      NotificationListener<ScrollMetricsNotification>(
+        onNotification: _onMetrics,
+        child: NotificationListener<ScrollNotification>(
+          onNotification: _onScroll,
+          child: Scrollbar(
+            controller: _scroll,
+            child: ListView.builder(
+              controller: _scroll,
+              padding: EdgeInsets.symmetric(horizontal: wide ? 24 : 12, vertical: wide ? 24 : 16),
+              itemCount: count,
+              itemBuilder: (context, index) {
+                final child = index < rows.length
+                    ? switch (rows[index]) {
+                        final _Turn turn => _TurnView(turn, key: ValueKey(turn.key)),
+                        final block => _BlockView(block: block as Block, onOpenAgent: widget.onOpenAgent),
+                      }
+                    : _Activity(widget.activity);
+                return Center(
+                  child: ConstrainedBox(constraints: const BoxConstraints(maxWidth: 768), child: Padding(padding: const EdgeInsets.only(bottom: 16), child: child)),
+                );
+              },
+            ),
+          ),
         ),
       ),
       if (!_follow)
@@ -168,8 +194,8 @@ String _duration(double ms) {
   return seconds >= 60 ? '${seconds ~/ 60}分${seconds % 60}秒' : '${seconds < 1 ? 1 : seconds}秒';
 }
 
-/// The web's reply: a folded 「思考过程」 card, open while the work runs and closed once
-/// the answer starts or the reply ends (a tap sticks), then the answer itself.
+/// The web's reply: a 「思考过程」 card, open while the reply runs and folded once it has
+/// finished (a tap sticks), then the answer itself.
 class _TurnView extends StatefulWidget {
   const _TurnView(this.turn, {super.key});
   final _Turn turn;
@@ -178,13 +204,14 @@ class _TurnView extends StatefulWidget {
 }
 
 class _TurnViewState extends State<_TurnView> {
+  /// The user's choice; `null` follows the reply (open while live).
   bool? _toggled;
 
   @override
   Widget build(BuildContext context) {
     final turn = widget.turn;
     final scheme = Theme.of(context).colorScheme;
-    final open = _toggled ?? (turn.live && turn.answer.every((text) => text.trim().isEmpty));
+    final open = _toggled ?? turn.live;
     final muted = TextStyle(fontSize: 12, color: scheme.mutedForeground.withValues(alpha: .75), fontFeatures: const [FontFeature.tabularFigures()]);
     return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
       if (turn.work.isNotEmpty)
@@ -218,11 +245,12 @@ class _TurnViewState extends State<_TurnView> {
                       decoration: BoxDecoration(border: Border(top: BorderSide(color: scheme.border))),
                       padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
                       child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-                        for (final part in turn.work)
+                        for (final (index, part) in turn.work.indexed)
                           Padding(
                             padding: const EdgeInsets.only(bottom: 8),
                             child: switch (part) {
-                              TextPart(reasoning: true, :final text) => _Reasoning(text),
+                              // The last part of a live reply with no answer yet is still being written.
+                              TextPart(reasoning: true, :final text) => _Reasoning(text, streaming: turn.live && turn.answer.isEmpty && index == turn.work.length - 1),
                               TextPart(:final text) => Markdown(text),
                               ToolPart() => ToolCard(part),
                             },
@@ -308,16 +336,17 @@ class _BlockView extends StatelessWidget {
 }
 
 /// The web's reasoning block: short thoughts show inline; long ones (over 6 lines
-/// or 400 characters) start collapsed to a one-line preview with a length.
+/// or 400 characters) show in full while streaming, then fold to a one-line preview.
 class _Reasoning extends StatefulWidget {
-  const _Reasoning(this.text);
+  const _Reasoning(this.text, {this.streaming = false});
   final String text;
+  final bool streaming;
   @override
   State<_Reasoning> createState() => _ReasoningState();
 }
 
 class _ReasoningState extends State<_Reasoning> {
-  /// Flips the default: long ones open, short ones close.
+  /// Flips the default (open while streaming, folded after).
   bool _toggled = false;
 
   bool get _long => widget.text.length > 400 || '\n'.allMatches(widget.text).length >= 6;
@@ -330,7 +359,7 @@ class _ReasoningState extends State<_Reasoning> {
     if (!_long) {
       return Container(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8), decoration: box, child: Text(widget.text, style: style));
     }
-    final open = _toggled;
+    final open = widget.streaming != _toggled;
     return Container(
       decoration: box,
       clipBehavior: Clip.antiAlias,
@@ -408,13 +437,24 @@ class ToolCard extends StatelessWidget {
           constraints: const BoxConstraints(maxHeight: 256),
           child: SingleChildScrollView(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8), child: child),
         );
+    // 设置 → 显示: unwrapped output keeps each line whole and scrolls sideways.
+    Widget output() => ListenableBuilder(
+          listenable: displayPrefs,
+          builder: (context, _) {
+            final wrap = displayPrefs.wrapToolOutput;
+            final text = numbered != null
+                ? _Numbered(numbered, wrap: wrap)
+                : SelectableText(tool.output, style: monoStyle(context).copyWith(fontSize: 12, height: 1.45));
+            return scrolled(wrap ? text : SingleChildScrollView(scrollDirection: Axis.horizontal, child: text));
+          },
+        );
     final Widget? body = todo != null
         ? scrolled(_TodoBoard(todo))
         : asked != null
             ? Padding(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8), child: _AskResult(asked))
             : tool.output.isEmpty
                 ? null
-                : scrolled(numbered != null ? _Numbered(numbered) : SelectableText(tool.output, style: monoStyle(context).copyWith(fontSize: 12, height: 1.45)));
+                : output();
     return Container(
       decoration: BoxDecoration(border: Border.all(color: scheme.border), borderRadius: BorderRadius.circular(radius)),
       clipBehavior: Clip.antiAlias,
@@ -526,8 +566,10 @@ List<({String n, String text})>? numberedLines(String output) {
 }
 
 class _Numbered extends StatelessWidget {
-  const _Numbered(this.rows);
+  const _Numbered(this.rows, {required this.wrap});
   final List<({String n, String text})> rows;
+  /// Off: each line keeps its natural width inside a sideways scroll view.
+  final bool wrap;
   @override
   Widget build(BuildContext context) {
     final mono = monoStyle(context).copyWith(fontSize: 12, height: 1.45);
@@ -539,7 +581,7 @@ class _Numbered extends StatelessWidget {
           Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
             SizedBox(width: width, child: SelectionContainer.disabled(child: Text(row.n, textAlign: TextAlign.right, style: gutter))),
             const SizedBox(width: 12),
-            Expanded(child: Text(row.text, style: mono)),
+            if (wrap) Expanded(child: Text(row.text, style: mono)) else Text(row.text, style: mono, softWrap: false),
           ]),
       ]),
     );

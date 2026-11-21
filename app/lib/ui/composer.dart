@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 
 import '../api/models.dart';
+import 'context_ring.dart';
 import 'question_form.dart';
 import 'text_file_card.dart';
 import 'theme.dart';
@@ -32,8 +33,11 @@ class Composer extends StatefulWidget {
   const Composer({
     super.key,
     required this.enabled,
+    required this.hasSession,
     required this.busy,
     required this.model,
+    this.context = 0,
+    this.window,
     required this.onSend,
     required this.onInterrupt,
     required this.onModels,
@@ -43,7 +47,12 @@ class Composer extends StatefulWidget {
   });
 
   final bool enabled, busy;
+  /// Picks the hint; [enabled] also drops while the session's stream reconnects.
+  final bool hasSession;
   final String model, error;
+  /// Context tokens in use and the model's window, drawn as a ring by the send button.
+  final int context;
+  final int? window;
   final Future<bool> Function(String text, List<OutgoingImage> images, List<TextFile> files) onSend;
   final VoidCallback onInterrupt, onModels;
   /// Pending `ask_user`; while set, the card shows the question form and the
@@ -272,7 +281,9 @@ class _ComposerState extends State<Composer> {
                           fillColor: Colors.white.withValues(alpha: Theme.of(context).brightness == Brightness.dark ? .045 : 0),
                           isDense: true,
                           contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                          hintText: widget.enabled ? (desktop ? '描述任务，Enter 发送，Shift+Enter 换行' : '描述任务') : '请先选择或新建会话',
+                          // Like the web: only a missing session changes the hint; the brief reconnect
+                          // while switching sessions keeps it steady.
+                          hintText: widget.hasSession ? (desktop ? '描述任务，Enter 发送，Shift+Enter 换行' : '描述任务') : '请先选择或新建会话',
                         ),
                         ),
                       ),
@@ -303,6 +314,10 @@ class _ComposerState extends State<Composer> {
                           ),
                         ),
                       ),
+                      if (widget.hasSession && widget.context > 0) ...[
+                        const SizedBox(width: 4),
+                        ContextRing(context: widget.context, window: widget.window),
+                      ],
                       const SizedBox(width: 8),
                       if (widget.busy)
                         FilledButton.icon(

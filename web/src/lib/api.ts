@@ -85,8 +85,9 @@ export type UsageStatistics = {
   requests: { main: number; child: number }
 }
 
-/** One UTC hour of one model across all sessions; `hour` is unix seconds / 3600. */
-export type UsageBucket = { hour: number; model: string; input: number; output: number; cacheRead: number; cacheWrite: number; cost: number; unknown: number; requests: number }
+/** One UTC hour of one model across all sessions; `hour` is unix seconds / 3600. `timedOutput`
+ *  and `durationMs` cover the requests that logged a duration, for TPS. */
+export type UsageBucket = { hour: number; model: string; input: number; output: number; cacheRead: number; cacheWrite: number; cost: number; unknown: number; requests: number; timedOutput: number; durationMs: number }
 export type UsageReport = { sessions: number; buckets: UsageBucket[] }
 
 export type ReplyMetrics = {
@@ -102,6 +103,8 @@ export type Status = UsageStatistics & {
   /** The server's ashira version, and a newer release tag it can update to (null when current). */
   version: string
   update: string | null
+  /** Set when the server hosts this page with `--web`: the release the folder holds (null if copied by hand). */
+  web: { version: string | null } | null
   cwd: string
   sessionId: string
   model: string | null
@@ -133,13 +136,13 @@ export type ProviderKey =
   | { kind: 'none' }
   | { kind: 'missing' }
 export type ProviderStatus = { state: 'ready' | 'pending' | 'failed'; detail: string | null; models: number }
-export type ProviderConfig = { id: string; api: string; baseUrl: string; key: ProviderKey; discovery: boolean; models: string[]; status: ProviderStatus | null }
+export type ProviderConfig = { id: string; api: string; baseUrl: string; key: ProviderKey; discovery: boolean; models: string[]; /** This provider's own image model; '' uses modelRoles.image. */ imageModel: string; status: ProviderStatus | null }
 /** `config.yml` `modelRoles` the settings page edits (same list as the server's). */
 export const MODEL_ROLES = ['default', 'task', 'compact', 'title', 'memory', 'image'] as const
 export type ModelRole = typeof MODEL_ROLES[number]
 export type ModelConfig = { apis: string[]; providers: ProviderConfig[]; roles: Record<ModelRole, string>; loadError: string | null; warnings: string[] }
 /** `key.value` empty keeps the stored key of that provider. */
-export type ProviderForm = { id: string; api: string; baseUrl: string; key: { kind: 'env' | 'literal' | 'command' | 'none'; value: string }; discovery: boolean; models: string[] }
+export type ProviderForm = { id: string; api: string; baseUrl: string; key: { kind: 'env' | 'literal' | 'command' | 'none'; value: string }; discovery: boolean; models: string[]; imageModel: string }
 
 export type ConfirmRequest = { id: number; name: string; command: string; reason: string; always: string }
 export type QuestionOption = { label: string; description: string }
@@ -257,6 +260,7 @@ function status(body: unknown): Status {
     ok: value.ok === true,
     version: text(value.version),
     update: typeof value.update === 'string' ? value.update : null,
+    web: value.web && typeof value.web === 'object' ? { version: text(record(value.web).version) || null } : null,
     cwd: text(value.cwd),
     sessionId: text(value.sessionId),
     model: typeof value.model === 'string' ? value.model : null,
@@ -470,12 +474,14 @@ export const api = {
     const type = body.type === 'http' || body.type === 'sse' ? body.type : 'stdio'
     return { name: text(body.name), type, command: text(body.command), args: text(body.args), url: text(body.url), headers: text(body.headers), source: text(body.source) }
   },
+  /** `--web` hosts: the server downloads this core's web build and swaps the folder. */
+  updateWeb: async () => text(record(await request('/v1/web/update', { method: 'POST' })).version),
   usage: async (): Promise<UsageReport> => {
     const body = record(await request('/v1/usage'))
     const buckets = Array.isArray(body.buckets) ? body.buckets.flatMap((item): UsageBucket[] => {
       if (!item || typeof item !== 'object') return []
       const row = record(item)
-      return [{ hour: number(row.hour), model: text(row.model) || '未知模型', input: number(row.input), output: number(row.output), cacheRead: number(row.cacheRead), cacheWrite: number(row.cacheWrite), cost: number(row.cost), unknown: number(row.unknown), requests: number(row.requests) }]
+      return [{ hour: number(row.hour), model: text(row.model) || '未知模型', input: number(row.input), output: number(row.output), cacheRead: number(row.cacheRead), cacheWrite: number(row.cacheWrite), cost: number(row.cost), unknown: number(row.unknown), requests: number(row.requests), timedOutput: number(row.timedOutput), durationMs: number(row.durationMs) }]
     }) : []
     return { sessions: number(body.sessions), buckets }
   },
@@ -496,7 +502,7 @@ export const api = {
       const key = row.key && typeof row.key === 'object' ? row.key as ProviderKey : { kind: 'missing' as const }
       const status = row.status && typeof row.status === 'object' ? row.status as ProviderStatus : null
       const models = Array.isArray(row.models) ? row.models.filter((model): model is string => typeof model === 'string') : []
-      return [{ id: text(row.id), api: text(row.api), baseUrl: text(row.baseUrl), key, discovery: row.discovery === true, models, status }]
+      return [{ id: text(row.id), api: text(row.api), baseUrl: text(row.baseUrl), key, discovery: row.discovery === true, models, imageModel: text(row.imageModel), status }]
     }) : []
     const strings = (value: unknown) => Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
     const rawRoles = record(body.roles)

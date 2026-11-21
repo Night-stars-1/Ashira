@@ -1,6 +1,15 @@
 
 @import url('https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&display=swap');
 
+/* The terminal's Nerd Font (SIL OFL 1.1, see assets/fonts/CaskaydiaMono_LICENSE.txt): prompt
+   icons on phones and machines without it. An installed copy is used first; the file only
+   downloads when the terminal draws with it. */
+@font-face {
+    font-family: "Ashira Terminal";
+    src: local("CaskaydiaMono NFM"), local("CaskaydiaMono Nerd Font Mono"), url("./assets/fonts/CaskaydiaMonoNerdFontMono-Regular.woff2") format("woff2");
+    font-display: block;
+}
+
 @import "tailwindcss";
 @import "tw-animate-css";
 @import "shadcn-vue/tailwind.css";

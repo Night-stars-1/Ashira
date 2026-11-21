@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { TabsList, TabsRoot, TabsTrigger } from 'reka-ui'
-import { ref, watch } from 'vue'
+import { nextTick, ref, watch } from 'vue'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -10,24 +10,38 @@ import { Textarea } from '@/components/ui/textarea'
 import ModelSettings from '@/components/ModelSettings.vue'
 import UsageSettings from '@/components/UsageSettings.vue'
 import ConnectionForm from '@/components/ConnectionForm.vue'
+import AboutSettings from '@/components/AboutSettings.vue'
 import { ScrollArea } from '@/components/ui/scroll-area'
+import { Switch } from '@/components/ui/switch'
+import { wrapToolOutput } from '@/lib/display'
 import { api, type Archive, type McpForm, type McpServer, type MemoryEntry } from '@/lib/api'
 
 const open = defineModel<boolean>('open', { required: true })
-const props = defineProps<{ archive: Archive }>()
+const props = defineProps<{ archive: Archive; serverVersion: string; serverUpdate: string | null; hosted: boolean }>()
 const emit = defineEmits<{ restore: [kind: 'session' | 'folder', key: string] }>()
 
-type Tab = 'models' | 'usage' | 'plugins' | 'mcp' | 'memory' | 'archive' | 'connection'
-const tab = ref<Tab>('models')
+export type SettingsTab = 'models' | 'usage' | 'display' | 'plugins' | 'mcp' | 'memory' | 'archive' | 'connection' | 'about'
+type Tab = SettingsTab
+const tab = defineModel<Tab>('tab', { default: 'models' })
 const tabs: { id: Tab; label: string }[] = [
   { id: 'models', label: '模型' },
   { id: 'usage', label: '用量' },
+  { id: 'display', label: '显示' },
   { id: 'plugins', label: '插件' },
   { id: 'mcp', label: 'MCP' },
   { id: 'memory', label: '记忆' },
   { id: 'archive', label: '归档' },
   { id: 'connection', label: '连接' },
+  { id: 'about', label: '关于' },
 ]
+/** Where the sliding highlight sits: the chosen row's offset and height within the nav. */
+const nav = ref<HTMLElement | null>(null)
+const pill = ref({ top: 0, height: 0 })
+function placePill() {
+  const row = nav.value?.querySelector<HTMLElement>(`[data-tab="${tab.value}"]`)
+  if (row) pill.value = { top: row.offsetTop, height: row.offsetHeight }
+}
+watch([tab, open], () => { void nextTick(placePill) }, { immediate: true })
 const archivedDate = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium' })
 // Sessions grouped under their folder name, so two "hi" threads stay distinguishable.
 const folderOf = (cwd: string) => cwd.split(/[\\/]/).filter(Boolean).pop() || cwd
@@ -172,14 +186,22 @@ watch(open, (value) => { if (value) void load() })
           </TabsList>
         </TabsRoot>
         <!-- Wider: the side list. -->
-        <nav class="hidden w-36 shrink-0 flex-col gap-1 border-r p-2 sm:flex">
+        <!-- One highlight slides to the chosen row, measured from the row itself. -->
+        <nav ref="nav" class="relative hidden w-36 shrink-0 flex-col gap-1 border-r p-2 sm:flex">
+          <span
+            aria-hidden="true"
+            class="pointer-events-none absolute inset-x-2 top-0 rounded-md bg-secondary transition-[transform,height] duration-200 ease-out motion-reduce:transition-none"
+            :style="{ transform: `translateY(${pill.top}px)`, height: `${pill.height}px` }"
+          />
           <Button
             v-for="item in tabs"
             :key="item.id"
             type="button"
             size="sm"
-            class="justify-start"
-            :variant="tab === item.id ? 'secondary' : 'ghost'"
+            variant="ghost"
+            class="relative justify-start hover:bg-muted/50"
+            :data-tab="item.id"
+            :aria-current="tab === item.id ? 'page' : undefined"
             @click="tab = item.id"
           >
             {{ item.label }}
@@ -213,6 +235,16 @@ watch(open, (value) => { if (value) void load() })
               </div>
             </template>
             <ConnectionForm v-else-if="tab === 'connection'" />
+            <div v-else-if="tab === 'display'" class="rounded-lg border">
+              <label class="flex items-center gap-3 px-3 py-3">
+                <span class="min-w-0 flex-1">
+                  <span class="block text-sm">工具输出自动换行</span>
+                  <span class="block text-xs text-muted-foreground">关闭后长行保持完整，左右滚动查看</span>
+                </span>
+                <Switch v-model="wrapToolOutput" />
+              </label>
+            </div>
+            <AboutSettings v-else-if="tab === 'about'" :server-version="props.serverVersion" :server-update="props.serverUpdate" :hosted="props.hosted" />
             <template v-else-if="tab === 'archive'">
               <Empty v-if="props.archive.folders.length === 0 && props.archive.sessions.length === 0" title="没有归档" description="在会话列表里用「…」或右键归档会话和文件夹，归档后可在这里还原。" />
               <template v-if="props.archive.folders.length">

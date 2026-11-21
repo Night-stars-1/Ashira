@@ -19,6 +19,9 @@ class AshiraState extends ChangeNotifier {
   final AshiraClient client;
 
   Status? status;
+  /// The server's version and the newer release it can update to, from the first `GET /v1`.
+  String serverVersion = '';
+  String? serverUpdate;
   List<SessionNode> tree = const [];
 
   /// Sessions whose turn runs on the server, and those waiting on an answer. The open
@@ -76,6 +79,8 @@ class AshiraState extends ChangeNotifier {
       final service = results[0] as Status;
       _list(results[1] as SessionListing);
       initialCwd = service.cwd;
+      serverVersion = service.version;
+      serverUpdate = service.update;
       if (mine != _view) return;
       final ids = [for (final root in tree) ...root.allSessions.map((item) => item.id)];
       final previous = await ConnectionSettings.lastSession();
@@ -344,7 +349,9 @@ class AshiraState extends ChangeNotifier {
         asking = {...asking}..remove(shownId);
         final current = blocks.isEmpty ? null : blocks.last;
         if (current is AssistantBlock) current.live = false;
-        if (event.raw['ok'] == false) error = event.field('error') ?? '回合失败';
+        // A stop the user asked for is not a failure worth a red line.
+        final failure = event.field('error');
+        if (event.raw['ok'] == false && failure != 'cancelled') error = failure ?? '回合失败';
         final mine = _view;
         _syncHistory().catchError((Object reason) {
           if (mine == _view && error.isEmpty) _fail(reason, '无法加载会话');

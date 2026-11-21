@@ -50,7 +50,7 @@ const KEY_KINDS = [
 ] as const
 
 type Draft = Omit<ProviderForm, 'models'> & { models: string }
-const emptyDraft = (): Draft => ({ id: '', api: 'openai-completions', baseUrl: '', key: { kind: 'literal', value: '' }, discovery: true, models: '' })
+const emptyDraft = (): Draft => ({ id: '', api: 'openai-completions', baseUrl: '', key: { kind: 'literal', value: '' }, discovery: true, models: '', imageModel: '' })
 const draft = ref<Draft>(emptyDraft())
 /** Provider being edited; empty while adding. */
 const editing = ref<ProviderConfig | null>(null)
@@ -177,6 +177,7 @@ function startEdit(provider: ProviderConfig) {
     key: key.kind === 'env' || key.kind === 'command' ? { kind: key.kind, value: key.value } : { kind: key.kind === 'missing' ? 'literal' : key.kind, value: '' },
     discovery: provider.discovery,
     models: provider.models.join('\n'),
+    imageModel: provider.imageModel,
   }
   formError.value = ''
   resetFetch()
@@ -293,7 +294,7 @@ function statusLabel(provider: ProviderConfig): string {
     <DialogContent class="max-h-[90dvh] overflow-y-auto sm:max-w-md">
       <DialogHeader>
         <DialogTitle>{{ editing ? `编辑 ${editing.id}` : '添加服务商' }}</DialogTitle>
-        <DialogDescription>保存后会立即生效，并重新获取模型列表。</DialogDescription>
+        <DialogDescription class="sr-only">服务商的接口地址、API Key 与模型</DialogDescription>
       </DialogHeader>
       <form class="flex flex-col gap-3" @submit.prevent="saveProvider">
         <label class="flex flex-col gap-1 text-xs text-muted-foreground">
@@ -361,6 +362,10 @@ function statusLabel(provider: ProviderConfig): string {
             </div>
           </div>
           <Textarea v-model="draft.models" class="min-h-20 font-mono text-xs" aria-label="模型 ID" placeholder="一行一个&#10;gpt-4.1&#10;gpt-4.1-mini" spellcheck="false" />
+        </div>
+        <div class="flex flex-col gap-1">
+          <span class="text-xs text-muted-foreground">生成图片模型</span>
+          <ModelCombobox v-model="draft.imageModel" :models="models" placeholder="跟随「模型分工 → 生成图片」" label="这个服务商的生成图片模型" />
         </div>
         <p v-if="formError" role="alert" class="text-sm text-destructive">{{ formError }}</p>
         <DialogFooter>

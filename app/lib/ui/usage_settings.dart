@@ -14,7 +14,7 @@ const outputColor = Color(0xFFF59E0B);
 
 /// Sums of usage buckets; `prompt` is every input token (uncached + cache read + cache write).
 class UsageSums {
-  int input = 0, output = 0, cacheRead = 0, cacheWrite = 0, unknown = 0, requests = 0;
+  int input = 0, output = 0, cacheRead = 0, cacheWrite = 0, unknown = 0, requests = 0, timedOutput = 0, durationMs = 0;
   double cost = 0;
   int get prompt => input + cacheRead + cacheWrite;
   int get tokens => prompt + output;
@@ -27,6 +27,8 @@ class UsageSums {
     cost += bucket.cost;
     unknown += bucket.unknown;
     requests += bucket.requests;
+    timedOutput += bucket.timedOutput;
+    durationMs += bucket.durationMs;
   }
 }
 
@@ -35,6 +37,9 @@ String cacheRate(int cacheRead, int prompt) => prompt == 0 ? '—' : '${_trim(ca
 
 /// A cost with unpriced requests is a lower bound, or unknown when nothing was priced.
 String costLabel(double cost, bool unknown) => !unknown ? dollars(cost) : cost > 0 ? '≥ ${dollars(cost)}' : '未知';
+
+/// Average output speed over the requests that logged their generation time.
+String tpsLabel(UsageSums sums) => sums.durationMs == 0 ? '—' : (sums.timedOutput * 1000 / sums.durationMs).toStringAsFixed(1);
 
 String _trim(double value) => value.toStringAsFixed(1).replaceFirst(RegExp(r'\.0$'), '');
 String _pad(int value) => value.toString().padLeft(2, '0');
@@ -160,13 +165,14 @@ class _UsageSettingsState extends State<UsageSettings> {
         Container(
           decoration: BoxDecoration(border: Border.all(color: scheme.border), borderRadius: BorderRadius.circular(radius)),
           child: Column(children: [
-            _ModelRow(cells: const ['模型', 'Token', '缓存命中', '请求', '费用'], header: true),
+            _ModelRow(cells: const ['模型', 'Token', '缓存命中', '请求', 'TPS', '费用'], header: true),
             for (final MapEntry(key: model, value: sums) in models)
               _ModelRow(cells: [
                 model,
                 wan(sums.tokens),
                 cacheRate(sums.cacheRead, sums.prompt),
                 tokens(sums.requests),
+                tpsLabel(sums),
                 costLabel(sums.cost, sums.unknown > 0),
               ], tooltip: '输入 ${tokens(sums.prompt)} · 输出 ${tokens(sums.output)}'),
           ]),

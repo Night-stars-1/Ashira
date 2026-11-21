@@ -70,6 +70,8 @@ class Status {
     this.window,
     this.price,
     this.statistics = const Statistics(),
+    this.version = '',
+    this.update,
   });
   factory Status.fromJson(Object? json) {
     final m = asMap(json);
@@ -84,6 +86,8 @@ class Status {
       window: metric(m['window'])?.toInt(),
       price: m['price'] == null ? null : Price.fromJson(m['price']),
       statistics: Statistics.fromJson(m),
+      version: str(m['version']),
+      update: optStr(m['update']),
     );
   }
   final String cwd, sessionId;
@@ -93,6 +97,9 @@ class Status {
   final int? window;
   final Price? price;
   final Statistics statistics;
+  /// The server's ashira version, and a newer release tag it can update to (null when current).
+  final String version;
+  final String? update;
 
   Status copyWith({String? model, String? modelName, int? context, Statistics? statistics}) => Status(
         cwd: cwd,
@@ -105,6 +112,8 @@ class Status {
         window: window,
         price: price,
         statistics: statistics ?? this.statistics,
+        version: version,
+        update: update,
       );
 }
 
@@ -538,11 +547,13 @@ class ProviderStatus {
 }
 
 class ProviderConfig {
-  const ProviderConfig({required this.id, required this.api, required this.baseUrl, required this.key, required this.discovery, required this.models, this.status});
+  const ProviderConfig({required this.id, required this.api, required this.baseUrl, required this.key, required this.discovery, required this.models, this.imageModel = '', this.status});
   final String id, api, baseUrl;
   final ProviderKey key;
   final bool discovery;
   final List<String> models;
+  /// This provider's own `generate_image` model; '' uses modelRoles.image.
+  final String imageModel;
   final ProviderStatus? status;
 }
 
@@ -562,6 +573,7 @@ class ModelConfig {
             key: ProviderKey(str(asMap(asMap(raw)['key'])['kind'], 'missing'), str(asMap(asMap(raw)['key'])['value']), asMap(asMap(raw)['key'])['unset'] == true),
             discovery: asMap(raw)['discovery'] == true,
             models: [for (final model in asList(asMap(raw)['models'])) if (model is String) model],
+            imageModel: str(asMap(raw)['imageModel']),
             status: asMap(raw)['status'] is Map
                 ? ProviderStatus(state: str(asMap(asMap(raw)['status'])['state']), detail: optStr(asMap(asMap(raw)['status'])['detail']), models: int0(asMap(asMap(raw)['status'])['models']))
                 : null,
@@ -585,22 +597,23 @@ const modelRoles = ['default', 'task', 'compact', 'title', 'memory', 'image'];
 
 /// What the provider form sends; an empty `keyValue` keeps the stored key.
 class ProviderForm {
-  const ProviderForm({required this.id, required this.api, required this.baseUrl, required this.keyKind, required this.keyValue, required this.discovery, required this.models});
-  final String id, api, baseUrl, keyKind, keyValue;
+  const ProviderForm({required this.id, required this.api, required this.baseUrl, required this.keyKind, required this.keyValue, required this.discovery, required this.models, this.imageModel = ''});
+  final String id, api, baseUrl, keyKind, keyValue, imageModel;
   final bool discovery;
   final List<String> models;
   Map<String, Object?> toJson() =>
-      {'id': id, 'api': api, 'baseUrl': baseUrl, 'key': {'kind': keyKind, 'value': keyValue}, 'discovery': discovery, 'models': models};
+      {'id': id, 'api': api, 'baseUrl': baseUrl, 'key': {'kind': keyKind, 'value': keyValue}, 'discovery': discovery, 'models': models, 'imageModel': imageModel};
 }
 
 /// One UTC hour of one model across all sessions; `hour` is unix seconds / 3600.
+/// [timedOutput] and [durationMs] cover the requests that logged a duration, for TPS.
 class UsageBucket {
-  const UsageBucket({required this.hour, required this.model, required this.usage, required this.cost, required this.unknown, required this.requests});
+  const UsageBucket({required this.hour, required this.model, required this.usage, required this.cost, required this.unknown, required this.requests, this.timedOutput = 0, this.durationMs = 0});
   final int hour;
   final String model;
   final Usage usage;
   final double cost;
-  final int unknown, requests;
+  final int unknown, requests, timedOutput, durationMs;
 }
 
 /// `GET /v1/usage`.
@@ -619,6 +632,8 @@ class UsageReport {
             cost: num0(asMap(raw)['cost']),
             unknown: int0(asMap(raw)['unknown']),
             requests: int0(asMap(raw)['requests']),
+            timedOutput: int0(asMap(raw)['timedOutput']),
+            durationMs: int0(asMap(raw)['durationMs']),
           ),
       ],
     );

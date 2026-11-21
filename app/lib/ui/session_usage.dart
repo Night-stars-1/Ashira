@@ -12,7 +12,6 @@ import 'widgets.dart';
 Future<void> showUsage(BuildContext context, AshiraState state) => showPanel(
       context,
       title: '本会话用量',
-      description: '只统计这个会话（含它启动的子代理）。所有会话的用量在 设置 → 用量。',
       width: 680,
       builder: (_) => ListenableBuilder(listenable: state, builder: (context, _) => _SessionUsage(state)),
     );
@@ -29,7 +28,17 @@ class _SessionUsage extends StatelessWidget {
     final stats = status.statistics;
     final usage = stats.usage;
     final cost = stats.cost.main + stats.cost.child;
-    final window = status.window;
+    // Session average output speed: finished replies' output over their generation time.
+    var output = 0.0, ms = 0.0;
+    for (final block in state.blocks) {
+      if (block is! AssistantBlock || block.live) continue;
+      final metrics = block.metrics;
+      final usage = metrics?.usage, duration = metrics?.durationMs;
+      if (usage == null || duration == null || duration <= 0) continue;
+      output += usage.output;
+      ms += duration;
+    }
+    final rate = output > 0 && ms > 0 ? output * 1000 / ms : null;
     return ListView(padding: const EdgeInsets.fromLTRB(20, 16, 20, 20), children: [
       StatCard([
         Stat('Token', wan(usage.prompt + usage.output), tooltip: '${tokens(usage.prompt + usage.output)} tokens（输入 ${tokens(usage.prompt)} · 输出 ${tokens(usage.output)}）'),
@@ -37,9 +46,9 @@ class _SessionUsage extends StatelessWidget {
         Stat('费用', costLabel(cost, stats.cost.mainUnknown || stats.cost.childUnknown), tooltip: stats.cost.mainUnknown || stats.cost.childUnknown ? '部分请求没有单价，未计入' : ''),
         Stat('请求', tokens(stats.mainRequests + stats.childRequests), tooltip: '主代理 ${stats.mainRequests} · 子代理 ${stats.childRequests}'),
         Stat(
-          '上下文',
-          window != null && window > 0 ? '${(status.context / window * 100).round()}%' : wan(status.context),
-          tooltip: '${tokens(status.context)} / ${window == null ? '—' : tokens(window)} tokens',
+          'TPS',
+          rate == null ? '—' : rate.toStringAsFixed(1),
+          tooltip: rate == null ? '还没有带耗时的回复' : '平均输出速度：${tokens(output.round())} tokens / ${(ms / 1000).toStringAsFixed(1)} 秒',
         ),
       ]),
       const SizedBox(height: 16),
@@ -141,23 +150,27 @@ class _ReplyTrendState extends State<_ReplyTrend> {
               ),
             ),
             if (_details)
-              SingleChildScrollView(
-                scrollDirection: Axis.horizontal,
-                child: ConstrainedBox(
-                  constraints: const BoxConstraints(minWidth: 620),
-                  child: Column(children: [
-                    const _ReplyRow(cells: ['回复', '输入', '输出', '缓存读 / 写', '缓存命中', 'TPS', '估算费用'], header: true),
-                    for (final reply in page)
-                      _ReplyRow(cells: [
-                        '#${reply.number}${reply.metrics?.model == null ? '' : '  ${reply.metrics!.model}'}',
-                        reply.metrics?.usage == null ? '—' : tokens(reply.metrics!.usage!.prompt),
-                        _format(_value(reply.metrics, 'output'), 'output'),
-                        reply.metrics?.usage == null ? '—' : '${tokens(reply.metrics!.usage!.cacheRead)} / ${tokens(reply.metrics!.usage!.cacheWrite)}',
-                        _format(_value(reply.metrics, 'hit'), 'hit'),
-                        _format(_value(reply.metrics, 'rate'), 'rate', short: true),
-                        _format(_value(reply.metrics, 'cost'), 'cost'),
-                      ]),
-                  ]),
+              // A horizontal scroll view gives unbounded width, which the rows' `Expanded`
+              // columns cannot split; pin the table to the panel width, at least 620.
+              LayoutBuilder(
+                builder: (context, constraints) => SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: SizedBox(
+                    width: constraints.maxWidth < 620 ? 620 : constraints.maxWidth,
+                    child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+                      const _ReplyRow(cells: ['回复', '输入', '输出', '缓存读 / 写', '缓存命中', 'TPS', '估算费用'], header: true),
+                      for (final reply in page)
+                        _ReplyRow(cells: [
+                          '#${reply.number}${reply.metrics?.model == null ? '' : '  ${reply.metrics!.model}'}',
+                          reply.metrics?.usage == null ? '—' : tokens(reply.metrics!.usage!.prompt),
+                          _format(_value(reply.metrics, 'output'), 'output'),
+                          reply.metrics?.usage == null ? '—' : '${tokens(reply.metrics!.usage!.cacheRead)} / ${tokens(reply.metrics!.usage!.cacheWrite)}',
+                          _format(_value(reply.metrics, 'hit'), 'hit'),
+                          _format(_value(reply.metrics, 'rate'), 'rate', short: true),
+                          _format(_value(reply.metrics, 'cost'), 'cost'),
+                        ]),
+                    ]),
+                  ),
                 ),
               ),
           ]),

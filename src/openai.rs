@@ -137,18 +137,17 @@ impl Serialize for Messages<'_> {
                 seq.serialize_element(&Msg::Assistant { content, reasoning_content: reasoning, tool_calls: calls })?;
                 continue;
             }
-            // Tool results must directly follow the assistant's tool calls.
+            // Tool results must directly follow the assistant's tool calls; pictures they
+            // return go into the user message after them, since tool messages are text only.
+            let mut tool_images = Vec::new();
             for b in of("tool_result") {
-                let text = match &b["content"] {
-                    Value::String(t) => Cow::Borrowed(t.as_str()),
-                    other => Cow::Owned(other.to_string()),
-                };
-                let content = if b["is_error"] == true { Cow::Owned(format!("Error: {text}")) } else { text };
+                let (content, images) = crate::api::tool_result_parts(b);
+                tool_images.extend(images);
                 seq.serialize_element(&Msg::Tool { tool_call_id: b["tool_use_id"].as_str().unwrap_or_default(), content })?;
             }
-            if blocks.iter().any(|b| b["type"] == "image") {
+            if !tool_images.is_empty() || blocks.iter().any(|b| b["type"] == "image") {
                 let mut parts = Vec::new();
-                for b in blocks {
+                for b in tool_images.into_iter().chain(blocks.iter().filter(|b| b["type"] != "tool_result")) {
                     match b["type"].as_str() {
                         Some("text") => parts.push(UserPart::Text { text: b["text"].as_str().unwrap_or_default() }),
                         Some("image") => parts.push(UserPart::ImageUrl { image_url: ImageUrl { url: DataUrl::from_block(b).map_err(serde::ser::Error::custom)? } }),

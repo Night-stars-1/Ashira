@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../api/models.dart';
+import '../state/app_update.dart';
 import 'format.dart';
 import 'theme.dart';
 import 'widgets.dart';
@@ -23,9 +24,12 @@ class SessionList extends StatelessWidget {
     required this.activeId,
     required this.marks,
     required this.connected,
+    this.serverUpdate,
     required this.onSelect,
     required this.onCreate,
     required this.onSettings,
+    required this.onAbout,
+    this.onCollapse,
     required this.onAction,
   });
 
@@ -33,8 +37,14 @@ class SessionList extends StatelessWidget {
   final String activeId;
   final SessionMarks marks;
   final bool connected;
+  /// A newer server release tag (`ashira update` installs it), else null.
+  final String? serverUpdate;
   final void Function(String id) onSelect;
   final VoidCallback onCreate, onSettings;
+  /// Opens settings on 关于, where updates are shown and installed.
+  final VoidCallback onAbout;
+  /// Folds the sidebar away (wide layouts); null where it is a drawer.
+  final VoidCallback? onCollapse;
 
   /// `key` is a session id, or a folder path for folder actions; `label` is its current name.
   final void Function(SessionAction action, String key, String label) onAction;
@@ -50,12 +60,23 @@ class SessionList extends StatelessWidget {
             height: 48,
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 12),
-              child: Row(children: [
-                const Expanded(child: Text('Ashira', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w500))),
+              child: Row(crossAxisAlignment: CrossAxisAlignment.center, children: [
+                // Even leading puts the glyphs on the row's center line, level with the dot and «.
+                const Text('Ashira', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w500, height: 1, leadingDistribution: TextLeadingDistribution.even)),
+                const SizedBox(width: 8),
                 Tooltip(
                   message: connected ? '已连接' : '未连接',
                   child: Container(width: 8, height: 8, decoration: BoxDecoration(shape: BoxShape.circle, color: connected ? success : scheme.error)),
                 ),
+                const Spacer(),
+                if (onCollapse != null)
+                  IconButton(
+                    tooltip: '收起会话列表',
+                    iconSize: 18,
+                    visualDensity: VisualDensity.compact,
+                    icon: Icon(Icons.keyboard_double_arrow_left, color: scheme.mutedForeground),
+                    onPressed: onCollapse,
+                  ),
               ]),
             ),
           ),
@@ -75,6 +96,39 @@ class SessionList extends StatelessWidget {
               : ListView(padding: const EdgeInsets.fromLTRB(8, 0, 8, 8), children: [
                   for (final node in tree) _Project(node: node, depth: 0, activeId: activeId, marks: marks, onSelect: onSelect, onAction: onAction),
                 ]),
+        ),
+        // One quiet line when the App or the server has a newer release; 关于 has the details.
+        ListenableBuilder(
+          listenable: appUpdate,
+          builder: (context, _) {
+            final app = appUpdate.available;
+            if (app == null && serverUpdate == null) return const SizedBox.shrink();
+            final label = app != null && serverUpdate != null
+                ? 'App 和服务端有新版本'
+                : app != null
+                    ? 'App 有新版本 ${app.tag}'
+                    : '服务端有新版本 $serverUpdate';
+            return Padding(
+              padding: const EdgeInsets.fromLTRB(8, 0, 8, 4),
+              child: Material(
+                color: Colors.transparent,
+                borderRadius: BorderRadius.circular(radius),
+                clipBehavior: Clip.antiAlias,
+                child: InkWell(
+                  onTap: onAbout,
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+                    child: Row(children: [
+                      Container(width: 6, height: 6, decoration: BoxDecoration(shape: BoxShape.circle, color: scheme.primary)),
+                      const SizedBox(width: 8),
+                      Expanded(child: Text(label, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 12, color: scheme.mutedForeground))),
+                      Icon(Icons.chevron_right, size: 16, color: scheme.mutedForeground),
+                    ]),
+                  ),
+                ),
+              ),
+            );
+          },
         ),
         Container(
           padding: const EdgeInsets.all(8),
@@ -234,7 +288,8 @@ class _MenuRow extends StatefulWidget {
   final List<(SessionAction, String, IconData)> items;
   final void Function(SessionAction action) onSelected;
   final String menuLabel;
-  final Widget Function(VoidCallback openMenu, bool reveal) builder;
+  /// `openMenu(at)`: `at` is where in the row a long press or right click landed.
+  final Widget Function(void Function(Offset at) openMenu, bool reveal) builder;
   @override
   State<_MenuRow> createState() => _MenuRowState();
 }
@@ -243,15 +298,28 @@ class _MenuRowState extends State<_MenuRow> {
   final _menu = MenuController();
   bool _hovered = false;
 
-  void _open() => _menu.isOpen ? _menu.close() : _menu.open();
+  /// Opens at `at` in the row (a long press or right click), or under the 「…」 button.
+  void _open([Offset? at]) {
+    if (_menu.isOpen) return _menu.close();
+    _menu.open(position: at ?? _buttonCorner());
+  }
+
+  final _button = GlobalKey();
+
+  /// The 「…」 button's bottom-left corner, relative to the row (the anchor).
+  Offset? _buttonCorner() {
+    final button = _button.currentContext?.findRenderObject() as RenderBox?;
+    final row = context.findRenderObject() as RenderBox?;
+    if (button == null || row == null) return null;
+    return row.globalToLocal(button.localToGlobal(Offset(0, button.size.height + 2)));
+  }
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     return MenuAnchor(
       controller: _menu,
-      // Opens under the row's start, like the web's dropdown; the platform keeps it on screen.
-      alignmentOffset: const Offset(0, 2),
+      // Opens where it was asked for; the platform keeps it on screen.
       menuChildren: [
         for (final (action, label, icon) in widget.items)
           MenuItemButton(leadingIcon: Icon(icon, size: 16), onPressed: () => widget.onSelected(action), child: Text(label, style: const TextStyle(fontSize: 13))),
@@ -272,6 +340,7 @@ class _MenuRowState extends State<_MenuRow> {
                   opacity: reveal ? 1 : 0,
                   duration: const Duration(milliseconds: 150),
                   child: SizedBox.square(
+                    key: _button,
                     dimension: 24,
                     child: IconButton(
                       tooltip: widget.menuLabel,

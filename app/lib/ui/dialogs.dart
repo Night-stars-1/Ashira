@@ -83,6 +83,8 @@ class _ModelPickerState extends State<_ModelPicker> {
   String _query = '';
   String _level = '默认';
   String _group = '';
+  /// The model the level row describes: the current one, then whichever was tapped.
+  String _picked = '';
   late bool _fast = widget.state.status?.fast ?? false;
 
   String get _current => widget.state.status?.model ?? '';
@@ -96,11 +98,28 @@ class _ModelPickerState extends State<_ModelPicker> {
       setState(() {
         _catalog = catalog;
         _level = _levelOf(_current, catalog.levels);
+        _picked = _base(_current);
         _group = catalog.models.any((model) => model.provider == provider) ? provider : '';
       });
     }).catchError((Object error) {
       if (mounted) setState(() => _error = errorText(error, '无法加载模型'));
     });
+  }
+
+  /// Like the web: picking a model or a level applies at once and keeps the panel open,
+  /// so the level can follow the model.
+  void _apply() {
+    if (_picked.isEmpty) return;
+    widget.state.setModel(_level == '默认' ? _picked : '$_picked:$_level');
+  }
+
+  void _choose(ModelItem model, List<String> levels) {
+    setState(() {
+      _picked = model.selector;
+      // A level the new model doesn't accept falls back to 默认 instead of being sent.
+      if (!_levelsFor(model, levels).contains(_level)) _level = '默认';
+    });
+    _apply();
   }
 
   static String _levelOf(String selector, List<String> levels) {
@@ -168,14 +187,9 @@ class _ModelPickerState extends State<_ModelPicker> {
         ),
       for (final model in shown)
         Material(
-          color: _base(_current) == model.selector ? scheme.muted : Colors.transparent,
+          color: _picked == model.selector ? scheme.muted : Colors.transparent,
           child: InkWell(
-            onTap: () {
-              // A level this model doesn't accept falls back to 默认 instead of being sent.
-              final accepted = _levelsFor(model, catalog.levels).contains(_level);
-              widget.state.setModel(_level == '默认' || !accepted ? model.selector : '${model.selector}:$_level');
-              Navigator.of(context).pop();
-            },
+            onTap: () => _choose(model, catalog.levels),
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
               decoration: BoxDecoration(border: Border(bottom: BorderSide(color: scheme.border))),
@@ -207,12 +221,19 @@ class _ModelPickerState extends State<_ModelPicker> {
         Row(children: [
           Expanded(
             child: Wrap(spacing: 4, runSpacing: 4, children: [
-              for (final level in _levelsFor(catalog.models.where((model) => model.selector == _base(_current)).firstOrNull, catalog.levels))
-                Pill(label: level, selected: level == _level, onTap: () => setState(() => _level = level)),
+              for (final level in _levelsFor(catalog.models.where((model) => model.selector == _picked).firstOrNull, catalog.levels))
+                Pill(
+                  label: level,
+                  selected: level == _level,
+                  onTap: () {
+                    setState(() => _level = level);
+                    _apply();
+                  },
+                ),
             ]),
           ),
           // OpenAI fast only exists for GPT models on the OpenAI wire formats.
-          if (catalog.models.any((model) => model.selector == _base(_current) && model.fast)) ...[
+          if (catalog.models.any((model) => model.selector == _picked && model.fast)) ...[
             const SizedBox(width: 12),
             const Text('Fast', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500)),
             const SizedBox(width: 4),

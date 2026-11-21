@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { ChartNoAxesColumn, ChevronDown, CornerDownLeft, LoaderCircle, Menu, MessageSquare, PanelRightClose, PanelRightOpen, Paperclip, Square, Terminal, X } from '@lucide/vue'
+import { ChartNoAxesColumn, ChevronDown, ChevronsRight, CornerDownLeft, LoaderCircle, Menu, MessageSquare, PanelRightClose, PanelRightOpen, Paperclip, Square, Terminal, X } from '@lucide/vue'
 import { TabsContent, TabsList, TabsRoot, TabsTrigger } from 'reka-ui'
 import Transcript, { type Block, type TextFile } from '@/components/Transcript.vue'
+import ContextRing from '@/components/ContextRing.vue'
 import TextFileCard from '@/components/TextFileCard.vue'
 import AgentView from '@/components/AgentView.vue'
 import { Button } from '@/components/ui/button'
@@ -25,6 +26,11 @@ const props = defineProps<{
   connected: boolean
   loading: boolean
   filesOpen: boolean
+  /** Desktop only: the session list is folded away, so the header offers to bring it back. */
+  sessionsCollapsed: boolean
+  /** The session's current context use, shown as a ring by the model button. */
+  contextTokens: number
+  contextWindow: number | null
   question: QuestionRequest | null
 }>()
 
@@ -37,6 +43,7 @@ const emit = defineEmits<{
   openModels: []
   openUsage: []
   openSessions: []
+  expandSessions: []
   toggleFiles: []
   answer: [answers: QuestionAnswers | null]
 }>()
@@ -225,6 +232,9 @@ function removeText(index: number) {
       <Button type="button" size="icon-sm" variant="ghost" class="size-9 shrink-0 lg:hidden" aria-label="打开会话列表" aria-haspopup="dialog" @click="emit('openSessions')">
         <Menu aria-hidden="true" />
       </Button>
+      <Button v-if="sessionsCollapsed" type="button" size="icon-sm" variant="ghost" class="-ml-2 size-9 shrink-0 max-lg:hidden" aria-label="展开会话列表" title="展开会话列表" @click="emit('expandSessions')">
+        <ChevronsRight aria-hidden="true" />
+      </Button>
       <p class="flex min-w-0 flex-1 items-center gap-2 text-sm font-medium" :title="sessionName">
         <span class="truncate">{{ sessionName }}</span>
         <LoaderCircle v-if="naming" class="size-3.5 shrink-0 text-muted-foreground motion-safe:animate-spin" role="status" aria-label="正在生成标题" />
@@ -294,18 +304,21 @@ function removeText(index: number) {
               <span class="truncate">{{ model || '选择模型' }}</span>
               <ChevronDown />
             </Button>
-            <Button v-if="busy" type="button" size="sm" variant="destructive" class="ml-auto shrink-0 max-sm:h-9" @click="emit('interrupt')">
-              <Square /> 停止
-            </Button>
-            <Button v-else type="submit" size="sm" class="ml-auto shrink-0 max-sm:h-9" :disabled="(!draft.trim() && images.length === 0 && textFiles.length === 0) || !connected || !hasSession || sending || readingImages">
-              <CornerDownLeft /> 发送
-            </Button>
+            <div class="ml-auto flex shrink-0 items-center gap-1">
+              <ContextRing v-if="hasSession && contextTokens > 0" :context="contextTokens" :window="contextWindow" />
+              <Button v-if="busy" type="button" size="sm" variant="destructive" class="shrink-0 max-sm:h-9" @click="emit('interrupt')">
+                <Square /> 停止
+              </Button>
+              <Button v-else type="submit" size="sm" class="shrink-0 max-sm:h-9" :disabled="(!draft.trim() && images.length === 0 && textFiles.length === 0) || !connected || !hasSession || sending || readingImages">
+                <CornerDownLeft /> 发送
+              </Button>
+            </div>
           </div>
         </div>
       </form>
     </TabsContent>
     <TabsContent value="terminal" class="flex min-h-0 min-w-0 flex-1 flex-col data-[state=inactive]:hidden">
-      <TerminalView v-if="terminalOpened" :session-id="sessionId" :cwd="cwd" :active="view === 'terminal'" />
+      <TerminalView v-if="terminalOpened" :session-id="sessionId" :active="view === 'terminal'" />
     </TabsContent>
   </TabsRoot>
 </template>

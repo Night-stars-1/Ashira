@@ -65,3 +65,8 @@ kotlin {
 flutter {
     source = "../.."
 }
+
+dependencies {
+    // FileProvider, for handing a downloaded update APK to the installer.
+    implementation("androidx.core:core-ktx:1.15.0")
+}

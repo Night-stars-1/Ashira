@@ -43,6 +43,8 @@ struct Hub {
     terminal_slots: Option<Semaphore>,
     terminal_shutdown: CancellationToken,
     token: String,
+    /// `--web`: the web build served on every non-`/v1` path, and what 更新网页 replaces.
+    web: Option<PathBuf>,
 }
 
 /// One session's agent: its own `Shared`, command queue and turn routing.
@@ -94,9 +96,13 @@ fn next_turn() -> String {
     format!("{now:x}-{:x}", NEXT.fetch_add(1, Ordering::Relaxed))
 }
 
-pub async fn start(shared: Arc<Shared>, listener: TcpListener, token: String) -> Result<(), String> {
+pub async fn start(shared: Arc<Shared>, listener: TcpListener, token: String, web: Option<PathBuf>) -> Result<(), String> {
     let bound = listener.local_addr().map_err(|error| error.to_string())?;
     eprintln!("ashira api http://{bound}");
+    if let Some(dir) = &web {
+        if crate::web::installed(dir) { eprintln!("ashira web http://{bound}/ ({})", dir.display()); }
+        else { eprintln!("ashira web: {} 还没有网页，可在命令行运行 `ashira update` 或打开 http://{bound}/ 安装", dir.display()); }
+    }
     let (broadcast, _) = broadcast::channel(1024);
     let default_cwd = shared.cwd();
     let default_model = shared.model().map(|model| model.client.name().to_owned()).unwrap_or_default();
@@ -104,7 +110,7 @@ pub async fn start(shared: Arc<Shared>, listener: TcpListener, token: String) ->
     let terminal_slots = (std::env::var("ASHIRA_WEB_TERMINAL").as_deref() == Ok("1")).then(|| Semaphore::new(8));
     let terminal_shutdown = CancellationToken::new();
     let _shutdown = terminal_shutdown.clone().drop_guard();
-    let hub = Arc::new(Hub { shared, runtimes: StdMutex::default(), events: broadcast, default_cwd, default_model, terminal_slots, terminal_shutdown, token });
+    let hub = Arc::new(Hub { shared, runtimes: StdMutex::default(), events: broadcast, default_cwd, default_model, terminal_slots, terminal_shutdown, token, web });
     let result = tokio::select! {
         result = accept(listener, hub.clone()) => result,
         _ = tokio::signal::ctrl_c() => Ok(()),
@@ -143,6 +149,10 @@ async fn handle(mut socket: TcpStream, hub: Arc<Hub>) -> Result<(), String> {
         return write_response(&mut socket, 204, "No Content", "text/plain", b"").await;
     }
     let (path, query) = target.split_once('?').unwrap_or((target.as_str(), ""));
+    // The page itself is public like any static site; everything it can do goes through /v1.
+    if let Some(dir) = hub.web.as_deref() && method == "GET" && path != "/v1" && !path.starts_with("/v1/") {
+        return serve_web(&mut socket, dir, path).await;
+    }
     if !authorized(&hub.token, &headers, query) {
         let body = json!({"error": "需要有效的 API Token"}).to_string();
         return write_response(&mut socket, 401, "Unauthorized", "application/json", body.as_bytes()).await;
@@ -165,6 +175,35 @@ async fn handle(mut socket: TcpStream, hub: Arc<Hub>) -> Result<(), String> {
         }
     }
 }
+
+/// A file from the `--web` folder. Hashed assets cache for a year; `index.html` revalidates
+/// so an update shows on the next load. A folder with no build yet gets the install page.
+async fn serve_web(socket: &mut TcpStream, dir: &Path, path: &str) -> Result<(), String> {
+    if !crate::web::installed(dir) {
+        return write_response(socket, 200, "OK", "text/html; charset=utf-8", INSTALL_PAGE.as_bytes()).await;
+    }
+    let Some(file) = crate::web::resolve(dir, path) else {
+        return write_response(socket, 404, "Not Found", "text/plain", b"Not Found").await;
+    };
+    let body = tokio::fs::read(&file).await.map_err(|error| error.to_string())?;
+    let cache = if file.parent().is_some_and(|parent| parent.ends_with("assets")) { "public, max-age=31536000, immutable" } else { "no-cache" };
+    let header = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: {}\r\nContent-Length: {}\r\nCache-Control: {cache}\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\n\r\n",
+        crate::web::content_type(&file), body.len()
+    );
+    socket.write_all(header.as_bytes()).await.map_err(|error| error.to_string())?;
+    socket.write_all(&body).await.map_err(|error| error.to_string())?;
+    socket.shutdown().await.map_err(|error| error.to_string())
+}
+
+/// Shown while the `--web` folder is empty: installs this core's web build with the token.
+const INSTALL_PAGE: &str = r#"<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Ashira</title>
+<style>body{font:15px system-ui,sans-serif;background:#111;color:#e4e4e7;display:grid;place-items:center;min-height:100vh;margin:0}form{display:grid;gap:12px;width:min(320px,90vw)}input,button{font:inherit;padding:8px 10px;border-radius:8px;border:1px solid #333;background:#1b1b1d;color:inherit}button{background:#e4e4e7;color:#111;cursor:pointer}button:disabled{opacity:.5}p{margin:0;color:#a1a1aa;font-size:13px}</style>
+<form id="f"><strong>安装 Ashira 网页</strong><p>网页目录还是空的。填写 API Token 后，服务端会下载与它同版本的网页。</p>
+<input id="t" type="password" placeholder="API Token" required autocomplete="off"><button id="b">安装</button><p id="m" role="status"></p></form>
+<script>f.onsubmit=async e=>{e.preventDefault();b.disabled=true;m.textContent='正在下载…';
+try{const r=await fetch('/v1/web/update',{method:'POST',headers:{Authorization:'Bearer '+t.value.trim()}});const j=await r.json();
+if(!r.ok)throw new Error(j.error||r.status);localStorage.setItem('ashira.token',t.value.trim());location.reload()}catch(x){m.textContent='安装失败：'+x.message;b.disabled=false}}</script></html>"#;
 
 /// Accepts `Authorization: Bearer <token>` or `?token=` (browsers cannot set
 /// headers on EventSource or WebSocket).
@@ -310,6 +349,11 @@ async fn dispatch(hub: &Arc<Hub>, method: &str, path: &str, query: &str, body: &
             Ok(Response::Json { status: 200, body: crate::mcp::config::entry(&hub.shared.cwd(), &name)? })
         }
         ("GET", "/v1/memory") => Ok(Response::Json { status: 200, body: memory(hub).await? }),
+        ("POST", "/v1/web/update") => {
+            let dir = hub.web.clone().ok_or("服务端没有用 --web 托管网页")?;
+            let tag = crate::update::install_web(&dir).await?;
+            Ok(Response::Json { status: 200, body: json!({"version": tag.trim_start_matches('v')}) })
+        }
         ("GET", "/v1/usage") => {
             let registry = hub.shared.registry();
             Ok(Response::Json { status: 200, body: tokio::task::spawn_blocking(move || crate::usage_report::report(&registry)).await.map_err(|error| error.to_string())? })
@@ -459,6 +503,8 @@ async fn status(hub: &Hub) -> Value {
         "version": crate::update::CURRENT,
         // A newer release tag the server can update to with `ashira update`, else null.
         "update": crate::update::cached(),
+        // `--web`: the version the served page is, so it can tell it is behind the core.
+        "web": hub.web.as_deref().map(|dir| json!({"version": crate::web::installed_version(dir)})),
         "cwd": hub.shared.cwd().display().to_string(),
         "sessionId": hub.shared.session_id(),
         "model": hub.shared.model().map(|model| model.client.name().to_owned()),
@@ -1225,9 +1271,12 @@ fn read_subagent(id: &str) -> Result<Value, String> {
     }
     let dir = session::home().join("subagents").join(id);
     if !dir.is_dir() { return Err("没有这个子任务".into()); }
+    // A background shell command has no history; while it runs, its streamed output stands in for the report.
+    let mut report = latest_report(&dir);
+    if report.is_empty() && let Ok(output) = std::fs::read_to_string(dir.join("output.txt")) { report = output; }
     Ok(json!({
         "id": id,
-        "report": cap_view(&latest_report(&dir)),
+        "report": cap_view(&report),
         "messages": project_history(&read_history(&dir), None),
     }))
 }
@@ -1392,9 +1441,13 @@ mod tests {
     }
 
     async fn serve(shared: Arc<Shared>, token: &str) -> (std::net::SocketAddr, tokio::task::JoinHandle<Result<(), String>>) {
+        serve_web_dir(shared, token, None).await
+    }
+
+    async fn serve_web_dir(shared: Arc<Shared>, token: &str, web: Option<PathBuf>) -> (std::net::SocketAddr, tokio::task::JoinHandle<Result<(), String>>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        (addr, tokio::spawn(start(shared, listener, token.into())))
+        (addr, tokio::spawn(start(shared, listener, token.into(), web)))
     }
 
     #[tokio::test]
@@ -1415,6 +1468,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn web_folder_is_public_but_the_api_keeps_its_token() {
+        let root = crate::agent::plain_path(std::env::temp_dir().canonicalize().unwrap());
+        let web = std::env::temp_dir().join(format!("ashira-serve-web-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(web.join("assets")).unwrap();
+        let (addr, server) = serve_web_dir(template(&root), "s3cret", Some(web.clone())).await;
+        async fn get(addr: std::net::SocketAddr, path: &str) -> String {
+            exchange(addr, &format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")).await
+        }
+        let get = |path: &'static str| get(addr, path);
+
+        // An empty folder offers the install page, which posts to the token-gated route.
+        assert!(get("/").await.contains("/v1/web/update"));
+        std::fs::write(web.join("index.html"), "<p>ashira</p>").unwrap();
+        std::fs::write(web.join("assets/app.js"), "ok()").unwrap();
+        let page = get("/sessions/x").await;
+        assert!(page.starts_with("HTTP/1.1 200") && page.contains("text/html") && page.ends_with("<p>ashira</p>"));
+        let script = get("/assets/app.js").await;
+        assert!(script.contains("text/javascript") && script.contains("immutable") && script.ends_with("ok()"));
+        assert!(get("/../Cargo.toml").await.starts_with("HTTP/1.1 404"));
+        assert!(get("/v1").await.starts_with("HTTP/1.1 401"));
+        assert!(exchange(addr, "POST /v1/web/update HTTP/1.1\r\nConnection: close\r\n\r\n").await.starts_with("HTTP/1.1 401"));
+        server.abort();
+        std::fs::remove_dir_all(web).unwrap();
+    }
+
+    #[tokio::test]
     async fn question_is_shown_answered_and_skipped_over_http() {
         let root = std::env::temp_dir().join(format!("ashira-question-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
         std::fs::create_dir_all(&root).unwrap();
@@ -1423,7 +1502,7 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let (broadcast, _) = broadcast::channel(1024);
-        let hub = Arc::new(Hub { shared: shared.clone(), runtimes: StdMutex::default(), events: broadcast, default_cwd: root.clone(), default_model: String::new(), terminal_slots: None, terminal_shutdown: CancellationToken::new(), token: TOKEN.into() });
+        let hub = Arc::new(Hub { shared: shared.clone(), runtimes: StdMutex::default(), events: broadcast, default_cwd: root.clone(), default_model: String::new(), terminal_slots: None, terminal_shutdown: CancellationToken::new(), token: TOKEN.into(), web: None });
         let server = tokio::spawn(accept(listener, hub.clone()));
         let session = request(addr, "POST", "/v1/sessions", "{}").await.1["sessionId"].as_str().unwrap().to_owned();
         let path = format!("/v1/sessions/{session}");

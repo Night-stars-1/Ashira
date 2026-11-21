@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import 'state/app_update.dart';
+import 'state/display_prefs.dart';
 import 'state/ashira_state.dart';
 import 'state/settings.dart';
 import 'ui/connect_page.dart';
@@ -10,7 +12,9 @@ import 'ui/window_frame.dart';
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await setupWindow();
+  await displayPrefs.load();
   runApp(const AshiraApp());
+  appUpdate.check(quiet: true);
 }
 
 class AshiraApp extends StatefulWidget {

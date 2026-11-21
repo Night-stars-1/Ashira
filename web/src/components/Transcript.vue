@@ -32,15 +32,20 @@ function preview(text: string) {
   const head = text.split('\n', foldLines).join('\n')
   return (head.length > foldChars ? head.slice(0, foldChars) : head).trimEnd() + '…'
 }
-// Long reasoning starts collapsed; keys are `${blockIndex}:${partIndex}` the user toggled.
+// Long reasoning shows in full while it streams (the last part of a live reply) and folds
+// once more output follows; keys are `${blockIndex}:${partIndex}` the user toggled.
 const reasoningLines = 6
 const reasoningChars = 400
 const toggledReasoning = reactive(new Set<string>())
 function longReasoning(text: string) {
   return text.length > reasoningChars || text.split('\n', reasoningLines + 1).length > reasoningLines
 }
-function reasoningOpen(key: string, text: string) {
-  return !longReasoning(text) !== toggledReasoning.has(key)
+function reasoningOpen(key: string, text: string, streaming = false) {
+  return (streaming || !longReasoning(text)) !== toggledReasoning.has(key)
+}
+/** The reasoning still being written: the work's last part while the reply runs and no answer has started. */
+function streaming(reply: Turn, partIndex: number) {
+  return reply.live && !reply.answer.length && partIndex === reply.work.length - 1
 }
 function toggleReasoning(key: string) {
   if (toggledReasoning.has(key)) toggledReasoning.delete(key)
@@ -88,11 +93,11 @@ const rows = computed<Row[]>(() => {
   return out
 })
 
-// The work is open while it runs and folds once the answer starts or the reply ends;
-// a click sticks. Keys are the reply's first block index.
+// The work is open while the reply runs and folds once it has finished; a click sticks.
+// Keys are the reply's first block index.
 const toggledWork = reactive(new Map<number, boolean>())
 function workOpen(key: number, reply: Turn) {
-  return toggledWork.get(key) ?? (reply.live && reply.answer.every((text) => !text.trim()))
+  return toggledWork.get(key) ?? reply.live
 }
 function duration(ms: number) {
   const seconds = Math.round(ms / 1000)
@@ -218,15 +223,15 @@ watch(content, (body, _previous, onCleanup) => {
                   <button
                     type="button"
                     class="flex w-full items-center gap-1.5 px-3 py-2 text-left hover:text-foreground focus-visible:text-foreground focus-visible:outline-none"
-                    :aria-expanded="reasoningOpen(`${row.key}:${partIndex}`, part.text)"
+                    :aria-expanded="reasoningOpen(`${row.key}:${partIndex}`, part.text, streaming(row.reply, partIndex))"
                     @click="toggleReasoning(`${row.key}:${partIndex}`)"
                   >
-                    <ChevronRight aria-hidden="true" class="size-3.5 shrink-0 transition-transform motion-reduce:transition-none" :class="reasoningOpen(`${row.key}:${partIndex}`, part.text) && 'rotate-90'" />
+                    <ChevronRight aria-hidden="true" class="size-3.5 shrink-0 transition-transform motion-reduce:transition-none" :class="reasoningOpen(`${row.key}:${partIndex}`, part.text, streaming(row.reply, partIndex)) && 'rotate-90'" />
                     <span class="font-medium">思考</span>
-                    <span class="min-w-0 flex-1 truncate italic opacity-75">{{ reasoningOpen(`${row.key}:${partIndex}`, part.text) ? '' : part.text.replace(/\s+/g, ' ').trim() }}</span>
+                    <span class="min-w-0 flex-1 truncate italic opacity-75">{{ reasoningOpen(`${row.key}:${partIndex}`, part.text, streaming(row.reply, partIndex)) ? '' : part.text.replace(/\s+/g, ' ').trim() }}</span>
                     <span class="shrink-0 text-xs tabular-nums opacity-75">{{ part.text.length }} 字</span>
                   </button>
-                  <p v-if="reasoningOpen(`${row.key}:${partIndex}`, part.text)" class="px-3 pb-2 italic whitespace-pre-wrap">{{ part.text }}</p>
+                  <p v-if="reasoningOpen(`${row.key}:${partIndex}`, part.text, streaming(row.reply, partIndex))" class="px-3 pb-2 italic whitespace-pre-wrap">{{ part.text }}</p>
                 </div>
                 <ToolOutput v-else-if="part.type === 'tool'" :tool="part" />
                 <Markdown v-else-if="part.text" :text="part.text" />

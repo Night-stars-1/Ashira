@@ -27,6 +27,7 @@ class Markdown extends StatelessWidget {
       data: text,
       selectable: true,
       onTapLink: (_, href, _) => openLink(href),
+      inlineSyntaxes: [_CjkAutolink()],
       // Workspace files load from the session; remote images are not fetched (alt text, like the web).
       imageBuilder: (uri, _, alt) {
         final src = Uri.decodeFull(uri.toString()).trim();
@@ -57,6 +58,21 @@ class Markdown extends StatelessWidget {
         blockSpacing: 12,
       ),
     );
+  }
+}
+
+/// GFM only links a bare URL after whitespace or `*_~(>`, so `完整变更：https://…` stays text.
+/// This also accepts any non-ASCII character before it (CJK text and punctuation), like the web.
+class _CjkAutolink extends md.AutolinkExtensionSyntax {
+  @override
+  bool tryMatch(md.InlineParser parser, [int? startMatchPos]) {
+    final start = startMatchPos ?? parser.pos;
+    if (start == 0 || parser.charAt(start - 1) < 0x80) return false;
+    final match = pattern.matchAsPrefix(parser.source, start);
+    // Emails keep the stock rule; only URLs get the relaxed preceding character.
+    if (match == null || match[1] == null) return false;
+    parser.writeText();
+    return onMatch(parser, match);
   }
 }
 
