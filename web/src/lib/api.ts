@@ -133,6 +133,15 @@ export type McpForm = { name: string; type: 'stdio' | 'http' | 'sse'; command: s
 export type ModelItem = { selector: string; provider: string; id: string; name: string | null; context: number; input: number | null; output: number | null; efforts: string[]; fast: boolean }
 /** A server update's download: bytes so far, and its size when known. */
 export type UpdateProgress = { received: number; total: number | null }
+/** `source`: where the running shell came from (`env` = ASHIRA_SHELL, `config` = config.yml, `auto`). */
+export type ShellStatus = { current: string; source: 'env' | 'config' | 'auto'; configured: string | null; envOverride: string | null; problem: string | null; restartNeeded: boolean }
+
+function shellStatus(body: unknown): ShellStatus {
+  const value = record(body)
+  const source = value.source === 'env' || value.source === 'config' ? value.source : 'auto'
+  const optional = (item: unknown) => (typeof item === 'string' && item ? item : null)
+  return { current: text(value.current), source, configured: optional(value.configured), envOverride: optional(value.envOverride), problem: optional(value.problem), restartNeeded: value.restartNeeded === true }
+}
 /** How a provider gets its key; a stored literal key is never sent to the page. */
 export type ProviderKey =
   | { kind: 'env'; value: string; unset?: boolean }
@@ -493,6 +502,10 @@ export const api = {
     const row = record(download)
     return { received: number(row.received), total: metric(row.total) }
   },
+  /** The bash tool's shell: running now, saved in config.yml, and what a restart would use. */
+  shell: async (): Promise<ShellStatus> => shellStatus(await request('/v1/shell')),
+  /** Saves config.yml `shell:` after a test run; empty goes back to finding it automatically. */
+  setShell: async (shell: string): Promise<ShellStatus> => shellStatus(await request('/v1/shell', { method: 'POST', body: JSON.stringify({ shell }) })),
   /** The server re-launches its program (the build `ashira update` installed). */
   restart: async () => { await request('/v1/restart', { method: 'POST' }) },
   usage: async (): Promise<UsageReport> => {

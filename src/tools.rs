@@ -1,7 +1,7 @@
 use std::{
     env,
     fmt::Write as _,
-    path::Path,
+    path::{Path, PathBuf},
     process::Stdio,
     sync::{
         OnceLock,
@@ -47,7 +47,7 @@ pub fn definitions(role: Option<crate::subagents::Role>, mcp: &[Value], plugins:
     let mut tools = vec![
         json!({
             "name": "bash",
-            "description": "Run a bash command in the working directory and return combined stdout/stderr. A command still running after 60 seconds moves to the background as a job (`background: true` does that at once): the call returns a job receipt, the result arrives later as subagent-results data, and `wait`, `task_status` and `task_cancel` work on it. Use that for builds, test suites and other long commands instead of `&`. Servers and watchers that never exit still need `cmd > log.txt 2>&1 &`.",
+            "description": "Run a command in the working directory with the shell named in the system prompt, as `<shell> -c <command>`, and return combined stdout/stderr. The command is POSIX shell (bash) syntax on every platform, Windows included: use forward slashes or quoted paths, `$VAR` not `%VAR%` or `$env:VAR`. To call PowerShell or cmd, wrap the script in single quotes so the shell passes `$` through untouched, e.g. `powershell.exe -NoProfile -Command 'Get-Process | Where-Object { $_.CPU -gt 10 }'`; for a longer script, feed it from a quoted heredoc (`powershell.exe -NoProfile -Command - <<'EOF'`). A command still running after 60 seconds moves to the background as a job (`background: true` does that at once): the call returns a job receipt, the result arrives later as subagent-results data, and `wait`, `task_status` and `task_cancel` work on it. Use that for builds, test suites and other long commands instead of `&`. Servers and watchers that never exit still need `cmd > log.txt 2>&1 &`.",
             "input_schema": {
                 "type": "object",
                 "properties": {
@@ -219,23 +219,113 @@ pub fn grep(input: &Value, cancel: &CancellationToken, cwd: &Path) -> Output {
     crate::search::grep(input, cancel, cwd)
 }
 
-/// Shell used by the bash tool: `ASHIRA_SHELL`, then Git Bash on Windows, then `bash`.
+/// Where the bash tool's shell came from.
+#[derive(Clone, Copy, PartialEq)]
+pub enum ShellSource { Env, Config, Auto }
+
+impl ShellSource {
+    pub fn as_str(self) -> &'static str {
+        match self { Self::Env => "env", Self::Config => "config", Self::Auto => "auto" }
+    }
+}
+
+/// The shell the bash tool runs `<shell> -c <command>` with, and why it is that one.
+pub struct ShellChoice {
+    pub path: String,
+    pub source: ShellSource,
+    /// A configured shell that could not be used; the automatic one runs instead.
+    pub problem: Option<String>,
+}
+
+/// Shell used by the bash tool, chosen once per process: `ASHIRA_SHELL`, then config.yml
+/// `shell:`, then Git Bash on Windows, then `bash`. A change takes effect on restart.
 pub fn shell() -> &'static str {
-    static SHELL: OnceLock<String> = OnceLock::new();
-    SHELL.get_or_init(|| {
-        if let Ok(s) = env::var("ASHIRA_SHELL")
-            && !s.is_empty()
-        {
-            return s;
+    &shell_choice().path
+}
+
+pub fn shell_choice() -> &'static ShellChoice {
+    static SHELL: OnceLock<ShellChoice> = OnceLock::new();
+    SHELL.get_or_init(resolve_shell)
+}
+
+/// What a fresh start would choose now; differs from [`shell_choice`] after a settings change.
+pub fn resolve_shell() -> ShellChoice {
+    let configured = env::var("ASHIRA_SHELL").ok().map(|s| s.trim().to_owned()).filter(|s| !s.is_empty()).map(|s| (s, ShellSource::Env))
+        .or_else(|| crate::config::shell_setting().map(|s| (s, ShellSource::Config)));
+    let Some((path, source)) = configured else { return ShellChoice { path: auto_shell(), source: ShellSource::Auto, problem: None } };
+    match check_shell(&path) {
+        Ok(()) => ShellChoice { path, source, problem: None },
+        Err(error) => {
+            let auto = auto_shell();
+            let origin = if source == ShellSource::Env { "环境变量 ASHIRA_SHELL" } else { "config.yml 的 shell" };
+            ShellChoice { problem: Some(format!("{origin} 无效：{error}；改用自动找到的 {auto}")), path: auto, source: ShellSource::Auto }
         }
-        #[cfg(windows)]
-        for p in [r"C:\Program Files\Git\bin\bash.exe", r"C:\Program Files (x86)\Git\bin\bash.exe"] {
-            if Path::new(p).exists() {
-                return p.into();
-            }
+    }
+}
+
+/// Shells that do not take `-c` with POSIX syntax, which every bash tool command is.
+const NOT_POSIX: &[&str] = &["cmd", "powershell", "pwsh", "fish", "nu", "nushell", "elvish", "xonsh"];
+
+/// The shell exists and speaks POSIX `sh -c`; a bare name is looked up on PATH.
+pub fn check_shell(shell: &str) -> Result<(), String> {
+    let path = Path::new(shell);
+    let name = path.file_stem().map(|stem| stem.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+    if NOT_POSIX.contains(&name.as_str()) {
+        return Err(format!("{shell} 不是 POSIX shell（bash、zsh、sh 等），无法执行 bash 语法的命令"));
+    }
+    let found = if shell.contains(['/', '\\']) { path.is_file() } else { on_path(shell, false).is_some() };
+    if found { Ok(()) } else { Err(format!("找不到 {shell}")) }
+}
+
+/// Runs `printf` through `shell`, so a saved setting is known to work before a restart picks it up.
+pub async fn probe_shell(shell: &str) -> Result<(), String> {
+    check_shell(shell)?;
+    let mut c = command(shell);
+    c.arg("-c").arg("printf ashira").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let out = tokio::time::timeout(Duration::from_secs(10), c.output()).await
+        .map_err(|_| format!("{shell} 10 秒内没有完成测试命令"))?
+        .map_err(|e| format!("{shell} 无法启动：{e}"))?;
+    if out.status.success() && out.stdout == b"ashira" { return Ok(()); }
+    let detail = String::from_utf8_lossy(&out.stderr).trim().chars().take(300).collect::<String>();
+    Err(format!("{shell} 没能执行测试命令 `printf ashira`{}", if detail.is_empty() { String::new() } else { format!("：{detail}") }))
+}
+
+/// `name` in a PATH directory (with `.exe` on Windows). `skip_wsl` passes over the Windows
+/// WSL launchers, whose `bash` runs inside Linux and cannot see Windows paths the same way.
+fn on_path(name: &str, skip_wsl: bool) -> Option<PathBuf> {
+    let file = if cfg!(windows) && Path::new(name).extension().is_none() { format!("{name}.exe") } else { name.to_owned() };
+    let system = env::var_os("SystemRoot").map(PathBuf::from);
+    env::split_paths(&env::var_os("PATH")?)
+        .filter(|dir| dir.is_absolute())
+        .filter(|dir| !skip_wsl || !(system.as_ref().is_some_and(|root| dir.starts_with(root)) || dir.components().any(|part| part.as_os_str().eq_ignore_ascii_case("WindowsApps"))))
+        .map(|dir| dir.join(&file))
+        .find(|candidate| candidate.is_file())
+}
+
+/// Git Bash wherever Git for Windows or scoop put it, then a non-WSL `bash` on PATH;
+/// elsewhere `bash`, else `sh`.
+fn auto_shell() -> String {
+    #[cfg(windows)]
+    {
+        let var = |key: &str| env::var_os(key).map(PathBuf::from);
+        let roots = [
+            var("ProgramFiles").map(|p| p.join("Git")),
+            var("ProgramFiles(x86)").map(|p| p.join("Git")),
+            var("LOCALAPPDATA").map(|p| p.join(r"Programs\Git")),
+            var("GIT_INSTALL_ROOT"),
+            var("SCOOP").map(|p| p.join(r"apps\git\current")),
+            var("USERPROFILE").map(|p| p.join(r"scoop\apps\git\current")),
+        ];
+        if let Some(bash) = roots.into_iter().flatten().map(|root| root.join(r"bin\bash.exe")).find(|bash| bash.is_file()) {
+            return bash.to_string_lossy().into_owned();
         }
+        if let Some(bash) = on_path("bash", true) { return bash.to_string_lossy().into_owned(); }
         "bash".into()
-    })
+    }
+    #[cfg(not(windows))]
+    {
+        if on_path("bash", false).is_some() { "bash".into() } else { "sh".into() }
+    }
 }
 
 pub fn command(program: impl AsRef<std::ffi::OsStr>) -> Command {
@@ -431,8 +521,42 @@ impl Running {
     }
 
     pub fn text(&self) -> String {
-        String::from_utf8_lossy(&self.output).into_owned()
+        decode_output(&self.output)
     }
+}
+
+/// Command output as text. Windows' own tools (PowerShell, cmd, ipconfig) print in the
+/// console code page, e.g. GBK on Chinese systems, not UTF-8; read as UTF-8 their messages
+/// turn to `�` and the model cannot tell what went wrong. Bytes that are not valid UTF-8
+/// are decoded with that code page when they fit it exactly.
+pub fn decode_output(bytes: &[u8]) -> String {
+    match std::str::from_utf8(bytes) {
+        Ok(text) => text.to_owned(),
+        Err(_) => code_page_text(bytes).unwrap_or_else(|| String::from_utf8_lossy(bytes).into_owned()),
+    }
+}
+
+#[cfg(windows)]
+fn code_page_text(bytes: &[u8]) -> Option<String> {
+    use windows_sys::Win32::Globalization::{GetACP, GetOEMCP, MB_ERR_INVALID_CHARS, MultiByteToWideChar};
+    const UTF8: u32 = 65001;
+    let len = i32::try_from(bytes.len()).ok()?;
+    // Console programs use the OEM page; programs writing to a pipe often use the ANSI one.
+    let pages = unsafe { [GetOEMCP(), GetACP()] };
+    pages.into_iter().filter(|&page| page != UTF8).find_map(|page| {
+        // SAFETY: lengths come from the slices passed; a strict conversion fails on any byte
+        // the page does not define, so a wrong page is skipped instead of producing mojibake.
+        let wide = unsafe { MultiByteToWideChar(page, MB_ERR_INVALID_CHARS, bytes.as_ptr(), len, std::ptr::null_mut(), 0) };
+        if wide <= 0 { return None; }
+        let mut buffer = vec![0u16; wide as usize];
+        let written = unsafe { MultiByteToWideChar(page, MB_ERR_INVALID_CHARS, bytes.as_ptr(), len, buffer.as_mut_ptr(), wide) };
+        (written == wide).then(|| String::from_utf16_lossy(&buffer))
+    })
+}
+
+#[cfg(not(windows))]
+fn code_page_text(_: &[u8]) -> Option<String> {
+    None
 }
 
 /// File tools resolve a relative `path` against `cwd`, the session's directory; messages
@@ -663,4 +787,21 @@ fn save_full(text: &str) -> Option<String> {
 
 fn or_empty(text: String) -> String {
     if text.is_empty() { "(no output)".into() } else { text }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn command_output_reads_as_the_text_the_tool_printed() {
+        // UTF-8, including what PowerShell prints when told to, passes through untouched.
+        assert_eq!(decode_output("找不到路径 ok".as_bytes()), "找不到路径 ok");
+        // A Chinese Windows console prints GBK; it must reach the model as Chinese, not `�`.
+        #[cfg(windows)]
+        if unsafe { windows_sys::Win32::Globalization::GetOEMCP() } == 936 {
+            let gbk = [0xD5, 0xD2, 0xB2, 0xBB, 0xB5, 0xBD, 0xC2, 0xB7, 0xBE, 0xB6, b'\r', b'\n'];
+            assert_eq!(decode_output(&gbk), "找不到路径\r\n");
+        }
+    }
 }

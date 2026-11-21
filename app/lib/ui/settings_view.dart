@@ -8,6 +8,7 @@ import 'about_settings.dart';
 import 'dialogs.dart';
 import 'format.dart';
 import 'model_settings.dart';
+import 'shell_settings.dart';
 import 'theme.dart';
 import 'usage_settings.dart';
 import 'widgets.dart';
@@ -20,7 +21,7 @@ Future<void> showSettings(BuildContext context, AshiraState state, {required Voi
       builder: (_) => _Settings(state, onDisconnect: onDisconnect, initialTab: tab),
     );
 
-const _tabs = [('models', '模型'), ('usage', '用量'), ('display', '显示'), ('plugins', '插件'), ('mcp', 'MCP'), ('memory', '记忆'), ('archive', '归档'), ('connection', '连接'), ('about', '关于')];
+const _tabs = [('models', '模型'), ('usage', '用量'), ('display', '显示'), ('plugins', '插件'), ('mcp', 'MCP'), ('shell', 'Shell'), ('memory', '记忆'), ('archive', '归档'), ('connection', '连接'), ('about', '关于')];
 
 class _Settings extends StatefulWidget {
   const _Settings(this.state, {required this.onDisconnect, required this.initialTab});
@@ -313,6 +314,7 @@ class _SettingsState extends State<_Settings> {
           ),
         ],
       'about' => [AboutSettings(state: widget.state)],
+      'shell' => [ShellSettings(client: _client, state: widget.state)],
       _ => [
           Bordered(children: [
             InfoRow('服务器', _client.baseUrl),

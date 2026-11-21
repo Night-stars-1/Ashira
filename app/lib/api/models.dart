@@ -26,6 +26,28 @@ class UpdateProgress {
   final int? total;
 }
 
+/// The bash tool's shell from `/v1/shell`: what runs now and why, the config.yml value,
+/// an `ASHIRA_SHELL` override, a problem with the configured one, and whether a restart changes it.
+class ShellStatus {
+  const ShellStatus({required this.current, required this.source, this.configured, this.envOverride, this.problem, this.restartNeeded = false});
+  factory ShellStatus.fromJson(Object? json) {
+    final m = asMap(json);
+    final source = str(m['source']);
+    return ShellStatus(
+      current: str(m['current']),
+      source: source == 'env' || source == 'config' ? source : 'auto',
+      configured: optStr(m['configured']),
+      envOverride: optStr(m['envOverride']),
+      problem: optStr(m['problem']),
+      restartNeeded: m['restartNeeded'] == true,
+    );
+  }
+
+  final String current, source;
+  final String? configured, envOverride, problem;
+  final bool restartNeeded;
+}
+
 class Usage {
   const Usage({this.input = 0, this.output = 0, this.cacheRead = 0, this.cacheWrite = 0});
   factory Usage.fromJson(Object? json) {

@@ -495,6 +495,23 @@ pub fn set_web_dir(dir: &Path) -> Result<(), String> {
     })
 }
 
+/// config.yml `shell:`, the shell the bash tool runs commands with; `ASHIRA_SHELL` overrides it.
+pub fn shell_setting() -> Option<String> {
+    let settings = read_settings(&settings_path()).ok()?;
+    settings.get("shell")?.as_str().map(str::trim).filter(|shell| !shell.is_empty()).map(str::to_owned)
+}
+
+/// Saves config.yml `shell:`; empty removes it so the shell is found automatically again.
+pub fn set_shell(shell: &str) -> Result<(), String> {
+    let shell = shell.trim();
+    edit_settings(&settings_path(), |root| {
+        if shell.is_empty() { return Ok(root.remove("shell").is_some()); }
+        if root.get("shell").and_then(Value::as_str) == Some(shell) { return Ok(false); }
+        root.insert("shell".into(), Value::String(shell.to_owned()));
+        Ok(true)
+    })
+}
+
 /// Changes config.yml under its lock, keeping every other key; `edit` returns whether it
 /// changed anything, and an unchanged file is not rewritten.
 fn edit_settings(path: &Path, edit: impl FnOnce(&mut Map<String, Value>) -> Result<bool, String>) -> Result<(), String> {

@@ -92,7 +92,7 @@ MODELS:
     Levels: off|minimal|low|medium|high|xhigh|max. In the TUI, /models picks a model.
 
 ENVIRONMENT:
-    ASHIRA_SHELL       shell for the bash tool (default: Git Bash / bash)
+    ASHIRA_SHELL       shell for the bash tool; overrides config.yml `shell:` (default: Git Bash / bash)
     ASHIRA_HOME        data dir (default ~/.ashira)
     ASHIRA_API_TOKEN   required with --serve/--listen; clients send it as a Bearer header or ?token=
     ASHIRA_WEB_TERMINAL=1  enable the web/App terminal: anyone with the token can run commands as you
@@ -295,6 +295,11 @@ fn run(args: Args, cwd: std::path::PathBuf, rt: &tokio::runtime::Runtime) -> Res
 
     let (plugins, plugin_warnings) = plugin::Plugins::load(&cwd);
     notices.extend(plugin_warnings);
+    // Chosen now, so a bad ASHIRA_SHELL or `shell:` is reported at start, not at the first command.
+    if let Some(problem) = &tools::shell_choice().problem {
+        notices.push(format!("Shell：{problem}"));
+        if api.is_some() { eprintln!("ashira: warning: Shell：{problem}"); }
+    }
     let shared = Arc::new(Shared::new(registry, client, mcp.clone(), plugins, cwd.clone(), ev_tx, print.is_none(), args.yes));
     let (agent, resumed) = match loaded {
         Some(l) => {

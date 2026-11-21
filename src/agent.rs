@@ -1803,7 +1803,7 @@ fn system_prompt(cwd: &std::path::Path) -> String {
 # Environment
 - Working directory: {}
 - Platform: {} ({})
-- Shell for the bash tool: {}
+- Shell for the bash tool: {} (commands are POSIX shell syntax even on Windows; quote PowerShell/cmd scripts with single quotes so `$` reaches them)
 - Date: {}
 
 # How to work

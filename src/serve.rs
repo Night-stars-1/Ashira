@@ -390,6 +390,14 @@ async fn dispatch(hub: &Arc<Hub>, method: &str, path: &str, query: &str, body: &
             let tag = crate::update::install_web(&dir).await?;
             Ok(Response::Json { status: 200, body: json!({"version": tag.trim_start_matches('v')}) })
         }
+        ("GET", "/v1/shell") => Ok(Response::Json { status: 200, body: shell_status() }),
+        ("POST", "/v1/shell") => {
+            // Saved to config.yml after a test run; the bash tool picks it up on restart.
+            let shell = json_body.get("shell").and_then(Value::as_str).unwrap_or("").trim().to_owned();
+            if !shell.is_empty() { crate::tools::probe_shell(&shell).await?; }
+            crate::config::set_shell(&shell)?;
+            Ok(Response::Json { status: 200, body: shell_status() })
+        }
         ("GET", "/v1/usage") => {
             let registry = hub.shared.registry();
             Ok(Response::Json { status: 200, body: tokio::task::spawn_blocking(move || crate::usage_report::report(&registry)).await.map_err(|error| error.to_string())? })
@@ -531,6 +539,21 @@ async fn model_config(hub: &Hub) -> Result<Value, String> {
     body["loadError"] = json!(registry.load_error());
     body["warnings"] = json!(registry.warnings);
     Ok(body)
+}
+
+/// The bash tool's shell: the one this process runs, the `shell:` saved in config.yml,
+/// whether `ASHIRA_SHELL` overrides it, and what a restart would pick.
+fn shell_status() -> Value {
+    let running = crate::tools::shell_choice();
+    let next = crate::tools::resolve_shell();
+    json!({
+        "current": running.path,
+        "source": running.source.as_str(),
+        "configured": crate::config::shell_setting(),
+        "envOverride": std::env::var("ASHIRA_SHELL").ok().map(|s| s.trim().to_owned()).filter(|s| !s.is_empty()),
+        "problem": next.problem,
+        "restartNeeded": next.path != running.path,
+    })
 }
 
 async fn status(hub: &Hub) -> Value {

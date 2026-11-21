@@ -11,6 +11,7 @@ import ModelSettings from '@/components/ModelSettings.vue'
 import UsageSettings from '@/components/UsageSettings.vue'
 import ConnectionForm from '@/components/ConnectionForm.vue'
 import AboutSettings from '@/components/AboutSettings.vue'
+import ShellSettings from '@/components/ShellSettings.vue'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Switch } from '@/components/ui/switch'
 import { wrapToolOutput } from '@/lib/display'
@@ -20,7 +21,7 @@ const open = defineModel<boolean>('open', { required: true })
 const props = defineProps<{ archive: Archive; serverVersion: string; serverUpdate: string | null; hosted: boolean; restartPending: boolean; restarting: boolean; updating: boolean; updateProgress: UpdateProgress | null }>()
 const emit = defineEmits<{ restore: [kind: 'session' | 'folder', key: string]; restart: []; update: [] }>()
 
-export type SettingsTab = 'models' | 'usage' | 'display' | 'plugins' | 'mcp' | 'memory' | 'archive' | 'connection' | 'about'
+export type SettingsTab = 'models' | 'usage' | 'display' | 'plugins' | 'mcp' | 'shell' | 'memory' | 'archive' | 'connection' | 'about'
 type Tab = SettingsTab
 const tab = defineModel<Tab>('tab', { default: 'models' })
 const tabs: { id: Tab; label: string }[] = [
@@ -29,6 +30,7 @@ const tabs: { id: Tab; label: string }[] = [
   { id: 'display', label: '显示' },
   { id: 'plugins', label: '插件' },
   { id: 'mcp', label: 'MCP' },
+  { id: 'shell', label: 'Shell' },
   { id: 'memory', label: '记忆' },
   { id: 'archive', label: '归档' },
   { id: 'connection', label: '连接' },
@@ -235,6 +237,7 @@ watch(open, (value) => { if (value) void load() })
               </div>
             </template>
             <ConnectionForm v-else-if="tab === 'connection'" />
+            <ShellSettings v-else-if="tab === 'shell'" :active="open && tab === 'shell'" :restarting="props.restarting" @restart="emit('restart')" />
             <div v-else-if="tab === 'display'" class="rounded-lg border">
               <label class="flex items-center gap-3 px-3 py-3">
                 <span class="min-w-0 flex-1">

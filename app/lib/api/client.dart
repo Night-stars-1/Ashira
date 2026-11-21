@@ -82,6 +82,12 @@ class AshiraClient {
   /// The running update's download, else null.
   Future<UpdateProgress?> updateProgress() async => UpdateProgress.fromJson(asMap(await _get('/v1/update'))['download']);
 
+  /// The bash tool's shell: running now, saved in config.yml, and what a restart would use.
+  Future<ShellStatus> shell() async => ShellStatus.fromJson(await _get('/v1/shell'));
+
+  /// Saves config.yml `shell:` after the server test-runs it; empty goes back to finding it automatically.
+  Future<ShellStatus> setShell(String shell) async => ShellStatus.fromJson(await _post('/v1/shell', {'shell': shell}));
+
   Future<SessionListing> sessions() async => SessionListing.fromJson(await _get('/v1/sessions'));
 
   Future<void> alias(String path, String alias) => _post('/v1/alias', {'path': path, 'alias': alias});
