@@ -87,6 +87,13 @@ export function useAshira() {
     )
   }
 
+  /** Folds a folder at once here; the server keeps it and tells every other page and App. */
+  function setFolded(path: string, folded: boolean) {
+    return editList(() => {
+      const node = tree.value.find((item) => item.path === path)
+      if (node) node.folded = folded
+    }, () => api.fold(path, folded), '折叠状态保存失败')
+  }
   /** Archiving only hides it from the list; an open session stays open. */
   function setArchived(kind: 'session' | 'folder', key: string, archived: boolean) {
     return editList(() => {
@@ -213,6 +220,7 @@ export function useAshira() {
         if (tool) {
           tool.output = event.output ?? ''
           tool.error = event.isError === true
+          if (event.image) tool.image = event.image
           tool.done = true
         }
       }
@@ -427,7 +435,7 @@ export function useAshira() {
   onUnmounted(() => { source?.close(); clearTimeout(listTimer) })
 
   return { status, server, refreshServer, restarting, restartServer, tree, archive, blocks, draft, model, modelTitle, fast, connected, loading, naming, confirm, question,
-    busy, hasReplyText, shownId, shownCwd, sessionName, needsConnection, runningIds, askingIds, send, openSession, decide, answer, interrupt, refresh, updateSettings, renameSession, setArchived }
+    busy, hasReplyText, shownId, shownCwd, sessionName, needsConnection, runningIds, askingIds, send, openSession, decide, answer, interrupt, refresh, updateSettings, renameSession, setArchived, setFolded }
 }
 
 const LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
@@ -473,7 +481,8 @@ export function historyBlocks(body: unknown): Block[] {
       const text = (key: string) => typeof part[key] === 'string' ? part[key] : ''
       if (part.type === 'text' || part.type === 'reasoning') return text('text') ? [{ type: part.type, text: text('text') }] : []
       if (part.type !== 'tool') return []
-      return [{ type: 'tool', name: text('name') || 'tool', summary: text('summary'), output: text('output'), error: part.error === true, done: part.done !== false }]
+      const image = text('image')
+      return [{ type: 'tool', name: text('name') || 'tool', summary: text('summary'), output: text('output'), error: part.error === true, done: part.done !== false, image: image.startsWith('data:image/') ? image : undefined }]
     }) : []
     return [{ kind: 'assistant', parts, live: false, metrics: parseReplyMetrics(row.metrics) }]
   })

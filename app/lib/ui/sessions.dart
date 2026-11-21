@@ -34,6 +34,7 @@ class SessionList extends StatelessWidget {
     required this.onAbout,
     this.onCollapse,
     required this.onAction,
+    required this.onFold,
   });
 
   final List<SessionNode> tree;
@@ -54,6 +55,8 @@ class SessionList extends StatelessWidget {
 
   /// `key` is a session id, or a folder path for folder actions; `label` is its current name.
   final void Function(SessionAction action, String key, String label) onAction;
+  /// Folds or unfolds a project folder; kept on the server for every page and App.
+  final void Function(String path, bool folded) onFold;
 
   @override
   Widget build(BuildContext context) {
@@ -100,7 +103,7 @@ class SessionList extends StatelessWidget {
           child: tree.isEmpty
               ? Padding(padding: const EdgeInsets.all(16), child: Text('还没有会话', style: TextStyle(fontSize: 13, color: scheme.mutedForeground)))
               : ListView(padding: const EdgeInsets.fromLTRB(8, 0, 8, 8), children: [
-                  for (final node in tree) _Project(node: node, depth: 0, activeId: activeId, marks: marks, onSelect: onSelect, onAction: onAction),
+                  for (final node in tree) _Project(node: node, depth: 0, activeId: activeId, marks: marks, onSelect: onSelect, onAction: onAction, onFold: onFold),
                 ]),
         ),
         // A restart waiting for `ashira update`'s new build comes first; otherwise one quiet line
@@ -169,20 +172,23 @@ class SessionList extends StatelessWidget {
 }
 
 class _Project extends StatefulWidget {
-  const _Project({required this.node, required this.depth, required this.activeId, required this.marks, required this.onSelect, required this.onAction});
+  const _Project({required this.node, required this.depth, required this.activeId, required this.marks, required this.onSelect, required this.onAction, required this.onFold});
   final SessionNode node;
   final int depth;
   final String activeId;
   final SessionMarks marks;
   final void Function(String id) onSelect;
   final void Function(SessionAction action, String key, String label) onAction;
+  /// Folds (`true`) or unfolds a folder; the server keeps it for every page and App.
+  final void Function(String path, bool folded) onFold;
 
   @override
   State<_Project> createState() => _ProjectState();
 }
 
 class _ProjectState extends State<_Project> {
-  bool _open = true;
+  /// Kept on the server, so a folded project stays folded everywhere and after a restart.
+  bool get _open => !widget.node.folded;
   bool _showEmpty = false;
 
   @override
@@ -205,7 +211,7 @@ class _ProjectState extends State<_Project> {
           onSelected: (action) => widget.onAction(action, node.path, node.name),
           menuLabel: '${node.name} 的更多操作',
           builder: (openMenu, _) => CompactRow(
-            onTap: () => setState(() => _open = !_open),
+            onTap: () => widget.onFold(widget.node.path, _open),
             onLongPress: openMenu,
             padding: EdgeInsets.only(left: indent, right: 32),
             child: Row(children: [
@@ -270,7 +276,7 @@ class _ProjectState extends State<_Project> {
               child: Align(alignment: Alignment.centerLeft, child: Text(_showEmpty ? '收起空会话' : '显示 $hidden 个空会话', style: small)),
             ),
           for (final child in node.children)
-            _Project(node: child, depth: widget.depth + 1, activeId: widget.activeId, marks: widget.marks, onSelect: widget.onSelect, onAction: widget.onAction),
+            _Project(node: child, depth: widget.depth + 1, activeId: widget.activeId, marks: widget.marks, onSelect: widget.onSelect, onAction: widget.onAction, onFold: widget.onFold),
         ],
       ]),
     );

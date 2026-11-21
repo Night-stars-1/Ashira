@@ -297,6 +297,14 @@ async fn dispatch(hub: &Arc<Hub>, method: &str, path: &str, query: &str, body: &
             hub.sessions_changed();
             Ok(Response::Json { status: 200, body: json!({"ok": true}) })
         }
+        ("POST", "/v1/fold") => {
+            let path = json_body.get("path").and_then(Value::as_str).unwrap_or("");
+            let folded = json_body.get("folded").and_then(Value::as_bool).ok_or("folded must be true or false")?;
+            session::set_folded(path, folded)?;
+            // Every open page and App re-reads the list, so the fold follows across devices.
+            hub.sessions_changed();
+            Ok(Response::Json { status: 200, body: json!({"ok": true}) })
+        }
         ("POST", "/v1/alias") => {
             let path = json_body.get("path").and_then(Value::as_str).unwrap_or("");
             let alias = json_body.get("alias").and_then(Value::as_str).unwrap_or("");
@@ -831,6 +839,9 @@ fn attach_result(blocks: &mut Vec<Value>, result: &Value) {
         tool["output"] = json!(output);
         tool["error"] = json!(error);
         tool["done"] = json!(true);
+        // The picture `read` attached for the model, shown on the tool card.
+        let image = result["content"].as_array().into_iter().flatten().find(|part| part["type"] == "image");
+        if let Some(url) = image.and_then(|block| crate::api::DataUrl::from_block(block).ok()) { tool["image"] = json!(url.to_string()); }
         return;
     }
 }
@@ -1150,7 +1161,7 @@ fn encode(shared: &Shared, routing: &mut Routing, event: Event) -> Option<Frame>
         Event::Reasoning(text) => json!({"type": "reasoning", "text": text}),
         Event::ReasoningEnd => json!({"type": "reasoning_end"}),
         Event::ToolStart { call, summary } => json!({"type": "tool_start", "name": call.name, "intent": call.intent, "summary": summary, "agent": call.agent.as_ref().map(|agent| agent.name.clone())}),
-        Event::ToolEnd { call, output, is_error, .. } => json!({"type": "tool_end", "name": call.name, "output": clip(&output), "isError": is_error}),
+        Event::ToolEnd { call, output, is_error, image, .. } => json!({"type": "tool_end", "name": call.name, "output": clip(&output), "isError": is_error, "image": image.as_deref()}),
         Event::Todo(snapshot) => json!({"type": "todo", "snapshot": &*snapshot}),
         Event::ToolBatchEnd => json!({"type": "tool_batch_end"}),
         Event::Confirm { id, call, command, reason, always, reply, cancel } => {
@@ -1422,18 +1433,29 @@ mod tests {
             json!({"role": "assistant", "content": [
                 {"type": "text", "text": "先查一下"},
                 {"type": "tool_use", "id": "a", "name": "bash", "input": {"command": "git config user.name"}},
+                {"type": "tool_use", "id": "b", "name": "read", "input": {"path": "shot.png"}},
                 {"type": "text", "text": "结果如下"},
                 {"type": "text", "text": "第二段"},
             ]}),
-            json!({"role": "user", "content": [{"type": "tool_result", "tool_use_id": "a", "content": "Night", "is_error": false}]}),
+            json!({"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "a", "content": "Night", "is_error": false},
+                {"type": "tool_result", "tool_use_id": "b", "content": [
+                    {"type": "text", "text": "shot.png: 2×2 image/png; the image is attached for you to view."},
+                    {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo="}},
+                ], "is_error": false},
+            ]}),
         ];
         let blocks = project_history(&history, None);
         let parts = blocks[1]["parts"].as_array().unwrap();
         let kinds: Vec<_> = parts.iter().map(|part| part["type"].as_str().unwrap()).collect();
-        assert_eq!(kinds, ["text", "tool", "text"]);
+        assert_eq!(kinds, ["text", "tool", "tool", "text"]);
         assert_eq!(parts[0]["text"], "先查一下");
         assert_eq!(parts[1]["output"], "Night");
-        assert_eq!(parts[2]["text"], "结果如下\n第二段");
+        assert!(parts[1].get("image").is_none());
+        // A reopened session still shows the picture `read` gave the model.
+        assert_eq!(parts[2]["image"], "data:image/png;base64,iVBORw0KGgo=");
+        assert!(parts[2]["output"].as_str().unwrap().starts_with("shot.png: 2×2"));
+        assert_eq!(parts[3]["text"], "结果如下\n第二段");
     }
 
     #[test]
@@ -1654,6 +1676,13 @@ mod tests {
         let body = request(addr, "GET", "/v1/sessions", "").await.1;
         assert_eq!(listed(&body, a).unwrap()["renamed"], false);
         assert!(listed(&body, b).is_some());
+        // Folding is stored on the server, so every page and App lists the folder folded.
+        let folded = |body: &Value| body["roots"].as_array().unwrap().iter().find(|root_row| root_row["path"] == root.to_string_lossy().as_ref()).unwrap()["folded"].clone();
+        assert_eq!(folded(&body), false);
+        assert_eq!(request(addr, "POST", "/v1/fold", &json!({"path": root.to_string_lossy(), "folded": true}).to_string()).await.0, 200);
+        assert_eq!(folded(&request(addr, "GET", "/v1/sessions", "").await.1), true);
+        assert_eq!(request(addr, "POST", "/v1/fold", &json!({"path": root.to_string_lossy(), "folded": false}).to_string()).await.0, 200);
+        assert_eq!(folded(&request(addr, "GET", "/v1/sessions", "").await.1), false);
 
         let storage = session::locate(a).unwrap().path.parent().unwrap().to_owned();
         server.abort();

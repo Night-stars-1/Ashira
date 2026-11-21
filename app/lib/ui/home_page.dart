@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../state/ashira_state.dart';
+import '../state/display_prefs.dart';
 import 'composer.dart';
 import 'dialogs.dart';
 import 'files.dart';
@@ -29,7 +30,7 @@ class _HomePageState extends State<HomePage> {
   final _scaffold = GlobalKey<ScaffoldState>();
   int? _shownConfirm;
   bool _filesOpen = true;
-  bool _sessionsOpen = true;
+  bool get _sessionsOpen => displayPrefs.sessionsOpen;
   String _activeFile = '';
 
   /// 对话 or 终端. The terminal mounts on first use and then stays alive, like the web's
@@ -125,8 +126,9 @@ class _HomePageState extends State<HomePage> {
         onCreate: _create,
         onSettings: () => _settings(),
         onAbout: () => _settings(tab: 'about'),
-        onCollapse: collapsible ? () => setState(() => _sessionsOpen = false) : null,
+        onCollapse: collapsible ? () => setState(() => unawaited(displayPrefs.setSessionsOpen(false))) : null,
         onAction: _action,
+        onFold: state.setFolded,
       );
 
   /// Opens settings, re-reading the server's state first so a pending restart shows there.
@@ -173,7 +175,7 @@ class _HomePageState extends State<HomePage> {
                 IconButton(
                   tooltip: wide ? '展开会话列表' : '会话列表',
                   icon: Icon(wide ? Icons.keyboard_double_arrow_right : Icons.menu),
-                  onPressed: () => wide ? setState(() => _sessionsOpen = true) : _scaffold.currentState?.openDrawer(),
+                  onPressed: () => wide ? setState(() => unawaited(displayPrefs.setSessionsOpen(true))) : _scaffold.currentState?.openDrawer(),
                 ),
               if (!wide || !_sessionsOpen) const SizedBox(width: 4),
               if (state.naming.contains(state.shownId))

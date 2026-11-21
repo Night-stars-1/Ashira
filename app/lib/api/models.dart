@@ -6,6 +6,8 @@ Map<String, dynamic> asMap(Object? value) => value is Map ? value.cast<String, d
 List<dynamic> asList(Object? value) => value is List ? value : const [];
 String str(Object? value, [String fallback = '']) => value is String ? value : fallback;
 String? optStr(Object? value) => value is String && value.isNotEmpty ? value : null;
+/// A `data:image/…` URL, else null.
+String? imageUrl(Object? value) => value is String && value.startsWith('data:image/') ? value : null;
 double num0(Object? value) => value is num ? value.toDouble() : 0;
 int int0(Object? value) => value is num ? value.toInt() : 0;
 double? metric(Object? value) => value is num && value.isFinite && value >= 0 ? value.toDouble() : null;
@@ -246,7 +248,7 @@ class SessionListing {
 }
 
 class SessionNode {
-  const SessionNode({required this.name, required this.path, required this.sessions, required this.children});
+  const SessionNode({required this.name, required this.path, this.folded = false, required this.sessions, required this.children});
   static SessionNode? fromJson(Object? json) {
     final m = asMap(json);
     final path = str(m['path']);
@@ -254,6 +256,7 @@ class SessionNode {
     return SessionNode(
       name: str(m['name'], path),
       path: path,
+      folded: m['folded'] == true,
       sessions: [
         for (final item in asList(m['sessions']))
           if (str(asMap(item)['id']).isNotEmpty) SessionItem.fromJson(asMap(item)),
@@ -262,16 +265,28 @@ class SessionNode {
     );
   }
   final String name, path;
+  /// Collapsed in the session list; kept on the server so every page and App agrees.
+  final bool folded;
   final List<SessionItem> sessions;
 
   /// Same tree with one session's title replaced (for a finished AI title).
   SessionNode retitled(String id, String title) => SessionNode(
         name: name,
         path: path,
+        folded: folded,
         sessions: [for (final item in sessions) item.id == id && !item.renamed ? item.withPrompt(title) : item],
         children: [for (final child in children) child.retitled(id, title)],
       );
   final List<SessionNode> children;
+
+  /// Same tree with one folder folded or unfolded (shown before the server confirms).
+  SessionNode refolded(String target, bool value) => SessionNode(
+        name: name,
+        path: path,
+        folded: path == target ? value : folded,
+        sessions: sessions,
+        children: [for (final child in children) child.refolded(target, value)],
+      );
 
   Iterable<SessionItem> get allSessions sync* {
     yield* sessions;
@@ -308,10 +323,12 @@ class TextPart extends ReplyPart {
 }
 
 class ToolPart extends ReplyPart {
-  ToolPart({required this.name, required this.summary, this.output = '', this.error = false, this.done = false});
+  ToolPart({required this.name, required this.summary, this.output = '', this.error = false, this.done = false, this.image});
   final String name, summary;
   String output;
   bool error, done;
+  /// The picture `read` gave the model, as a data URL; shown on the tool card.
+  String? image;
 }
 
 sealed class Block {}
@@ -378,7 +395,7 @@ List<Block> historyBlocks(Object? messages) {
           if ((type == 'text' || type == 'reasoning') && str(part['text']).isNotEmpty) {
             parts.add(TextPart(str(part['text']), reasoning: type == 'reasoning'));
           } else if (type == 'tool') {
-            parts.add(ToolPart(name: str(part['name'], 'tool'), summary: str(part['summary']), output: str(part['output']), error: part['error'] == true, done: part['done'] != false));
+            parts.add(ToolPart(name: str(part['name'], 'tool'), summary: str(part['summary']), output: str(part['output']), error: part['error'] == true, done: part['done'] != false, image: imageUrl(part['image'])));
           }
         }
         blocks.add(AssistantBlock(parts: parts, metrics: ReplyMetrics.fromJson(row['metrics'])));

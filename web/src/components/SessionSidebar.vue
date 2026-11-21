@@ -7,7 +7,7 @@ import type { SessionNode } from '@/lib/api'
 import { webUpdate } from '@/lib/update'
 
 defineProps<{ tree: SessionNode[]; activeId: string; running: Set<string>; asking: Set<string>; connected: boolean; update?: string | null; restartPending?: boolean; restarting?: boolean; collapsible?: boolean }>()
-const emit = defineEmits<{ resume: [id: string]; alias: [path: string, name: string]; rename: [id: string, title: string]; archive: [kind: 'session' | 'folder', key: string]; create: []; settings: []; about: []; collapse: []; restart: [] }>()
+const emit = defineEmits<{ resume: [id: string]; alias: [path: string, name: string]; rename: [id: string, title: string]; archive: [kind: 'session' | 'folder', key: string]; fold: [path: string, folded: boolean]; create: []; settings: []; about: []; collapse: []; restart: [] }>()
 </script>
 
 <template>
@@ -37,6 +37,7 @@ const emit = defineEmits<{ resume: [id: string]; alias: [path: string, name: str
         @alias="(path, name) => emit('alias', path, name)"
         @rename="(id, title) => emit('rename', id, title)"
         @archive="(kind, key) => emit('archive', kind, key)"
+        @fold="(path, folded) => emit('fold', path, folded)"
       />
       <p v-if="tree.length === 0" class="px-2 py-3 text-sm text-muted-foreground">还没有会话</p>
     </ScrollArea>

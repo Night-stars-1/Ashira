@@ -85,6 +85,9 @@ class AshiraClient {
   /// `kind` is `session` (key = id) or `folder` (key = cwd).
   Future<void> archive(String kind, String key, {required bool archived}) => _post('/v1/archive', {'kind': kind, 'key': key, 'archived': archived});
 
+  /// Folds a folder in the session list for every page and App on this server.
+  Future<void> fold(String path, {required bool folded}) => _post('/v1/fold', {'path': path, 'folded': folded});
+
   Future<String> newSession(String? cwd) async =>
       str(asMap(await _post('/v1/sessions', cwd == null || cwd.isEmpty ? const <String, dynamic>{} : {'cwd': cwd}))['sessionId']);
 

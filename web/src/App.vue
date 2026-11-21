@@ -34,7 +34,7 @@ const aliasName = ref('')
 const aliasError = ref('')
 const {
   status, server, refreshServer, restarting, restartServer, tree, archive, blocks, draft, model, modelTitle, fast, connected, loading, naming, confirm, question,
-  busy, hasReplyText, shownId, shownCwd, sessionName, needsConnection, runningIds, askingIds, send, openSession, decide, answer, interrupt, refresh, updateSettings, renameSession, setArchived,
+  busy, hasReplyText, shownId, shownCwd, sessionName, needsConnection, runningIds, askingIds, send, openSession, decide, answer, interrupt, refresh, updateSettings, renameSession, setArchived, setFolded,
 } = useAshira()
 
 // Hint only: a newer web release shows a download link in the sidebar.
@@ -129,7 +129,7 @@ function saveRename() {
     <div v-if="desktop" class="flex shrink-0 overflow-hidden border-sidebar-border transition-[width] duration-200 ease-out motion-reduce:transition-none" :class="sessionsOpen ? 'w-64 border-r' : 'w-0'">
       <div class="flex w-64 shrink-0">
         <SessionSidebar :tree="tree" :active-id="shownId" :running="runningIds" :asking="askingIds" :connected="connected" :update="server.update" :restart-pending="server.restartPending" :restarting="restarting" collapsible
-          @resume="selectSession" @alias="openAlias" @rename="openRename" @archive="(kind, key) => setArchived(kind, key, true)" @create="showProjectPicker" @settings="showSettings()" @about="showSettings('about')" @collapse="sessionsOpen = false" @restart="restartServer" />
+          @resume="selectSession" @alias="openAlias" @rename="openRename" @archive="(kind, key) => setArchived(kind, key, true)" @fold="setFolded" @create="showProjectPicker" @settings="showSettings()" @about="showSettings('about')" @collapse="sessionsOpen = false" @restart="restartServer" />
       </div>
     </div>
 
@@ -141,7 +141,7 @@ function saveRename() {
       >
         <DialogTitle class="sr-only">{{ drawer === 'sessions' ? '会话列表' : '项目文件' }}</DialogTitle>
         <SessionSidebar v-if="drawer === 'sessions'" :tree="tree" :active-id="shownId" :running="runningIds" :asking="askingIds" :connected="connected" :update="server.update" :restart-pending="server.restartPending" :restarting="restarting"
-          @resume="selectSession" @alias="openAlias" @rename="openRename" @archive="(kind, key) => setArchived(kind, key, true)" @create="showProjectPicker" @settings="showSettings()" @about="showSettings('about')" @restart="restartServer" />
+          @resume="selectSession" @alias="openAlias" @rename="openRename" @archive="(kind, key) => setArchived(kind, key, true)" @fold="setFolded" @create="showProjectPicker" @settings="showSettings()" @about="showSettings('about')" @restart="restartServer" />
         <FilesSidebar v-else-if="drawer === 'files' && shownId" :key="shownId" class="w-full flex-1 border-0"
           :session-id="shownId" :cwd="shownCwd" :active="filePath" @open="openFile" />
       </DialogContent>

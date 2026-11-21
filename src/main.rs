@@ -8,6 +8,7 @@ mod config;
 mod danger;
 mod file_output;
 mod file_report;
+mod graphics;
 mod hub;
 mod input;
 mod image_gen;

@@ -173,6 +173,18 @@ class AshiraState extends ChangeNotifier {
         await refresh();
       });
 
+  /// Folds a folder at once here; the server keeps it and tells every other page and App.
+  Future<void> setFolded(String path, bool folded) async {
+    tree = [for (final root in tree) root.refolded(path, folded)];
+    _changed();
+    try {
+      await client.fold(path, folded: folded);
+    } catch (reason) {
+      _fail(reason, '折叠状态保存失败');
+    }
+    await refresh().catchError((Object _) {});
+  }
+
   /// Archiving the shown session moves to the next one left in the list.
   Future<void> setArchived(String kind, String key, {required bool archived}) => _run(() async {
         await client.archive(kind, key, archived: archived);
@@ -364,6 +376,7 @@ class AshiraState extends ChangeNotifier {
           if (tool != null) {
             tool.output = event.field('output') ?? '';
             tool.error = event.isError;
+            tool.image = imageUrl(event.raw['image']) ?? tool.image;
             tool.done = true;
           }
         }

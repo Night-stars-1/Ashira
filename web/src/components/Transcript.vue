@@ -9,7 +9,8 @@ import WorkspaceImage from '@/components/WorkspaceImage.vue'
 import TextFileCard from '@/components/TextFileCard.vue'
 import { generatedImages, type ReplyMetrics } from '@/lib/api'
 
-export type ToolCard = { name: string; summary: string; output: string; error: boolean; done: boolean }
+/** `image`: the picture `read` gave the model (a data URL), shown on the card. */
+export type ToolCard = { name: string; summary: string; output: string; error: boolean; done: boolean; image?: string }
 export type ReplyPart = { type: 'text'; text: string } | { type: 'reasoning'; text: string } | ({ type: 'tool' } & ToolCard)
 export type TextFile = { name: string; text: string; lines: number }
 export type Block =

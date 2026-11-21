@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { Ban, Check, Circle, CircleDot, CircleHelp, CornerDownRight, Minus } from '@lucide/vue'
 import { Badge } from '@/components/ui/badge'
 import { ScrollArea } from '@/components/ui/scroll-area'
+import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import type { ToolCard } from '@/components/Transcript.vue'
 import WorkspaceImage from '@/components/WorkspaceImage.vue'
 import { generatedImages } from '@/lib/api'
@@ -16,6 +17,8 @@ const todo = computed(() => props.tool.name === 'todo' ? todoBoard(props.tool.ou
 const asked = computed(() => props.tool.name === 'ask_user' ? askResult(props.tool.output) : null)
 const images = computed(() => generatedImages(props.tool))
 const numbered = computed(() => todo.value || asked.value || !props.tool.output ? null : numberedLines(props.tool.output))
+/** The full-size view of the picture `read` gave the model. */
+const zoomed = ref(false)
 
 type Answer = { question: string; answer: string; typed: boolean; skipped: boolean }
 
@@ -93,6 +96,18 @@ function todoLabel(status: string) {
     <div v-if="images.length" class="flex flex-wrap gap-2 border-t px-3 py-2">
       <WorkspaceImage v-for="path in images" :key="path" :path="path" size="thumb" />
     </div>
+    <!-- The picture `read` gave the model; clicking shows it full size. -->
+    <div v-if="tool.image" class="border-t px-3 py-2">
+      <button type="button" class="inline-block max-w-full cursor-zoom-in" :title="tool.summary" @click="zoomed = true">
+        <img :src="tool.image" :alt="tool.summary || '读取的图片'" class="max-h-64 max-w-full rounded-lg border object-contain" />
+      </button>
+      <Dialog v-model:open="zoomed">
+        <DialogContent class="max-h-[92dvh] w-auto max-w-[min(92vw,1600px)] p-2 sm:max-w-[min(92vw,1600px)]" :aria-describedby="undefined">
+          <DialogTitle class="sr-only">{{ tool.summary || '读取的图片' }}</DialogTitle>
+          <img :src="tool.image" :alt="tool.summary || '读取的图片'" class="max-h-[calc(92dvh-1rem)] max-w-full rounded-md object-contain" />
+        </DialogContent>
+      </Dialog>
+    </div>
     <ScrollArea v-if="todo" class="border-t" viewport-class="max-h-64">
       <div class="flex flex-col gap-3 px-3 py-2 text-sm">
         <section v-for="phase in todo" :key="phase.name" class="flex flex-col gap-1">
@@ -129,7 +144,8 @@ function todoLabel(status: string) {
       </dl>
     </div>
     <!-- 设置 → 显示: unwrapped lines keep their width and scroll sideways. -->
-    <ScrollArea v-else-if="tool.output" class="border-t" viewport-class="max-h-64" :scroll-x="!wrapToolOutput">
+    <!-- A picture `read` returned is the result; its "attached for you to view" note is for the model. -->
+    <ScrollArea v-else-if="tool.output && !tool.image" class="border-t" viewport-class="max-h-64" :scroll-x="!wrapToolOutput">
       <div v-if="numbered" class="px-3 py-2 font-mono text-xs" :class="!wrapToolOutput && 'w-max min-w-full'">
         <template v-for="(row, rowIndex) in numbered" :key="rowIndex">
           <div v-if="row.n" class="flex gap-2">

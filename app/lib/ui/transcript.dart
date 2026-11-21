@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 
@@ -452,7 +453,8 @@ class ToolCard extends StatelessWidget {
         ? scrolled(_TodoBoard(todo))
         : asked != null
             ? Padding(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8), child: _AskResult(asked))
-            : tool.output.isEmpty
+            // A picture `read` returned is the result; its "attached for you to view" note is for the model.
+            : tool.output.isEmpty || tool.image != null
                 ? null
                 : output();
     return Container(
@@ -487,8 +489,67 @@ class ToolCard extends StatelessWidget {
             child: Wrap(spacing: 8, runSpacing: 8, children: [for (final path in images) WorkspaceImage(path, maxHeight: 256)]),
           ),
         ],
+        if (tool.image case final image?) ...[
+          const Divider(),
+          Padding(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8), child: _ReadImage(image, label: tool.summary)),
+        ],
         if (body != null) ...[const Divider(), body],
       ]),
+    );
+  }
+}
+
+/// The picture `read` gave the model (a data URL), decoded once; tap shows it full size.
+class _ReadImage extends StatefulWidget {
+  const _ReadImage(this.src, {required this.label});
+  final String src, label;
+  @override
+  State<_ReadImage> createState() => _ReadImageState();
+}
+
+class _ReadImageState extends State<_ReadImage> {
+  late Uint8List? _bytes = _decode(widget.src);
+
+  static Uint8List? _decode(String src) {
+    final comma = src.indexOf(',');
+    if (comma < 0) return null;
+    try {
+      return base64Decode(src.substring(comma + 1));
+    } on FormatException {
+      return null;
+    }
+  }
+
+  @override
+  void didUpdateWidget(_ReadImage old) {
+    super.didUpdateWidget(old);
+    if (old.src != widget.src) _bytes = _decode(widget.src);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final bytes = _bytes;
+    if (bytes == null) return const SizedBox.shrink();
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: Tooltip(
+        message: widget.label,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(radius),
+          onTap: () => showDialog<void>(
+            context: context,
+            builder: (context) => Dialog(
+              insetPadding: const EdgeInsets.all(24),
+              clipBehavior: Clip.antiAlias,
+              child: InteractiveViewer(maxScale: 6, child: Image.memory(bytes, fit: BoxFit.contain, gaplessPlayback: true)),
+            ),
+          ),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxHeight: 256),
+            child: ClipRRect(borderRadius: BorderRadius.circular(radius), child: Image.memory(bytes, fit: BoxFit.contain, gaplessPlayback: true)),
+          ),
+        ),
+      ),
     );
   }
 }

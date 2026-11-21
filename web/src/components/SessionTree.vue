@@ -11,8 +11,10 @@ const emit = defineEmits<{
   alias: [path: string, name: string]
   rename: [id: string, title: string]
   archive: [kind: 'session' | 'folder', key: string]
+  fold: [path: string, folded: boolean]
 }>()
-const open = ref(true)
+// Stored on the server (`node.folded`), so the fold follows every page and App.
+const open = computed({ get: () => !props.node.folded, set: (value) => emit('fold', props.node.path, !value) })
 const showEmpty = ref(false)
 // Empty sessions are leftovers from "新会话" clicks; keep the active one visible.
 const visible = computed(() => showEmpty.value ? props.node.sessions : props.node.sessions.filter((item) => item.prompt || item.id === props.activeId))
@@ -155,6 +157,7 @@ const menuContent = 'z-50 min-w-32 rounded-md border bg-popover p-1 text-popover
         @alias="(path, name) => emit('alias', path, name)"
         @rename="(id, title) => emit('rename', id, title)"
         @archive="(kind, key) => emit('archive', kind, key)"
+        @fold="(path, folded) => emit('fold', path, folded)"
       />
     </div>
   </div>

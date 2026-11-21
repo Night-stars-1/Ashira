@@ -12,7 +12,7 @@ use ratatui::{
     Terminal, TerminalOptions, Viewport,
     backend::{CrosstermBackend, IntoCrossterm},
     crossterm::{
-        cursor::{self, MoveTo, SetCursorStyle},
+        cursor::{self, MoveRight, MoveTo, MoveUp, RestorePosition, SavePosition, SetCursorStyle},
         event::{DisableBracketedPaste, EnableBracketedPaste, Event as TermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags},
         execute, queue,
         style::{Attribute, Print, PrintStyledContent, ResetColor, SetAttribute, StyledContent},
@@ -36,6 +36,7 @@ use crate::{
     composer::{Atom, Composer},
     file_output::FileOutput,
     file_report,
+    graphics::{self, Graphics, Picture},
     hub::{self, Hub},
     mcp,
     mcp_report::{McpReport, PickerAction as McpPickerAction, View as McpView},
@@ -55,6 +56,10 @@ const WARN: Style = Style::new().fg(Color::Yellow);
 const ERR: Style = Style::new().fg(Color::Red);
 const PLACEHOLDER: &str = "输入问题 · / 查看命令";
 const FOOTER_LINE: Style = Style::new().fg(Color::Rgb(212, 192, 144));
+/// Pictures `read` attached are drawn under their row, indented like its output, at most this many cells.
+const PICTURE_INDENT: u16 = 4;
+const PICTURE_MAX_COLS: u16 = 80;
+const PICTURE_MAX_ROWS: u16 = 20;
 const FOOTER_DIM: Style = Style::new().fg(Color::Rgb(115, 118, 123));
 const EFFORT_OPTIONS: &[(Option<Level>, &str)] = &[
     (Some(Level::Off), "关闭思考或使用服务商最低档"),
@@ -146,6 +151,8 @@ struct ReadResult {
     file: Option<FileOutput>,
     output: String,
     is_error: bool,
+    /// The picture `read` attached for the model, as a data URL.
+    image: Option<Arc<str>>,
 }
 
 pub struct Startup {
@@ -191,6 +198,10 @@ struct Ui {
     width: u16,
     /// Finished rows waiting to be printed above the live region on the next frame.
     pending: Vec<Line<'static>>,
+    /// Pictures printed with `pending`: each goes before the pending row at its index.
+    pictures: Vec<(usize, Picture)>,
+    /// The terminal's image protocol; `None` keeps pictures out of the TUI.
+    graphics: Option<Graphics>,
     input: Vec<Atom>,
     cursor: usize,
     /// Submitted prompts, oldest first; `browse` indexes into it.
@@ -284,6 +295,8 @@ pub fn run(shared: Arc<Shared>, agent_tx: UnboundedSender<(Command, Cancellation
     // Lets kitty-protocol terminals report Ctrl+Enter / Alt+↑ distinctly; others ignore it.
     // Windows consoles deliver modifiers natively and reject the sequence, so it is optional.
     let _ = execute!(stdout, PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES));
+    // Before the input reader starts: the terminal's answers arrive as input.
+    let graphics = graphics::detect();
     let size = terminal::size().unwrap_or((80, 24));
     let (col, row) = cursor::position().unwrap_or((0, 0));
     let top = if col > 0 { row + 1 } else { row }.min(size.1.saturating_sub(1));
@@ -319,6 +332,8 @@ pub fn run(shared: Arc<Shared>, agent_tx: UnboundedSender<(Command, Cancellation
         height: 0,
         width: size.0.max(10),
         pending: Vec::new(),
+        pictures: Vec::new(),
+        graphics,
         input: Vec::new(),
         cursor: 0,
         past: Vec::new(),
@@ -534,8 +549,11 @@ impl Ui {
                         block["content"].as_array().into_iter().flatten().filter_map(|part| part["text"].as_str()).collect::<Vec<_>>().join("\n")
                     };
                     let is_error = block["is_error"].as_bool().unwrap_or(false);
+                    // Only when the terminal can draw it: decoding is the expensive part.
+                    let image = self.graphics.as_ref().and_then(|_| block["content"].as_array()?.iter().find(|part| part["type"] == "image"))
+                        .and_then(|part| crate::api::DataUrl::from_block(part).ok()).map(|url| Arc::from(url.to_string()));
                     if let Some((call, file)) = block["tool_use_id"].as_str().and_then(|id| self.replay_calls.remove(id)) {
-                        self.display_event(Event::ToolEnd { call, output, is_error, file })?;
+                        self.display_event(Event::ToolEnd { call, output, is_error, file, image })?;
                     } else { self.commit_note("历史工具结果缺少对应调用", WARN); }
                 },
                 ("user", "text") => if let Some(text) = block["text"].as_str() {
@@ -839,6 +857,10 @@ impl Ui {
             rows.extend(block_rows(self.width, &[Span::styled(format!("Read ({})", reads.len()), Style::new().add_modifier(Modifier::BOLD))], &Span::styled("● ", DIM), &Span::raw("  ")));
         }
         let mut full = rows.clone();
+        // Pictures are printed straight into scrollback, so this group cannot stay
+        // collapsible: archive what is live first, then the group with its pictures.
+        let graphics = self.graphics.as_ref().filter(|_| reads.iter().any(|read| read.image.is_some()));
+        let mut pictures = Vec::new();
         for (index, read) in reads.iter().enumerate() {
             let label = file_report::read_label(read.file.as_ref());
             let mut spans = Vec::new();
@@ -854,15 +876,28 @@ impl Ui {
             let heading = block_rows(self.width, &spans, &Span::styled(prefix, if read.is_error { ERR } else { Style::new().fg(Color::Green) }), &Span::raw(rest));
             rows.extend(heading.iter().cloned());
             full.extend(heading);
+            if let (Some(graphics), Some(image)) = (graphics, &read.image) {
+                let (_, screen_h) = terminal::size().unwrap_or((self.width, 24));
+                let cols = self.width.saturating_sub(PICTURE_INDENT).min(PICTURE_MAX_COLS);
+                if let Some(picture) = graphics.picture(image, cols, (screen_h / 2).min(PICTURE_MAX_ROWS)) { pictures.push((rows.len(), picture)); }
+            }
             for line in sanitize(&read.output).split('\n') {
                 full.push(Line::from(vec![Span::raw("    "), Span::styled(line.to_owned(), if read.is_error { ERR } else { Style::default() })]));
             }
         }
+        self.last_blank = false;
+        self.note_open = false;
+        if graphics.is_some() {
+            self.transcript.flush(self.width, &mut self.pending);
+            let base = self.pending.len();
+            self.pictures.extend(pictures.into_iter().map(|(at, picture)| (base + at, picture)));
+            self.pending.extend(rows);
+            self.dirty = true;
+            return;
+        }
         rows.push(Line::styled("  Ctrl+O: Expand", DIM));
         let mut expanded = full;
         expanded.push(Line::styled("  Ctrl+O: Collapse", DIM));
-        self.last_blank = false;
-        self.note_open = false;
         self.transcript.push_tool(rows, expanded);
         self.dirty = true;
     }
@@ -921,7 +956,7 @@ impl Ui {
                 rows.extend(block_rows(self.width, &spans, &Span::styled("● ", Style::new().fg(Color::Green)), &Span::raw("  ")));
                 self.commit_rows(rows);
             }
-            Event::ToolEnd { call, output, is_error, file } => {
+            Event::ToolEnd { call, output, is_error, file, image } => {
                 if call.agent.is_some() { return Ok(()); }
                 if call.is_coordination() {
                     if is_error {
@@ -940,7 +975,7 @@ impl Ui {
                     return Ok(());
                 }
                 if call.name == "read" {
-                    self.reads.push(ReadResult { file, output, is_error });
+                    self.reads.push(ReadResult { file, output, is_error, image });
                     return Ok(());
                 }
                 if matches!(call.name.as_str(), "write" | "edit") {
@@ -1866,6 +1901,7 @@ impl Ui {
             self.transcript.clear();
             self.reads.clear();
             self.pending.clear();
+            self.pictures.clear();
             self.partial.clear();
             self.md = Reply::default();
             self.replay_calls.clear();
@@ -2790,15 +2826,27 @@ impl Ui {
             self.top = 0;
         }
         let rows = std::mem::take(&mut self.pending);
+        let mut pictures = std::mem::take(&mut self.pictures).into_iter().peekable();
+        let mut printed = rows.len();
         let out = self.term.backend_mut();
         queue!(out, MoveTo(0, self.top), Clear(ClearType::FromCursorDown))?;
-        for row in &rows {
+        for index in 0..=rows.len() {
+            while let Some((_, picture)) = pictures.next_if(|(at, _)| *at <= index) {
+                // Reserve the rows (plus a gap) first so the screen scrolls before drawing,
+                // then draw at their top-left and come back below. With the gap, a terminal
+                // that moves the cursor past the picture never scrolls the screen under it.
+                let reserved = picture.rows + 1;
+                for _ in 0..reserved { queue!(out, Print("\r\n"))?; }
+                queue!(out, SavePosition, MoveUp(reserved), MoveRight(PICTURE_INDENT), Print(&picture.data), RestorePosition)?;
+                printed += usize::from(reserved);
+            }
+            let Some(row) = rows.get(index) else { break };
             for span in &row.spans {
                 queue!(out, PrintStyledContent(StyledContent::new(row.style.patch(span.style).into_crossterm(), span.content.as_ref())))?;
             }
             queue!(out, ResetColor, SetAttribute(Attribute::Reset), Print("\r\n"))?;
         }
-        let mut top = (self.top as usize + rows.len()).min(screen_h.saturating_sub(1) as usize) as u16;
+        let mut top = (self.top as usize + printed).min(screen_h.saturating_sub(1) as usize) as u16;
         if top + height > screen_h {
             let extra = top + height - screen_h;
             queue!(out, MoveTo(0, screen_h - 1))?;

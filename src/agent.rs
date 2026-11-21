@@ -109,7 +109,8 @@ pub enum Event {
     Reasoning(String),
     ReasoningEnd,
     ToolStart { call: Arc<ToolCall>, summary: String },
-    ToolEnd { call: Arc<ToolCall>, output: String, is_error: bool, file: Option<crate::file_output::FileOutput> },
+    /// `image`: the picture `read` attached for the model, as a data URL the pages show.
+    ToolEnd { call: Arc<ToolCall>, output: String, is_error: bool, file: Option<crate::file_output::FileOutput>, image: Option<Arc<str>> },
     Todo(Arc<crate::todo::Snapshot>),
     ToolBatchEnd,
     Confirm { id: u64, call: Arc<ToolCall>, command: String, reason: String, always: &'static str, cancel: CancellationToken, reply: oneshot::Sender<Decision> },
@@ -1074,7 +1075,8 @@ impl Agent {
             out.file = Some(crate::file_output::FileOutput { path: path.to_owned(), detail: crate::file_output::FileDetail::Summary });
         }
         let text = if name == "todo" { out.text } else { tools::truncate(out.text, None) };
-        self.shared.emit(Event::ToolEnd { call: call_info, output: text.clone(), is_error: out.is_error, file: out.file });
+        let image = out.image.as_ref().and_then(|block| api::DataUrl::from_block(block).ok()).map(|url| Arc::from(url.to_string()));
+        self.shared.emit(Event::ToolEnd { call: call_info, output: text.clone(), is_error: out.is_error, file: out.file, image });
         // A picture rides in the result as Anthropic content blocks; the other wires move
         // it to a user message (see openai.rs / responses.rs).
         let content = match out.image { Some(image) => json!([{ "type": "text", "text": text }, image]), None => json!(text) };

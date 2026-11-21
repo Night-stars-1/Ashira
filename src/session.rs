@@ -386,7 +386,7 @@ pub fn catalog() -> Value {
     let label = |cwd: &str| aliases.get(cwd).map(|alias| alias.trim()).filter(|alias| !alias.is_empty()).map(|alias| alias.to_owned())
         .unwrap_or_else(|| names.get(cwd).cloned().unwrap_or_else(|| folder_name(cwd)));
     let roots = order.iter().map(|cwd| {
-        json!({"name": label(cwd), "path": cwd, "sessions": groups.remove(cwd).unwrap_or_default(), "children": []})
+        json!({"name": label(cwd), "path": cwd, "folded": library.folded_folders.contains(cwd), "sessions": groups.remove(cwd).unwrap_or_default(), "children": []})
     }).collect::<Vec<_>>();
     let folders: Vec<Value> = library.archived_folders.iter().map(|cwd| json!({"name": label(cwd), "path": cwd})).collect();
     json!({"roots": roots, "archived": {"sessions": archived_sessions, "folders": folders}})
@@ -406,6 +406,9 @@ struct Library {
     archived_sessions: std::collections::BTreeSet<String>,
     #[serde(default, rename = "archivedFolders")]
     archived_folders: std::collections::BTreeSet<String>,
+    /// Folders folded in the session list; shared by every web page and App on this server.
+    #[serde(default, rename = "foldedFolders")]
+    folded_folders: std::collections::BTreeSet<String>,
 }
 
 /// The background titler and API handlers both edit the file; serialize them.
@@ -466,6 +469,16 @@ pub fn set_archived(kind: &str, key: &str, archived: bool) -> Result<(), String>
     Library::update(|library| {
         let set = if kind == "session" { &mut library.archived_sessions } else { &mut library.archived_folders };
         if archived { set.insert(key.to_owned()); } else { set.remove(key); }
+        Ok(())
+    })
+}
+
+/// Fold or unfold one folder (its cwd as listed) in the session list.
+pub fn set_folded(path: &str, folded: bool) -> Result<(), String> {
+    let path = path.trim();
+    if path.is_empty() { return Err("path is required".into()); }
+    Library::update(|library| {
+        if folded { library.folded_folders.insert(path.to_owned()); } else { library.folded_folders.remove(path); }
         Ok(())
     })
 }

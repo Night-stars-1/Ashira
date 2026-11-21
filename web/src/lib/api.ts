@@ -120,7 +120,8 @@ export type Status = UsageStatistics & {
 export type SessionItem = { id: string; prompt: string; modified: number; renamed: boolean }
 export type ArchivedSession = SessionItem & { cwd: string }
 export type Archive = { sessions: ArchivedSession[]; folders: { name: string; path: string }[] }
-export type SessionNode = { name: string; path: string; sessions: SessionItem[]; children: SessionNode[] }
+/** `folded`: collapsed in the session list, kept on the server so every page and App agrees. */
+export type SessionNode = { name: string; path: string; folded: boolean; sessions: SessionItem[]; children: SessionNode[] }
 export type FileEntry = { name: string; dir: boolean; size: number | null }
 export type FileListing = { path: string; entries: FileEntry[] }
 export type BrowseEntry = { name: string; path: string }
@@ -175,6 +176,8 @@ export type AgentEvent = {
   display?: string
   output?: string
   isError?: boolean
+  /** `tool_end` of `read`: the picture attached for the model, as a data URL. */
+  image?: string
   id?: number
   command?: string
   reason?: string
@@ -301,7 +304,7 @@ function sessionNode(value: unknown): SessionNode | null {
   }) : []
   const path = text(row.path)
   if (!path) return null
-  return { name: text(row.name) || path, path, sessions, children }
+  return { name: text(row.name) || path, path, folded: row.folded === true, sessions, children }
 }
 
 function archive(value: unknown): Archive {
@@ -358,6 +361,7 @@ export function parseEvent(raw: string): AgentEvent | null {
     display: typeof value.display === 'string' ? value.display : undefined,
     output: typeof value.output === 'string' ? value.output : undefined,
     isError: typeof value.isError === 'boolean' ? value.isError : undefined,
+    image: typeof value.image === 'string' && value.image.startsWith('data:image/') ? value.image : undefined,
     id: typeof value.id === 'number' ? value.id : undefined,
     command: typeof value.command === 'string' ? value.command : undefined,
     reason: typeof value.reason === 'string' ? value.reason : undefined,
@@ -409,6 +413,7 @@ export const api = {
   /** An empty title restores the first-message title. */
   title: (id: string, title: string) => request('/v1/title', { method: 'POST', body: JSON.stringify({ id, title }) }),
   archive: (kind: 'session' | 'folder', key: string, archived: boolean) => request('/v1/archive', { method: 'POST', body: JSON.stringify({ kind, key, archived }) }),
+  fold: (path: string, folded: boolean) => request('/v1/fold', { method: 'POST', body: JSON.stringify({ path, folded }) }),
   newSession: async (cwd?: string) => text(record(await request('/v1/sessions', { method: 'POST', body: JSON.stringify(cwd ? { cwd } : {}) })).sessionId),
   session: async (id: string): Promise<SessionView> => {
     const body = record(await request(sessionPath(id)))
