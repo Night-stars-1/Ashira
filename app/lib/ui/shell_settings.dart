@@ -4,9 +4,9 @@ import '../api/client.dart';
 import '../api/models.dart';
 import '../state/ashira_state.dart';
 import 'theme.dart';
-import 'widgets.dart';
 
-/// Settings → Shell: the shell the bash tool runs commands with, saved in the server's config.yml.
+/// 设置 → 通用 → 终端 → Shell 路径: the shell the bash tool runs commands with, saved in the
+/// server's config.yml. Rows of a [SettingsCard]; the caller gives the card.
 class ShellSettings extends StatefulWidget {
   const ShellSettings({super.key, required this.client, required this.state});
   final AshiraClient client;
@@ -79,32 +79,21 @@ class _ShellSettingsState extends State<ShellSettings> {
     final small = TextStyle(fontSize: 12, color: scheme.mutedForeground);
     final status = _status;
     final changed = _draft.text.trim() != (status?.configured ?? '');
-    return Bordered(children: [
-      Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-          const Text('Shell', style: TextStyle(fontSize: 14)),
+    return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+          const Text('Shell 路径', style: TextStyle(fontSize: 14)),
           const SizedBox(height: 2),
-          Text('AI 执行命令（bash 工具）用的 shell，需要是 bash、zsh、sh 这类 POSIX shell', style: small),
-          if (status != null) ...[
-            const SizedBox(height: 10),
-            Wrap(spacing: 8, runSpacing: 4, crossAxisAlignment: WrapCrossAlignment.center, children: [
-              Text('正在使用', style: small),
-              SelectableText(status.current, style: const TextStyle(fontSize: 12, fontFamily: 'monospace')),
-              StatusTag(_sources[status.source] ?? status.source),
-            ]),
-            if (status.envOverride != null) ...[
-              const SizedBox(height: 6),
-              Text('服务端设置了环境变量 ASHIRA_SHELL，它优先于这里保存的路径。', style: small),
-            ],
-          ],
+          Text(
+            status == null ? 'AI 执行命令用的 bash、zsh 或 sh' : '正在使用 ${status.current}（${_sources[status.source] ?? status.source}）',
+            style: small,
+          ),
+          if (status?.envOverride != null) Text('服务端设置了环境变量 ASHIRA_SHELL，它优先于这里保存的路径', style: small),
           const SizedBox(height: 10),
           TextField(
             controller: _draft,
             autocorrect: false,
             enableSuggestions: false,
-            style: const TextStyle(fontFamily: 'monospace', fontSize: 13),
-            decoration: const InputDecoration(hintText: r'留空则自动查找，例如 C:\Program Files\Git\bin\bash.exe'),
+            style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+            decoration: const InputDecoration(hintText: '留空则自动查找'),
             onSubmitted: changed && !_saving ? _save : null,
           ),
           const SizedBox(height: 8),
@@ -138,8 +127,6 @@ class _ShellSettingsState extends State<ShellSettings> {
             const SizedBox(height: 8),
             Text('已保存', style: small),
           ],
-        ]),
-      ),
-    ]);
+        ]);
   }
 }

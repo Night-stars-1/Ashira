@@ -1,0 +1,6 @@
+# The image is built from the CI's release outputs (`ashira`, `web/`) in a clean folder;
+# a local `docker build .` only needs the Dockerfile and those two.
+*
+!Dockerfile
+!ashira
+!web

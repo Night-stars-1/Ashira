@@ -138,7 +138,7 @@ function todoLabel(status: string) {
         </div>
       </dl>
     </div>
-    <!-- 设置 → 显示: unwrapped lines keep their width and scroll sideways. -->
+    <!-- 设置 → 通用 → 显示: unwrapped lines keep their width and scroll sideways. -->
     <!-- A picture `read` returned is the result; its "attached for you to view" note is for the model. -->
     <ScrollArea v-else-if="tool.output && !tool.image" class="border-t" viewport-class="max-h-64" :scroll-x="!wrapToolOutput">
       <div v-if="numbered" class="px-3 py-2 font-mono text-xs" :class="!wrapToolOutput && 'w-max min-w-full'">

@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button'
 import type { UpdateProgress } from '@/lib/api'
 import { checkWebUpdate, newer, webUpdate, webVersion } from '@/lib/update'
 
-const props = defineProps<{ serverVersion: string; serverUpdate: string | null; hosted: boolean; restartPending: boolean; restarting: boolean; updating: boolean; updateProgress: UpdateProgress | null }>()
+const props = defineProps<{ serverVersion: string; serverUpdate: string | null; hosted: boolean; restartPending: boolean; container: boolean; restarting: boolean; updating: boolean; updateProgress: UpdateProgress | null }>()
 const emit = defineEmits<{ restart: []; update: [] }>()
 
 /** The bar under the server row while it updates: a share when the size is known, else indeterminate. */
@@ -75,6 +75,8 @@ const notesOpen = ref(false)
             <Badge variant="default">已更新，待重启</Badge>
             <Button type="button" size="sm" :disabled="restarting" @click="emit('restart')">{{ restarting ? '重启中…' : '重启' }}</Button>
           </template>
+          <!-- A container is updated by pulling its image; nothing to press here. -->
+          <Badge v-else-if="serverBehind && container" variant="default" title="docker compose pull && docker compose up -d">可更新到 {{ serverBehind }}，请拉取新镜像</Badge>
           <template v-else-if="serverBehind">
             <Badge variant="default">可更新到 {{ serverBehind }}</Badge>
             <Button type="button" size="sm" :disabled="updating" @click="emit('update')">{{ updating ? '更新中…' : '更新' }}</Button>

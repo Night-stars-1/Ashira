@@ -189,6 +189,7 @@ function saveRename() {
       :server-update="server.update"
       :hosted="server.web !== null"
       :restart-pending="server.restartPending"
+      :container="server.container"
       :restarting="restarting"
       :updating="updating"
       :update-progress="updateProgress"

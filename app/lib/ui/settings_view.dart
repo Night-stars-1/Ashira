@@ -21,7 +21,7 @@ Future<void> showSettings(BuildContext context, AshiraState state, {required Voi
       builder: (_) => _Settings(state, onDisconnect: onDisconnect, initialTab: tab),
     );
 
-const _tabs = [('models', '模型'), ('usage', '用量'), ('display', '显示'), ('plugins', '插件'), ('mcp', 'MCP'), ('shell', 'Shell'), ('memory', '记忆'), ('archive', '归档'), ('connection', '连接'), ('about', '关于')];
+const _tabs = [('models', '模型'), ('usage', '用量'), ('display', '通用'), ('plugins', '插件'), ('mcp', 'MCP'), ('memory', '记忆'), ('archive', '归档'), ('connection', '连接'), ('about', '关于')];
 
 class _Settings extends StatefulWidget {
   const _Settings(this.state, {required this.onDisconnect, required this.initialTab});
@@ -192,6 +192,21 @@ class _SettingsState extends State<_Settings> {
     final small = TextStyle(fontSize: 12, color: scheme.mutedForeground);
     Widget note(String text, {bool error = false}) =>
         Padding(padding: const EdgeInsets.only(bottom: 12), child: Text(text, style: TextStyle(fontSize: 13, color: error ? scheme.error : scheme.mutedForeground)));
+    // Chrome-style group heading over its card.
+    Widget sectionTitle(String text) => Padding(
+          padding: const EdgeInsets.only(left: 4, bottom: 6),
+          child: Text(text, style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: scheme.mutedForeground)),
+        );
+    Widget toggleRow(String title, String description, bool value, ValueChanged<bool> onChanged) => Row(children: [
+          Expanded(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(title, style: const TextStyle(fontSize: 14)),
+              const SizedBox(height: 2),
+              Text(description, style: small),
+            ]),
+          ),
+          Toggle(label: title, value: value, onChanged: onChanged),
+        ]);
     Widget card(Widget child) => Padding(
           padding: const EdgeInsets.only(bottom: 8),
           child: Container(
@@ -294,27 +309,24 @@ class _SettingsState extends State<_Settings> {
             ])),
         ],
       'display' => [
+          sectionTitle('显示'),
           ListenableBuilder(
             listenable: displayPrefs,
-            builder: (context, _) => Bordered(children: [
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
-                child: Row(children: [
-                  Expanded(
-                    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                      const Text('工具输出自动换行', style: TextStyle(fontSize: 14)),
-                      const SizedBox(height: 2),
-                      Text('关闭后长行保持完整，左右滚动查看', style: small),
-                    ]),
-                  ),
-                  Toggle(label: '工具输出自动换行', value: displayPrefs.wrapToolOutput, onChanged: displayPrefs.setWrapToolOutput),
-                ]),
-              ),
+            builder: (context, _) => SettingsCard(children: [
+              toggleRow('工具输出自动换行', '关闭后长行保持完整，左右滚动查看', displayPrefs.wrapToolOutput, displayPrefs.setWrapToolOutput),
+            ]),
+          ),
+          const SizedBox(height: 16),
+          sectionTitle('终端'),
+          ListenableBuilder(
+            listenable: displayPrefs,
+            builder: (context, _) => SettingsCard(children: [
+              toggleRow('终端自动换行', '关闭后长行保持完整，左右滚动查看', displayPrefs.wrapTerminal, displayPrefs.setWrapTerminal),
+              ShellSettings(client: _client, state: widget.state),
             ]),
           ),
         ],
       'about' => [AboutSettings(state: widget.state)],
-      'shell' => [ShellSettings(client: _client, state: widget.state)],
       _ => [
           Bordered(children: [
             InfoRow('服务器', _client.baseUrl),

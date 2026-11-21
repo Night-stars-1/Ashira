@@ -469,7 +469,7 @@ class ToolCard extends StatelessWidget {
           constraints: const BoxConstraints(maxHeight: 256),
           child: SingleChildScrollView(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8), child: child),
         );
-    // 设置 → 显示: unwrapped output keeps each line whole and scrolls sideways.
+    // 设置 → 通用 → 显示: unwrapped output keeps each line whole and scrolls sideways.
     Widget output() => ListenableBuilder(
           listenable: displayPrefs,
           builder: (context, _) {

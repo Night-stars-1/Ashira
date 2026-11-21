@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { api, type ShellStatus } from '@/lib/api'
@@ -47,24 +46,20 @@ async function save(shell: string) {
 </script>
 
 <template>
-  <section class="flex flex-col gap-3 rounded-lg border px-3 py-3">
-    <div class="flex items-start gap-3">
-      <div class="min-w-0 flex-1">
-        <p class="text-sm">Shell</p>
-        <p class="text-xs text-muted-foreground">AI 执行命令（bash 工具）用的 shell，需要是 bash、zsh、sh 这类 POSIX shell</p>
-      </div>
+  <section class="flex flex-col gap-3 px-4 py-3.5">
+    <div>
+      <p class="text-sm">Shell 路径</p>
+      <p class="text-xs text-muted-foreground break-all">
+        <template v-if="status">正在使用 <span class="font-mono">{{ status.current }}</span>（{{ source }}）</template>
+        <template v-else>AI 执行命令用的 bash、zsh 或 sh</template>
+      </p>
+      <p v-if="status?.envOverride" class="text-xs text-muted-foreground">服务端设置了环境变量 ASHIRA_SHELL，它优先于这里保存的路径</p>
     </div>
-    <p v-if="status" class="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
-      <span>正在使用</span>
-      <code class="rounded bg-muted px-1.5 py-0.5 font-mono break-all text-foreground">{{ status.current }}</code>
-      <Badge variant="secondary">{{ source }}</Badge>
-    </p>
-    <p v-if="status?.envOverride" class="text-xs text-muted-foreground">服务端设置了环境变量 ASHIRA_SHELL，它优先于这里保存的路径。</p>
     <form class="flex flex-col gap-2 sm:flex-row" @submit.prevent="save(draft)">
-      <Input v-model="draft" class="font-mono" placeholder="留空则自动查找，例如 C:\Program Files\Git\bin\bash.exe" autocomplete="off" spellcheck="false" aria-label="Shell 路径" />
+      <Input v-model="draft" class="h-8 font-mono text-xs md:text-xs" placeholder="留空则自动查找" autocomplete="off" spellcheck="false" aria-label="Shell 路径" />
       <div class="flex shrink-0 gap-2">
-        <Button type="submit" :disabled="saving || !changed">{{ saving ? '测试中…' : '测试并保存' }}</Button>
-        <Button v-if="status?.configured" type="button" variant="outline" :disabled="saving" @click="save('')">恢复自动</Button>
+        <Button type="submit" size="sm" :disabled="saving || !changed">{{ saving ? '测试中…' : '测试并保存' }}</Button>
+        <Button v-if="status?.configured" type="button" size="sm" variant="outline" :disabled="saving" @click="save('')">恢复自动</Button>
       </div>
     </form>
     <p v-if="error" role="alert" class="text-sm text-destructive">{{ error }}</p>

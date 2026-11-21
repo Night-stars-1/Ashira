@@ -159,3 +159,61 @@ jobs:
           cd dist
           sha256sum * > SHA256SUMS.txt
           gh release upload "${{ github.event.release.tag_name }}" * --clobber -R "${{ github.repository }}"
+
+  docker:
+    name: ghcr.io image
+    # Built from this run's linux-x64 core and web build, so it never compiles twice.
+    needs: [core, web]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: ashira-core-linux-x64
+          path: artifacts/core
+      - uses: actions/download-artifact@v8
+        with:
+          name: ashira-web
+          path: artifacts/web
+      - name: Context
+        run: |
+          # The image's build context holds only the binary and the page (see .dockerignore).
+          mkdir -p context/web unpacked/core unpacked/web
+          cp Dockerfile .dockerignore context/
+          tar xzf artifacts/core/*.tar.gz -C unpacked/core
+          cp unpacked/core/*/ashira context/ashira
+          unzip -q artifacts/web/*.zip -d unpacked/web
+          cp -r unpacked/web/*/. context/web/
+          # The marker makes the core treat the page as its own release, not a hand copy.
+          if [ -n "$VERSION" ]; then printf '%s' "${VERSION#v}" > context/web/.ashira-version; fi
+          ls -la context context/web
+          # GHCR repository names must be lower case; the owner here is not.
+          echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/ashira" >> "$GITHUB_ENV"
+      - name: Tags
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.IMAGE }}
+          flavor: latest=false
+          tags: |
+            type=semver,pattern={{version}},value=${{ env.VERSION }},enable=${{ env.VERSION != '' }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ env.VERSION }},enable=${{ env.VERSION != '' }}
+            type=raw,value=latest,enable=${{ env.VERSION != '' }}
+            type=sha,prefix=dev-,enable=${{ env.VERSION == '' }}
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - uses: docker/build-push-action@v7
+        with:
+          context: context
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: VERSION=${{ env.VERSION || 'dev' }}

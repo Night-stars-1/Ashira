@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:xterm/xterm.dart';
 
 import '../api/client.dart';
+import '../state/display_prefs.dart';
 import 'theme.dart';
 
 /// The session's terminals: a tab strip over one shell per tab, each its own
@@ -284,10 +285,34 @@ class _TerminalPaneState extends State<_TerminalPane> {
     });
   }
 
+  /// Columns the terminal gets with wrapping off; lines that long stay on one row.
+  static const _noWrapCols = 240;
+
+  /// One cell's width for [style], measured the way the terminal itself measures it.
+  static double _cellWidth(TerminalStyle style) {
+    const probe = 'mmmmmmmmmm';
+    final painter = TextPainter(text: TextSpan(text: probe, style: style.toTextStyle()), textDirection: TextDirection.ltr)..layout();
+    final width = painter.width / probe.length;
+    painter.dispose();
+    return width;
+  }
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final mono = monoStyle(context);
+    // Bundled CaskaydiaMono Nerd Font (pubspec `Ashira Terminal`), so prompt icons
+    // (oh-my-posh, starship) render on every device, phones included.
+    final style = TerminalStyle(fontSize: 13, height: 1.2, fontFamily: 'Ashira Terminal', fontFamilyFallback: [...?mono.fontFamilyFallback]);
+    const padding = EdgeInsets.symmetric(horizontal: 12, vertical: 8);
+    Widget view() => TerminalView(
+          _terminal,
+          focusNode: _focus,
+          theme: _theme,
+          padding: padding,
+          textStyle: style,
+          cursorType: TerminalCursorType.block,
+        );
     return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
       if (_link != _Link.open)
         Padding(
@@ -303,20 +328,24 @@ class _TerminalPaneState extends State<_TerminalPane> {
           ]),
         ),
       Expanded(
-        child: TerminalView(
-          _terminal,
-          focusNode: _focus,
-          theme: _theme,
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-          // Bundled CaskaydiaMono Nerd Font (pubspec `Ashira Terminal`), so prompt icons
-          // (oh-my-posh, starship) render on every device, phones included.
-          textStyle: TerminalStyle(
-            fontSize: 13,
-            height: 1.2,
-            fontFamily: 'Ashira Terminal',
-            fontFamilyFallback: [...?mono.fontFamilyFallback],
-          ),
-          cursorType: TerminalCursorType.block,
+        // 设置 → 通用 → 终端: wrapping off gives the terminal a fixed wide width that scrolls
+        // sideways; the terminal still sizes its rows (and tells the PTY) from what it is given.
+        child: ListenableBuilder(
+          listenable: displayPrefs,
+          builder: (context, _) => displayPrefs.wrapTerminal
+              ? view()
+              : LayoutBuilder(
+                  builder: (context, box) => Scrollbar(
+                    child: SingleChildScrollView(
+                      scrollDirection: Axis.horizontal,
+                      child: SizedBox(
+                        width: (_cellWidth(style) * _noWrapCols + padding.horizontal).clamp(box.maxWidth, double.infinity),
+                        height: box.maxHeight,
+                        child: view(),
+                      ),
+                    ),
+                  ),
+                ),
         ),
       ),
     ]);

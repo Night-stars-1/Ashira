@@ -196,6 +196,8 @@ fn normalize_tag(tag: &str) -> String {
 
 /// Runs `ashira update [VERSION]`; returns the message to print.
 pub async fn run(requested: Option<&str>) -> Result<String, String> {
+    // A replaced file inside a container is lost with the container; the image is updated instead.
+    if in_container() { return Err(CONTAINER_UPDATE.into()); }
     let platform = PLATFORM.ok_or("这个平台没有预编译的 ashira-core，请从源码编译")?;
     let http = http()?;
     let tag = requested.map(normalize_tag);
@@ -445,11 +447,21 @@ async fn refresh() -> Option<String> {
     Some(tag)
 }
 
+/// Running from the Docker image (`ASHIRA_CONTAINER=1`): the image is the unit of update,
+/// so the program is never replaced in place, and a restart exits for Docker to start again.
+pub fn in_container() -> bool {
+    env::var_os("ASHIRA_CONTAINER").is_some_and(|value| value == "1")
+}
+
+/// What to do about a newer release where it cannot be installed in place.
+pub const CONTAINER_UPDATE: &str = "容器里请更新镜像：docker compose pull && docker compose up -d";
+
 /// Startup check (TUI and `--serve`): a one-line notice when a newer release exists.
 pub async fn notice() -> Option<String> {
     PLATFORM?;
     let latest = refresh().await?;
-    newer(&latest, CURRENT).then(|| format!("有新版本 {latest}（当前 v{CURRENT}），运行 `ashira update` 更新"))
+    let how = if in_container() { CONTAINER_UPDATE } else { "运行 `ashira update` 更新" };
+    newer(&latest, CURRENT).then(|| format!("有新版本 {latest}（当前 v{CURRENT}），{how}"))
 }
 
 /// The newer release tag from the last check, without touching the network; for `GET /v1`.

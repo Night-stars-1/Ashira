@@ -8,7 +8,7 @@ const viewKey = 'ashira.session'
 export function useAshira() {
   const status = ref<Status | null>(null)
   /** The server's version and newer release, from `GET /v1`; session views don't carry them. */
-  const server = ref<{ version: string; update: string | null; restartPending: boolean; web: Status['web'] }>({ version: '', update: null, restartPending: false, web: null })
+  const server = ref<{ version: string; update: string | null; restartPending: boolean; container: boolean; web: Status['web'] }>({ version: '', update: null, restartPending: false, container: false, web: null })
   const restarting = ref(false)
   const updating = ref(false)
   /** The server update's download while it runs, polled for the progress bar. */
@@ -51,7 +51,7 @@ export function useAshira() {
    *  `ashira update` on the server shows its restart button on pages already open. */
   async function refreshServer() {
     const service = await api.status()
-    server.value = { version: service.version, update: service.update, restartPending: service.restartPending, web: service.web }
+    server.value = { version: service.version, update: service.update, restartPending: service.restartPending, container: service.container, web: service.web }
   }
   const tree = ref<SessionNode[]>([])
   // Sessions with a turn running on the server, from the last list refresh.
@@ -430,7 +430,7 @@ export function useAshira() {
       listedAsking.value = listing.asking
       archive.value = listing.archive
       initialCwd.value = service.cwd
-      server.value = { version: service.version, update: service.update, restartPending: service.restartPending, web: service.web }
+      server.value = { version: service.version, update: service.update, restartPending: service.restartPending, container: service.container, web: service.web }
       if (mine !== view) return
       const ids = listing.tree.flatMap(function collect(node): string[] {
         return [...node.sessions.map((item) => item.id), ...node.children.flatMap(collect)]

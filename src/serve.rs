@@ -562,6 +562,8 @@ async fn status(hub: &Hub) -> Value {
         "version": crate::update::CURRENT,
         // A newer release tag the server can update to with `ashira update`, else null.
         "update": crate::update::cached(),
+        // A container is updated by pulling its image; its page offers no in-place update.
+        "container": crate::update::in_container(),
         // `ashira update` replaced the program while this one runs: a restart loads the new build.
         "restartPending": crate::update::replaced_since_start(),
         // `--web`: the version the served page is, so it can tell it is behind the core.

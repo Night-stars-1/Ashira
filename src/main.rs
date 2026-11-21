@@ -427,6 +427,9 @@ fn run(args: Args, cwd: std::path::PathBuf, rt: &tokio::runtime::Runtime) -> Res
             mcp.shutdown().await;
         });
         if serve_result? {
+            // Docker (`restart: unless-stopped`) starts the container again; a child started
+            // here would die with this process, the container's main one.
+            if update::in_container() { return Ok(ExitCode::from(RESTART_EXIT)); }
             relaunch()?;
         }
         return Ok(ExitCode::SUCCESS);
@@ -450,6 +453,8 @@ fn run(args: Args, cwd: std::path::PathBuf, rt: &tokio::runtime::Runtime) -> Res
 
 /// Marks the process `relaunch` starts, so it waits for the port its parent is releasing.
 const RESTARTED: &str = "ASHIRA_RESTARTED";
+/// Exit status of a container's requested restart; non-zero so `restart: on-failure` restarts too.
+const RESTART_EXIT: u8 = 75;
 
 /// `POST /v1/restart`: starts the program now on disk (the updated build) with the same
 /// arguments, environment and directory. Its output goes where this process's went when that

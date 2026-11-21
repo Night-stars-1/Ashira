@@ -111,6 +111,7 @@ class Status {
     this.version = '',
     this.update,
     this.restartPending = false,
+    this.container = false,
   });
   factory Status.fromJson(Object? json) {
     final m = asMap(json);
@@ -128,6 +129,7 @@ class Status {
       version: str(m['version']),
       update: optStr(m['update']),
       restartPending: m['restartPending'] == true,
+      container: m['container'] == true,
     );
   }
   final String cwd, sessionId;
@@ -142,6 +144,8 @@ class Status {
   final String? update;
   /// `ashira update` replaced the program while it runs; a restart loads the new build.
   final bool restartPending;
+  /// Running from the Docker image: updated by pulling the image, never in place.
+  final bool container;
 
   Status copyWith({String? model, String? modelName, int? context, Statistics? statistics}) => Status(
         cwd: cwd,
@@ -157,6 +161,7 @@ class Status {
         version: version,
         update: update,
         restartPending: restartPending,
+        container: container,
       );
 }
 

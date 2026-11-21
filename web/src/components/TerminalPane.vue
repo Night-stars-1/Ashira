@@ -5,6 +5,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
 import { Button } from '@/components/ui/button'
 import { streamUrl } from '@/lib/api'
+import { NO_WRAP_COLS, wrapTerminal } from '@/lib/display'
 
 /** One shell: its own WebSocket, so its own PTY on the server. */
 const props = defineProps<{ sessionId: string; active: boolean }>()
@@ -27,9 +28,17 @@ function sendSize() {
   }
 }
 
+/** Wrapping: columns fit the pane. Off: at least `NO_WRAP_COLS`, scrolled sideways, so the
+ *  shell lays long lines out on one row; a row is kept back for the horizontal scrollbar. */
 function measure() {
-  if (!props.active || !host.value?.clientWidth || !host.value.clientHeight) return
-  fit?.fit()
+  if (!props.active || !host.value?.clientWidth || !host.value.clientHeight || !terminal || !fit) return
+  if (wrapTerminal.value) fit.fit()
+  else {
+    const fitted = fit.proposeDimensions()
+    if (fitted && Number.isFinite(fitted.cols) && Number.isFinite(fitted.rows)) {
+      terminal.resize(Math.max(fitted.cols, NO_WRAP_COLS), Math.max(1, fitted.rows - 1))
+    }
+  }
   sendSize()
 }
 
@@ -97,6 +106,11 @@ watch(() => props.active, async (active) => {
   if (state.value === 'open') terminal?.focus()
 })
 
+watch(wrapTerminal, async () => {
+  await nextTick()
+  measure()
+})
+
 onBeforeUnmount(() => {
   resize?.disconnect()
   const conn = socket
@@ -114,6 +128,6 @@ onBeforeUnmount(() => {
       <p v-else role="status" class="min-w-0 flex-1">{{ error }}</p>
       <Button v-if="state === 'closed'" size="sm" variant="outline" type="button" @click="connect">重新连接</Button>
     </div>
-    <div ref="host" class="min-h-0 flex-1 overflow-hidden px-3 py-2" />
+    <div ref="host" class="min-h-0 flex-1 px-3 py-2" :class="wrapTerminal ? 'overflow-hidden' : 'overflow-x-auto overflow-y-hidden'" />
   </div>
 </template>

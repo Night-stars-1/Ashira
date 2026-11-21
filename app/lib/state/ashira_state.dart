@@ -24,6 +24,8 @@ class AshiraState extends ChangeNotifier {
   String serverVersion = '';
   String? serverUpdate;
   bool restartPending = false;
+  /// The server runs from the Docker image: it is updated by pulling the image.
+  bool serverInContainer = false;
   bool restarting = false;
   bool updating = false;
   /// The server update's download while it runs, polled for the progress bar.
@@ -109,6 +111,7 @@ class AshiraState extends ChangeNotifier {
     serverVersion = service.version;
     serverUpdate = service.update;
     restartPending = service.restartPending;
+    serverInContainer = service.container;
   }
 
   /// Re-reads the server-wide facts, so an `ashira update` on the server shows its restart

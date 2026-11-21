@@ -185,6 +185,26 @@ class Bordered extends StatelessWidget {
   }
 }
 
+/// A settings group's card, Chrome-style: filled, rounded, no border, rows split by a
+/// hairline; it sits under a small heading on the page background.
+class SettingsCard extends StatelessWidget {
+  const SettingsCard({super.key, required this.children});
+  final List<Widget> children;
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return DecoratedBox(
+      decoration: BoxDecoration(color: scheme.muted.withValues(alpha: .6), borderRadius: BorderRadius.circular(radius + 4)),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        for (final (index, child) in children.indexed) ...[
+          if (index > 0) Divider(height: 1, color: scheme.border.withValues(alpha: .6)),
+          Padding(padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14), child: child),
+        ],
+      ]),
+    );
+  }
+}
+
 /// Label on the left, value on the right; a row inside [Bordered].
 class InfoRow extends StatelessWidget {
   const InfoRow(this.label, this.value, {super.key});

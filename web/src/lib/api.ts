@@ -105,6 +105,8 @@ export type Status = UsageStatistics & {
   update: string | null
   /** `ashira update` replaced the program while it runs; a restart loads the new build. */
   restartPending: boolean
+  /** Running from the Docker image: updated by pulling the image, never in place. */
+  container: boolean
   /** Set when the server hosts this page with `--web`: the release the folder holds (null if copied by hand). */
   web: { version: string | null } | null
   cwd: string
@@ -277,6 +279,7 @@ function status(body: unknown): Status {
     version: text(value.version),
     update: typeof value.update === 'string' ? value.update : null,
     restartPending: value.restartPending === true,
+    container: value.container === true,
     web: value.web && typeof value.web === 'object' ? { version: text(record(value.web).version) || null } : null,
     cwd: text(value.cwd),
     sessionId: text(value.sessionId),

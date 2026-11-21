@@ -1,0 +1,31 @@
+# Ashira server with its web client: http://<host>:8787
+#
+#   1. Put a long random token in .env next to this file:  ASHIRA_API_TOKEN=...
+#   2. docker compose up -d
+#   3. Open the page and enter the same token.
+#
+# Update: docker compose pull && docker compose up -d
+# (the in-app 更新 button is off in the container; the image is what gets updated).
+services:
+  ashira:
+    image: ghcr.io/night-stars-1/ashira:latest
+    container_name: ashira
+    restart: unless-stopped
+    ports:
+      - "8787:8787"
+    environment:
+      # Required: clients send it as a Bearer token.
+      ASHIRA_API_TOKEN: ${ASHIRA_API_TOKEN:?set ASHIRA_API_TOKEN in .env}
+      # 1 turns on the web/App terminal: anyone with the token gets a shell in the container.
+      ASHIRA_WEB_TERMINAL: ${ASHIRA_WEB_TERMINAL:-0}
+      TZ: ${TZ:-Asia/Shanghai}
+    volumes:
+      # config.yml, models.yml, sessions and memory.
+      - ashira-data:/data
+      # Projects the AI works on. To edit a host folder instead, replace this line with
+      # e.g. `- ./projects:/workspace` and give it to uid 1000 (`sudo chown -R 1000:1000 projects`).
+      - ashira-workspace:/workspace
+
+volumes:
+  ashira-data:
+  ashira-workspace:

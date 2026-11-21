@@ -66,6 +66,7 @@ class AboutSettings extends StatelessWidget {
                   FilledButton(onPressed: busy ? null : (ready ? appUpdate.install : appUpdate.download), child: Text(_actionLabel())),
                 ],
               ],
+              below: appUpdate.progress != null ? _ProgressBar(share: appUpdate.progress! > 0 ? appUpdate.progress : null) : null,
             ),
             _Row(
               title: '服务端',
@@ -75,14 +76,17 @@ class AboutSettings extends StatelessWidget {
                   const StatusTag('已更新，待重启', accent: true),
                   const SizedBox(width: 8),
                   FilledButton(onPressed: state.restarting ? null : state.restartServer, child: Text(state.restarting ? '重启中…' : '重启')),
-                ] else if (serverBehind != null) ...[
+                ] else if (serverBehind != null && state.serverInContainer)
+                  // A container is updated by pulling its image; nothing to press here.
+                  Tooltip(message: 'docker compose pull && docker compose up -d', child: StatusTag('可更新到 $serverBehind，请拉取新镜像', accent: true))
+                else if (serverBehind != null) ...[
                   StatusTag('可更新到 $serverBehind', accent: true),
                   const SizedBox(width: 8),
                   FilledButton(onPressed: state.updating ? null : state.updateServer, child: Text(state.updating ? '更新中…' : '更新')),
                 ] else if (state.serverVersion.isNotEmpty)
                   const StatusTag('已是最新'),
               ],
-              below: state.updating ? _UpdateBar(progress: state.updateProgress) : null,
+              below: state.updating ? _ProgressBar(share: _share(state.updateProgress)) : null,
             ),
           ]),
           if (appUpdate.latestNotes.isNotEmpty) ...[
@@ -104,12 +108,17 @@ class AboutSettings extends StatelessWidget {
     );
   }
 
-  /// 下载 → 下载中 N% → 安装 → 正在重启: installing waits for the user's tap.
+  /// 下载 → 下载中 → 安装 → 正在重启: installing waits for the user's tap; the bar below shows how far.
   static String _actionLabel() {
-    final progress = appUpdate.progress;
     if (appUpdate.restarting) return '正在重启…';
-    if (progress != null) return '下载中 ${(progress * 100).toStringAsFixed(0)}%';
+    if (appUpdate.progress != null) return '下载中…';
     return appUpdate.downloaded != null ? '安装' : '下载';
+  }
+
+  /// The server download's share, or null while its size is unknown.
+  static double? _share(UpdateProgress? download) {
+    final total = download?.total;
+    return download != null && total != null ? (download.received / total).clamp(0.0, 1.0) : null;
   }
 }
 
@@ -142,17 +151,15 @@ class _Row extends StatelessWidget {
   }
 }
 
-/// The server update's download, its percentage on the right; indeterminate until the size is known.
-class _UpdateBar extends StatelessWidget {
-  const _UpdateBar({required this.progress});
-  final UpdateProgress? progress;
+/// A download under its row, its percentage on the right; `share` null spins indeterminately.
+class _ProgressBar extends StatelessWidget {
+  const _ProgressBar({required this.share});
+  final double? share;
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final download = progress;
-    final total = download?.total;
-    final share = download != null && total != null ? (download.received / total).clamp(0.0, 1.0) : null;
+    final share = this.share;
     return Row(children: [
       Expanded(
         child: ClipRRect(
