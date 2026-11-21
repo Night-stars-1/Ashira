@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import 'image_viewer.dart';
 import 'theme.dart';
 
 /// Maps a workspace-relative image path to its `/raw` URL for the session shown below it.
@@ -37,14 +38,7 @@ class WorkspaceImage extends StatelessWidget {
       message: path,
       child: InkWell(
         borderRadius: BorderRadius.circular(radius),
-        onTap: () => showDialog<void>(
-          context: context,
-          builder: (context) => Dialog(
-            insetPadding: const EdgeInsets.all(24),
-            clipBehavior: Clip.antiAlias,
-            child: InteractiveViewer(maxScale: 6, child: Image.network(url, fit: BoxFit.contain)),
-          ),
-        ),
+        onTap: () => showImageViewer(context, NetworkImage(url), label: path),
         child: ConstrainedBox(
           constraints: BoxConstraints(maxHeight: maxHeight),
           child: ClipRRect(

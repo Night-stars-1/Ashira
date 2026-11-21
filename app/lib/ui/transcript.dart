@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 
 import '../api/models.dart';
 import '../state/display_prefs.dart';
+import 'image_viewer.dart';
 import 'markdown.dart';
 import 'text_file_card.dart';
 import 'theme.dart';
@@ -394,20 +395,50 @@ class _ReasoningState extends State<_Reasoning> {
   }
 }
 
-class _DataImage extends StatelessWidget {
+/// An image the user sent; a tap shows it full screen.
+class _DataImage extends StatefulWidget {
   const _DataImage(this.src);
   final String src;
+
+  @override
+  State<_DataImage> createState() => _DataImageState();
+}
+
+class _DataImageState extends State<_DataImage> {
+  // Decoded once, not on every rebuild of the transcript.
+  late MemoryImage? _image = _decode(widget.src);
+
+  static MemoryImage? _decode(String src) {
+    final comma = src.indexOf(',');
+    if (!src.startsWith('data:') || comma < 0) return null;
+    try {
+      return MemoryImage(base64Decode(src.substring(comma + 1)));
+    } on FormatException {
+      return null;
+    }
+  }
+
+  @override
+  void didUpdateWidget(_DataImage old) {
+    super.didUpdateWidget(old);
+    if (old.src != widget.src) _image = _decode(widget.src);
+  }
+
   @override
   Widget build(BuildContext context) {
-    final comma = src.indexOf(',');
-    if (!src.startsWith('data:') || comma < 0) return const SizedBox.shrink();
+    final image = _image;
+    if (image == null) return const SizedBox.shrink();
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
-      child: ClipRRect(
+      child: InkWell(
         borderRadius: BorderRadius.circular(12),
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxHeight: 240),
-          child: Image.memory(base64Decode(src.substring(comma + 1)), fit: BoxFit.contain, gaplessPlayback: true),
+        onTap: () => showImageViewer(context, image),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(12),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxHeight: 240),
+            child: Image(image: image, fit: BoxFit.contain, gaplessPlayback: true),
+          ),
         ),
       ),
     );
@@ -536,14 +567,7 @@ class _ReadImageState extends State<_ReadImage> {
         message: widget.label,
         child: InkWell(
           borderRadius: BorderRadius.circular(radius),
-          onTap: () => showDialog<void>(
-            context: context,
-            builder: (context) => Dialog(
-              insetPadding: const EdgeInsets.all(24),
-              clipBehavior: Clip.antiAlias,
-              child: InteractiveViewer(maxScale: 6, child: Image.memory(bytes, fit: BoxFit.contain, gaplessPlayback: true)),
-            ),
-          ),
+          onTap: () => showImageViewer(context, MemoryImage(bytes), label: widget.label),
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxHeight: 256),
             child: ClipRRect(borderRadius: BorderRadius.circular(radius), child: Image.memory(bytes, fit: BoxFit.contain, gaplessPlayback: true)),

@@ -18,6 +18,18 @@ const _well = OutlineInputBorder(borderRadius: BorderRadius.all(Radius.circular(
 const _maxImageBytes = 1500000; // 2,000,000 base64 characters in the API.
 const _maxTextBytes = 8 * 1024 * 1024; // the API's request body limit.
 const _types = {'png': 'image/png', 'jpg': 'image/jpeg', 'jpeg': 'image/jpeg', 'gif': 'image/gif', 'webp': 'image/webp'};
+/// Longest side of a gallery photo once picked; models downscale past this anyway.
+const _imageEdge = 1568.0;
+
+/// The image type from its leading bytes, which the server checks against what it is told.
+String? _sniff(Uint8List bytes) {
+  bool starts(List<int> magic, [int at = 0]) => bytes.length >= at + magic.length && [for (var i = 0; i < magic.length; i++) bytes[at + i] == magic[i]].every((same) => same);
+  if (starts([0x89, 0x50, 0x4E, 0x47])) return 'image/png';
+  if (starts([0xFF, 0xD8, 0xFF])) return 'image/jpeg';
+  if (starts([0x47, 0x49, 0x46, 0x38])) return 'image/gif';
+  if (starts([0x52, 0x49, 0x46, 0x46]) && starts([0x57, 0x45, 0x42, 0x50], 8)) return 'image/webp';
+  return null;
+}
 
 /// A paste this long becomes an attached file instead of flooding the input.
 const _pasteLines = 12;
@@ -106,18 +118,20 @@ class _ComposerState extends State<Composer> {
     });
   }
 
-  /// Phones pick photos from the gallery.
+  /// Phones pick photos from the gallery. Camera photos run to several MB, past the 1.5 MB
+  /// a message image may be, so the picker scales them to a model-sized JPEG.
   Future<void> _pickImages() async {
     setState(() => _attachError = '');
     final List<XFile> files;
     try {
-      files = await ImagePicker().pickMultiImage(limit: _maxImages - _images.length);
+      files = await ImagePicker().pickMultiImage(limit: _maxImages - _images.length, maxWidth: _imageEdge, maxHeight: _imageEdge, imageQuality: 85);
     } on PlatformException catch (error) {
       setState(() => _attachError = '无法打开图片：${error.message ?? error.code}');
       return;
     }
     for (final file in files) {
-      _addImage(file.name, await file.readAsBytes());
+      // The picker re-encodes scaled photos; the name may keep the original (e.g. `.heic`).
+      _addImage(file.name, await file.readAsBytes(), mediaType: file.mimeType);
     }
     if (mounted) setState(() {});
   }
@@ -150,9 +164,9 @@ class _ComposerState extends State<Composer> {
     if (mounted) setState(() {});
   }
 
-  void _addImage(String name, Uint8List bytes) {
+  void _addImage(String name, Uint8List bytes, {String? mediaType}) {
     final extension = name.contains('.') ? name.split('.').last.toLowerCase() : '';
-    final type = _types[extension];
+    final type = _sniff(bytes) ?? (_types.containsValue(mediaType) ? mediaType : null) ?? _types[extension];
     if (_images.length >= _maxImages) {
       _attachError = '最多添加 $_maxImages 张图片。';
     } else if (type == null) {

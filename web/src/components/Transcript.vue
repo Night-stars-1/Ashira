@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button'
 import { ArrowDown, Bot, ChevronDown, ChevronRight, ChevronUp, LoaderCircle } from '@lucide/vue'
 import Markdown from '@/components/Markdown.vue'
 import ToolOutput from '@/components/ToolOutput.vue'
+import ImageViewer from '@/components/ImageViewer.vue'
 import WorkspaceImage from '@/components/WorkspaceImage.vue'
 import TextFileCard from '@/components/TextFileCard.vue'
 import { generatedImages, type ReplyMetrics } from '@/lib/api'
@@ -21,6 +22,9 @@ export type Block =
 const props = defineProps<{ blocks: Block[]; activity?: string }>()
 const emit = defineEmits<{ openAgent: [id: string] }>()
 const content = ref<HTMLElement | null>(null)
+/** A sent picture opened full screen. */
+const viewing = ref<{ src: string; alt: string } | null>(null)
+const viewerOpen = computed({ get: () => viewing.value !== null, set: (open) => { if (!open) viewing.value = null } })
 
 // Long pasted messages fold to a preview; the full text stays one click away.
 const foldLines = 12
@@ -169,8 +173,10 @@ watch(content, (body, _previous, onCleanup) => {
       <article v-for="row in rows" :key="row.key" class="flex flex-col gap-2">
         <div v-if="'block' in row && row.block.kind === 'user'" class="ml-auto flex max-w-[85%] flex-col items-end gap-2">
           <figure v-for="(src, imageIndex) in row.block.images || []" :key="imageIndex" class="relative max-w-full">
-            <img :src="src" :alt="`图片 ${imageIndex + 1}`" class="max-h-64 rounded-xl" />
-            <figcaption class="absolute top-1 left-1 rounded bg-background px-1.5 py-0.5 text-xs font-medium text-foreground">图片 {{ imageIndex + 1 }}</figcaption>
+            <button type="button" class="block max-w-full cursor-zoom-in" @click="viewing = { src, alt: `图片 ${imageIndex + 1}` }">
+              <img :src="src" :alt="`图片 ${imageIndex + 1}`" class="max-h-64 rounded-xl" />
+            </button>
+            <figcaption class="pointer-events-none absolute top-1 left-1 rounded bg-background px-1.5 py-0.5 text-xs font-medium text-foreground">图片 {{ imageIndex + 1 }}</figcaption>
           </figure>
           <ul v-if="row.block.files?.length" aria-label="附带的文本文件" class="flex max-w-full flex-wrap justify-end gap-2">
             <li v-for="(file, fileIndex) in row.block.files" :key="fileIndex" class="max-w-full"><TextFileCard :file="file" /></li>
@@ -258,5 +264,6 @@ watch(content, (body, _previous, onCleanup) => {
       </Button>
     </Transition>
   </div>
+  <ImageViewer v-if="viewing" v-model:open="viewerOpen" :src="viewing.src" :alt="viewing.alt" />
   </div>
 </template>
