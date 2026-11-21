@@ -1,21 +1,30 @@
 name: Release
 
 # Publishing a GitHub Release builds every target and attaches the files to it.
-# Running it by hand builds the same files as workflow artifacts, without a release.
+# Running it by hand builds the same files as workflow artifacts, without a release; with
+# `release` set (e.g. v0.2.10) it only rebuilds that release's image from its attached files.
 on:
   release:
     types: [published]
   workflow_dispatch:
+    inputs:
+      release:
+        description: Rebuild only the Docker image of this published release (e.g. v0.2.10)
+        required: false
+        default: ''
 
 permissions:
   contents: write
 
 env:
   # Tag like v1.2.3 → 1.2.3; manual runs use the version in the manifests.
-  VERSION: ${{ github.event_name == 'release' && github.event.release.tag_name || '' }}
+  VERSION: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.release || '' }}
+  # Set on a manual image-only rebuild: the release whose attached files go into the image.
+  IMAGE_ONLY: ${{ inputs.release || '' }}
 
 jobs:
   core:
+    if: inputs.release == '' || inputs.release == null
     name: ashira-core (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
     strategy:
@@ -64,6 +73,7 @@ jobs:
           path: dist/*
 
   web:
+    if: inputs.release == '' || inputs.release == null
     name: ashira-web
     runs-on: ubuntu-latest
     steps:
@@ -82,6 +92,7 @@ jobs:
           path: dist/*
 
   app:
+    if: inputs.release == '' || inputs.release == null
     name: ashira-app (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
     strategy:
@@ -162,22 +173,33 @@ jobs:
 
   docker:
     name: ghcr.io image
-    # Built from this run's linux-x64 core and web build, so it never compiles twice.
+    # Built from this run's linux-x64 core and web build, so it never compiles twice; an
+    # image-only rebuild takes them from the published release instead.
     needs: [core, web]
+    if: ${{ !cancelled() && (needs.core.result == 'success' && needs.web.result == 'success' || inputs.release != '' && inputs.release != null) }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/download-artifact@v8
+      - if: env.IMAGE_ONLY == ''
+        uses: actions/download-artifact@v8
         with:
           name: ashira-core-linux-x64
           path: artifacts/core
-      - uses: actions/download-artifact@v8
+      - if: env.IMAGE_ONLY == ''
+        uses: actions/download-artifact@v8
         with:
           name: ashira-web
           path: artifacts/web
+      - name: Release files
+        if: env.IMAGE_ONLY != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "$IMAGE_ONLY" -R "$GITHUB_REPOSITORY" -p 'ashira-core-*-linux-x64.tar.gz' -D artifacts/core
+          gh release download "$IMAGE_ONLY" -R "$GITHUB_REPOSITORY" -p 'ashira-web-*.zip' -D artifacts/web
       - name: Context
         run: |
           # The image's build context holds only the binary and the page (see .dockerignore).

@@ -19,9 +19,10 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 # A home of its own: data (config, sessions, memory) under /data, projects under /workspace.
-RUN useradd --create-home --uid 1000 --user-group --shell /bin/bash ashira \
- && userdel --remove ubuntu 2>/dev/null; \
-    mkdir -p /data /workspace \
+# The base image's `ubuntu` user holds uid 1000; it goes first so `ashira` can take it.
+RUN if id ubuntu >/dev/null 2>&1; then userdel --remove ubuntu; fi \
+ && useradd --create-home --uid 1000 --user-group --shell /bin/bash ashira \
+ && mkdir -p /data /workspace \
  && chown ashira:ashira /data /workspace
 
 COPY --chmod=755 ashira /usr/local/bin/ashira
