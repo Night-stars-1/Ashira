@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:archive/archive_io.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
@@ -23,8 +22,9 @@ class AppRelease {
 }
 
 /// In-app update: checks GitHub Releases for a newer App build, downloads it, and installs
-/// it only when asked. Android hands the APK to the system installer; Windows unpacks the
-/// zip and swaps it in with a small script once the App quits.
+/// it only when asked. Android hands the APK to the system installer; on the desktops a
+/// script waits for the App to quit, puts the new build in place (Windows: the installer,
+/// silently) and starts it again.
 class AppUpdate extends ChangeNotifier {
   String current = '';
   /// The latest release tag, once a check succeeded (newer or not).
@@ -38,10 +38,18 @@ class AppUpdate extends ChangeNotifier {
   double? progress;
   /// The finished download of [available], waiting for 安装.
   File? downloaded;
-  /// Shown after a Windows install: the App restarts into the new build.
+  /// Shown after a desktop install: the App restarts into the new build.
   bool restarting = false;
 
-  static bool get supported => !kIsWeb && (Platform.isAndroid || Platform.isWindows);
+  static bool get supported => !kIsWeb && (Platform.isAndroid || Platform.isWindows || Platform.isLinux || Platform.isMacOS);
+
+  /// The release file this platform installs.
+  static String get _suffix => switch (Platform.operatingSystem) {
+        'android' => '-android.apk',
+        'linux' => '-linux-x64.tar.gz',
+        'macos' => '-macos-universal.dmg',
+        _ => '-windows-x64-setup.exe',
+      };
 
   /// `quiet` skips errors (the start-up check); the settings button shows them.
   Future<void> check({bool quiet = false}) async {
@@ -57,7 +65,7 @@ class AppUpdate extends ChangeNotifier {
       final tag = release['tag_name'] as String? ?? '';
       latest = tag.isEmpty ? null : tag;
       latestNotes = release['body'] as String? ?? '';
-      final suffix = Platform.isAndroid ? '-android.apk' : '-windows-x64.zip';
+      final suffix = _suffix;
       final asset = (release['assets'] as List? ?? const []).cast<Map<String, dynamic>>()
           .where((asset) => (asset['name'] as String? ?? '').startsWith('ashira-app-') && (asset['name'] as String).endsWith(suffix))
           .firstOrNull;
@@ -109,8 +117,10 @@ class AppUpdate extends ChangeNotifier {
         // The system page answers when the user comes back; granted, the install goes on.
         if (!(await _channel.invokeMethod<bool>('canInstall') ?? false) && !(await _channel.invokeMethod<bool>('allowInstall') ?? false)) return;
         await _channel.invokeMethod('install', {'path': file.path});
-      } else {
+      } else if (Platform.isWindows) {
         await _swapWindows(file, file.parent);
+      } else {
+        await _swapUnix(file, file.parent);
       }
     } on _Notice catch (notice) {
       error = notice.message;
@@ -149,28 +159,61 @@ class AppUpdate extends ChangeNotifier {
     }
   }
 
-  /// Unpacks the release zip and runs a script that waits for this process to exit,
-  /// copies the new build over the install folder and starts it again.
-  Future<void> _swapWindows(File zip, Directory dir) async {
-    final unpacked = Directory('${dir.path}\\unpacked');
-    if (unpacked.existsSync()) unpacked.deleteSync(recursive: true);
-    await extractFileToDisk(zip.path, unpacked.path);
-    // The zip holds one folder (`ashira-app-vX-windows-x64`) with the build inside.
-    final root = unpacked.listSync().whereType<Directory>().firstOrNull ?? unpacked;
-    final exe = Platform.resolvedExecutable;
-    final install = File(exe).parent.path;
-    final script = File('${dir.path}\\swap.cmd');
+  /// Runs the downloaded installer silently once this process has quit, so it can replace
+  /// the running files; the installer starts the App again when it is done.
+  Future<void> _swapWindows(File setup, Directory dir) async {
+    final script = File('${dir.path}\\install.cmd');
     await script.writeAsString([
       '@echo off',
       ':wait',
       'tasklist /FI "PID eq $pid" | find "$pid" >nul && (timeout /t 1 /nobreak >nul & goto wait)',
-      'robocopy "${root.path}" "$install" /E /NFL /NDL /NJH /NJS /NP >nul',
-      'start "" "$exe"',
+      // Same folder it is installed in now; no wizard, no prompts, no restart of Windows.
+      '"${setup.path}" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /NOCANCEL "/DIR=${File(Platform.resolvedExecutable).parent.path}"',
     ].join('\r\n'));
     await Process.start('cmd.exe', ['/c', script.path], mode: ProcessStartMode.detached);
     restarting = true;
     notifyListeners();
     // Let the UI show 「正在重启」 before the files are replaced.
+    await Future<void>.delayed(const Duration(milliseconds: 600));
+    exit(0);
+  }
+
+  /// Linux and macOS: a script waits for this process to exit, puts the new build where this
+  /// one runs from, and starts it. Linux unpacks the release tarball over the install folder;
+  /// macOS copies `Ashira.app` out of the release disk image over the running bundle.
+  Future<void> _swapUnix(File archive, Directory dir) async {
+    final exe = Platform.resolvedExecutable;
+    // Linux: the folder holding `ashira_app`. macOS: the `.app` bundle three levels up.
+    final target = Platform.isMacOS ? File(exe).parent.parent.parent.path : File(exe).parent.path;
+    String q(String path) => "'${path.replaceAll("'", r"'\''")}'";
+    final staged = '${dir.path}/unpacked';
+    final lines = <String>[
+      '#!/bin/sh',
+      'set -e',
+      'while kill -0 $pid 2>/dev/null; do sleep 1; done',
+      'rm -rf ${q(staged)} && mkdir -p ${q(staged)}',
+      if (Platform.isLinux) ...[
+        'tar xzf ${q(archive.path)} -C ${q(staged)}',
+        // The tarball holds one folder (`ashira-app-vX-linux-x64`) with the bundle inside.
+        'src=\$(find ${q(staged)} -mindepth 1 -maxdepth 1 -type d | head -n 1)',
+        'for item in ashira_app data lib; do rm -rf ${q(target)}/"\$item"; cp -R "\$src/\$item" ${q(target)}/; done',
+        'exec ${q(exe)}',
+      ] else ...[
+        'mount=\$(mktemp -d)',
+        'hdiutil attach -nobrowse -readonly -mountpoint "\$mount" ${q(archive.path)} >/dev/null',
+        'rm -rf ${q('$target.new')} && cp -R "\$mount/Ashira.app" ${q('$target.new')}',
+        'hdiutil detach "\$mount" >/dev/null || true',
+        'rm -rf ${q(target)} && mv ${q('$target.new')} ${q(target)}',
+        // Downloaded files carry quarantine; the copy should open like the one it replaces.
+        'xattr -dr com.apple.quarantine ${q(target)} 2>/dev/null || true',
+        'exec open ${q(target)}',
+      ],
+    ];
+    final script = File('${dir.path}/install.sh');
+    await script.writeAsString('${lines.join('\n')}\n');
+    await Process.start('/bin/sh', [script.path], mode: ProcessStartMode.detached);
+    restarting = true;
+    notifyListeners();
     await Future<void>.delayed(const Duration(milliseconds: 600));
     exit(0);
   }

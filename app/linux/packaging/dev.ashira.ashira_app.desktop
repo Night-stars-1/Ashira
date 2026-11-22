@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Ashira
+Comment=Ashira coding agent client
+Exec=@EXEC@
+Icon=@ICON@
+Terminal=false
+Categories=Development;
+StartupWMClass=ashira_app
