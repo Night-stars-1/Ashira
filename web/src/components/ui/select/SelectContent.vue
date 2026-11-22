@@ -47,7 +47,8 @@ const forwarded = useForwardPropsEmits(delegatedProps, emits)
       <SelectViewport
         :data-position="position"
         :class="cn(
-          'data-[position=popper]:h-(--reka-select-trigger-height) data-[position=popper]:w-full data-[position=popper]:min-w-(--reka-select-trigger-width)',
+          // p-1 keeps the highlighted row off the menu's edges, like the combobox list.
+          'p-1 data-[position=popper]:h-(--reka-select-trigger-height) data-[position=popper]:w-full data-[position=popper]:min-w-(--reka-select-trigger-width)',
         )"
       >
         <slot />

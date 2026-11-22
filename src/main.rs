@@ -24,6 +24,7 @@ mod process_guard;
 mod model_config;
 mod serve;
 mod report;
+mod resume;
 mod question;
 mod render;
 mod responses;
@@ -71,7 +72,8 @@ USAGE:
 OPTIONS:
     -p, --print <PROMPT>   Run one prompt non-interactively and print the result
                            (reads the prompt from stdin when PROMPT is `-`)
-    -r, --resume [ID]      Resume the newest session here, or the one whose id starts with ID
+    -r, --resume [ID]      Pick a session here to resume (the newest one without a terminal),
+                           or resume the one whose id starts with ID
     -l, --list             List sessions for the current directory
     -m, --model <SELECTOR> provider/model-id[:level], or a bare model id
                            (default: the resumed session's model, then modelRoles.default)
@@ -235,7 +237,13 @@ fn run(args: Args, cwd: std::path::PathBuf, rt: &tokio::runtime::Runtime) -> Res
     };
     let registry = Registry::load();
     let (mut notices, warnings) = (Vec::new(), registry.warnings.clone());
-    let loaded = match &args.resume {
+    let loaded = match args.resume.as_deref() {
+        // Bare `--resume` in a terminal: pick from this folder's sessions. Print mode and the
+        // API server have no screen to pick on, so they keep resuming the newest one.
+        Some("") if args.print.is_none() && args.serve.is_none() && io::stdin().is_terminal() && io::stdout().is_terminal() => match resume::pick(&cwd)? {
+            Some(path) => Some(session::load(&path, &registry)?),
+            None => return Ok(ExitCode::SUCCESS),
+        },
         Some(id) => Some(session::load(&session::find(&cwd, id)?, &registry)?),
         None => None,
     };

@@ -352,6 +352,44 @@ pub fn list(cwd: &Path) -> Vec<(String, String)> {
     items.into_iter().map(|(_, id, p)| (id, p)).collect()
 }
 
+/// A session for the `ashira --resume` picker.
+pub struct Resumable {
+    pub path: PathBuf,
+    /// Your name, else the AI title, else the first message.
+    pub title: String,
+    /// The first message, shown under a title that differs from it.
+    pub prompt: String,
+    pub cwd: String,
+    pub modified: SystemTime,
+    pub bytes: u64,
+}
+
+/// Sessions to resume, newest first: those started in `cwd`, or every project's with `all`.
+/// Archived ones stay hidden, as in the web and App lists.
+pub fn resumable(cwd: &Path, all: bool) -> Vec<Resumable> {
+    let library = Library::load();
+    let dirs: Vec<PathBuf> = if all {
+        fs::read_dir(home().join("sessions")).map(|rd| rd.flatten().map(|entry| entry.path()).filter(|path| path.is_dir()).collect()).unwrap_or_default()
+    } else {
+        vec![project_dir(cwd)]
+    };
+    let mut items = Vec::new();
+    for dir in dirs {
+        let Ok(files) = fs::read_dir(&dir) else { continue };
+        for file in files.flatten() {
+            let path = file.path();
+            if path.extension().is_none_or(|ext| ext != "jsonl") { continue; }
+            let Ok(meta) = file.metadata() else { continue };
+            let Some(listing) = read_listing(&path, meta.modified().unwrap_or(UNIX_EPOCH)) else { continue };
+            if library.archived_sessions.contains(&listing.id) || library.archived_folders.contains(&listing.cwd) { continue; }
+            let title = library.titles.get(&listing.id).or_else(|| library.summaries.get(&listing.id)).cloned().unwrap_or_else(|| listing.prompt.clone());
+            items.push(Resumable { title, prompt: listing.prompt, cwd: listing.cwd, modified: listing.modified, bytes: meta.len(), path });
+        }
+    }
+    items.sort_by_key(|item| std::cmp::Reverse(item.modified));
+    items
+}
+
 struct ListedSession {
     id: String,
     prompt: String,
