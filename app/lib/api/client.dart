@@ -79,8 +79,8 @@ class AshiraClient {
   /// Downloads can take minutes, past the usual request timeout.
   Future<void> updateServer() => _send('POST', '/v1/update', body: const <String, dynamic>{}, timeout: const Duration(minutes: 10));
 
-  /// The running update's download, else null.
-  Future<UpdateProgress?> updateProgress() async => UpdateProgress.fromJson(asMap(await _get('/v1/update'))['download']);
+  /// The running update's step and download, else null.
+  Future<UpdateProgress?> updateProgress() async => UpdateProgress.fromJson(await _get('/v1/update'));
 
   /// The bash tool's shell: running now, saved in config.yml, and what a restart would use.
   Future<ShellStatus> shell() async => ShellStatus.fromJson(await _get('/v1/shell'));

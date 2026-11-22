@@ -71,31 +71,53 @@ async fn release(http: &reqwest::Client, tag: Option<&str>) -> Result<Release, S
     serde_json::from_slice(&body).map_err(|e| format!("无法解析 Release 信息：{e}"))
 }
 
-/// The download in progress: bytes received and size if known. `GET /v1/update` reads it.
-static DOWNLOADING: std::sync::Mutex<Option<(u64, Option<u64>)>> = std::sync::Mutex::new(None);
+/// What `ashira update` is doing and, while it downloads, bytes received and size if known.
+/// `GET /v1/update` reads it for the page's progress line.
+static PROGRESS: std::sync::Mutex<Option<(Stage, u64, Option<u64>)>> = std::sync::Mutex::new(None);
 
-/// `(received, total)` of the download in progress, else `None`.
-pub fn downloading() -> Option<(u64, Option<u64>)> {
-    *DOWNLOADING.lock().ok()?
+/// A step of an update, shown beside its progress bar.
+#[derive(Clone, Copy)]
+pub enum Stage {
+    /// Asking GitHub for the latest release.
+    Checking,
+    /// Downloading the program; bytes and total ride along.
+    Downloading,
+    /// Checksum, unpack and swap in the new program.
+    Installing,
+    /// Downloading the `--web` page of the same release.
+    Web,
 }
 
-/// Publishes one download's progress; cleared when dropped, even if the download is abandoned.
-struct Published;
-
-impl Published {
-    fn start(total: Option<u64>) -> Self {
-        if let Ok(mut slot) = DOWNLOADING.lock() { *slot = Some((0, total)); }
-        Self
-    }
-
-    fn received(&self, bytes: u64) {
-        if let Ok(mut slot) = DOWNLOADING.lock() && let Some(state) = slot.as_mut() { state.0 = bytes; }
+impl Stage {
+    pub fn as_str(self) -> &'static str {
+        match self { Self::Checking => "checking", Self::Downloading => "downloading", Self::Installing => "installing", Self::Web => "web" }
     }
 }
 
-impl Drop for Published {
+/// `(stage, received, total)` of the update in progress, else `None`.
+pub fn progress() -> Option<(Stage, u64, Option<u64>)> {
+    *PROGRESS.lock().ok()?
+}
+
+fn set_stage(stage: Stage) {
+    if let Ok(mut slot) = PROGRESS.lock() { *slot = Some((stage, 0, None)); }
+}
+
+/// Clears the shown stage when an update ends, however it ends.
+struct Tracked;
+
+impl Drop for Tracked {
     fn drop(&mut self) {
-        if let Ok(mut slot) = DOWNLOADING.lock() { *slot = None; }
+        if let Ok(mut slot) = PROGRESS.lock() { *slot = None; }
+    }
+}
+
+/// A download's bytes so far and size, while the update is in a downloading stage; the
+/// checksum file fetched while installing does not count.
+fn published(received: u64, total: Option<u64>) {
+    if let Ok(mut slot) = PROGRESS.lock() && let Some(state) = slot.as_mut() && matches!(state.0, Stage::Downloading | Stage::Web) {
+        state.1 = received;
+        state.2 = total;
     }
 }
 
@@ -111,10 +133,10 @@ async fn download(http: &reqwest::Client, url: &str, progress: bool) -> Result<V
             let mut response = http.get(url).send().await?.error_for_status()?;
             let total = response.content_length();
             let mut body = Vec::with_capacity(total.unwrap_or(0) as usize);
-            let published = Published::start(total);
+            published(0, total);
             while let Some(chunk) = response.chunk().await? {
                 body.extend_from_slice(&chunk);
-                published.received(body.len() as u64);
+                published(body.len() as u64, total);
                 if let Some(bar) = &mut bar { bar.update(body.len() as u64, total, false); }
             }
             if let Some(bar) = &mut bar { bar.update(body.len() as u64, total, true); }
@@ -201,6 +223,8 @@ pub async fn run(requested: Option<&str>) -> Result<String, String> {
     let platform = PLATFORM.ok_or("这个平台没有预编译的 ashira-core，请从源码编译")?;
     let http = http()?;
     let tag = requested.map(normalize_tag);
+    let _tracked = Tracked;
+    set_stage(Stage::Checking);
     let release = release(&http, tag.as_deref()).await?;
     if tag.is_none() && !newer(&release.tag_name, CURRENT) {
         remember(&release.tag_name);
@@ -218,7 +242,9 @@ pub async fn run(requested: Option<&str>) -> Result<String, String> {
     let asset = release.assets.iter().find(|a| a.name.starts_with("ashira-core-") && a.name.ends_with(&suffix))
         .ok_or_else(|| format!("{} 里没有 {platform} 版 ashira-core", release.tag_name))?;
     eprintln!("下载 {}", asset.name);
+    set_stage(Stage::Downloading);
     let archive = download(&http, &asset.browser_download_url, true).await?;
+    set_stage(Stage::Installing);
     let sums = checksums(&http, &release).await?;
     verify(&archive, &asset.name, &sums)?;
     let binary = extract(&archive)?;
@@ -228,6 +254,7 @@ pub async fn run(requested: Option<&str>) -> Result<String, String> {
     let mut message = format!("已更新到 {}（{}）", release.tag_name, target.display());
     // The page follows the core: a newer page may call routes an older core lacks.
     if let Some(dir) = crate::config::web_dir() {
+        set_stage(Stage::Web);
         match install_web_from(&http, &release, &sums, &dir).await {
             Ok(()) => message.push_str(&format!("\n网页已更新到 {}（{}）", release.tag_name, dir.display())),
             Err(error) => message.push_str(&format!("\n网页没有更新：{error}")),

@@ -386,9 +386,12 @@ async fn dispatch(hub: &Arc<Hub>, method: &str, path: &str, query: &str, body: &
             Ok(Response::Json { status: 200, body: json!({"ok": true}) })
         }
         ("GET", "/v1/update") => {
-            // What `POST /v1/update` is doing, polled for its progress bar.
-            let download = crate::update::downloading().map(|(received, total)| json!({"received": received, "total": total}));
-            Ok(Response::Json { status: 200, body: json!({"updating": hub.updating.load(Ordering::Acquire), "download": download}) })
+            // What `POST /v1/update` is doing, polled for its progress line: the step, and
+            // while a file downloads, bytes so far and size.
+            let progress = crate::update::progress();
+            let download = progress.filter(|&(_, received, total)| received > 0 || total.is_some()).map(|(_, received, total)| json!({"received": received, "total": total}));
+            let stage = progress.map(|(stage, ..)| stage.as_str());
+            Ok(Response::Json { status: 200, body: json!({"updating": hub.updating.load(Ordering::Acquire), "stage": stage, "download": download}) })
         }
         ("POST", "/v1/update") => {
             // The same as `ashira update` on the server: the latest release replaces this

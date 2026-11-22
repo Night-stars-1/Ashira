@@ -10,11 +10,15 @@ import { checkWebUpdate, serverBehind as behind, webUpdate, webVersion } from '@
 const props = defineProps<{ serverVersion: string; serverUpdate: string | null; hosted: boolean; restartPending: boolean; container: boolean; restarting: boolean; updating: boolean; updateProgress: UpdateProgress | null }>()
 const emit = defineEmits<{ restart: []; update: [] }>()
 
-/** The bar under the server row while it updates: a share when the size is known, else indeterminate. */
+const stageLabels = { checking: '正在查询版本', downloading: '正在下载', installing: '正在校验并替换', web: '正在更新网页' } as const
+
+/** The line under the server row while it updates: the step, and a share while a file downloads. */
 const progress = computed(() => {
   if (!props.updating) return null
-  const download = props.updateProgress
-  return { percent: download?.total ? Math.min(100, Math.round((download.received / download.total) * 100)) : null }
+  const update = props.updateProgress
+  const downloading = update?.stage === 'downloading' || update?.stage === 'web'
+  const percent = downloading && update?.total ? Math.min(100, Math.round((update.received / update.total) * 100)) : null
+  return { label: update?.stage ? stageLabels[update.stage] : '正在开始', percent }
 })
 
 const releases = 'https://github.com/Night-stars-1/Ashira/releases'
@@ -82,11 +86,12 @@ const notesOpen = ref(false)
           <Badge v-else-if="serverVersion" variant="secondary">已是最新</Badge>
         </div>
         <div v-if="progress" class="flex items-center gap-3">
-          <div role="progressbar" aria-label="服务端更新进度" aria-valuemin="0" aria-valuemax="100" :aria-valuenow="progress.percent ?? undefined" class="h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-muted">
+          <div role="progressbar" :aria-label="`服务端更新：${progress.label}`" aria-valuemin="0" aria-valuemax="100" :aria-valuenow="progress.percent ?? undefined" class="relative h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-muted">
             <div v-if="progress.percent !== null" class="h-full rounded-full bg-primary transition-[width] duration-300 ease-out motion-reduce:transition-none" :style="{ width: `${progress.percent}%` }" />
-            <div v-else class="h-full w-1/3 rounded-full bg-primary motion-safe:animate-pulse" />
+            <!-- No share to show: a segment slides across so it does not read as half done. -->
+            <div v-else class="progress-sweep absolute inset-y-0 w-1/3 rounded-full bg-primary" />
           </div>
-          <span class="w-9 shrink-0 text-right text-xs text-muted-foreground tabular-nums">{{ progress.percent !== null ? `${progress.percent}%` : '' }}</span>
+          <span class="shrink-0 text-xs text-muted-foreground tabular-nums">{{ progress.percent !== null ? `${progress.label} ${progress.percent}%` : progress.label }}</span>
         </div>
       </li>
     </ul>
@@ -111,3 +116,16 @@ const notesOpen = ref(false)
     </a>
   </div>
 </template>
+
+<style scoped>
+.progress-sweep {
+  animation: progress-sweep 1.2s ease-in-out infinite;
+}
+@keyframes progress-sweep {
+  from { left: -33%; }
+  to { left: 100%; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .progress-sweep { animation: none; left: 0; width: 100%; opacity: 0.4; }
+}
+</style>

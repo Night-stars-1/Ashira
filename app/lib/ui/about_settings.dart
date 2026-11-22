@@ -86,7 +86,7 @@ class AboutSettings extends StatelessWidget {
                 ] else if (state.serverVersion.isNotEmpty)
                   const StatusTag('已是最新'),
               ],
-              below: state.updating ? _ProgressBar(share: _share(state.updateProgress)) : null,
+              below: state.updating ? _ProgressBar(share: _share(state.updateProgress), label: _stage(state.updateProgress)) : null,
             ),
           ]),
           if (appUpdate.latestNotes.isNotEmpty) ...[
@@ -115,11 +115,20 @@ class AboutSettings extends StatelessWidget {
     return appUpdate.downloaded != null ? '安装' : '下载';
   }
 
-  /// The server download's share, or null while its size is unknown.
-  static double? _share(UpdateProgress? download) {
-    final total = download?.total;
-    return download != null && total != null ? (download.received / total).clamp(0.0, 1.0) : null;
+  /// A share while a file downloads, else null (the bar then sweeps instead of sitting half full).
+  static double? _share(UpdateProgress? update) {
+    final total = update?.total;
+    final downloading = update?.stage == 'downloading' || update?.stage == 'web';
+    return update != null && downloading && total != null ? (update.received / total).clamp(0.0, 1.0) : null;
   }
+
+  static String _stage(UpdateProgress? update) => switch (update?.stage) {
+        'checking' => '正在查询版本',
+        'downloading' => '正在下载',
+        'installing' => '正在校验并替换',
+        'web' => '正在更新网页',
+        _ => '正在开始',
+      };
 }
 
 class _Row extends StatelessWidget {
@@ -151,15 +160,19 @@ class _Row extends StatelessWidget {
   }
 }
 
-/// A download under its row, its percentage on the right; `share` null spins indeterminately.
+/// A download under its row with its percentage on the right, after `label` when there is
+/// one (the server update's step); `share` null sweeps indeterminately.
 class _ProgressBar extends StatelessWidget {
-  const _ProgressBar({required this.share});
+  const _ProgressBar({required this.share, this.label});
   final double? share;
+  final String? label;
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final share = this.share;
+    final percent = share == null ? '' : '${(share * 100).round()}%';
+    final text = [?label, if (percent.isNotEmpty) percent].join(' ');
     return Row(children: [
       Expanded(
         child: ClipRRect(
@@ -167,10 +180,11 @@ class _ProgressBar extends StatelessWidget {
           child: LinearProgressIndicator(value: share, minHeight: 6, backgroundColor: scheme.surfaceContainerHighest, color: scheme.primary),
         ),
       ),
-      SizedBox(
-        width: 44,
+      const SizedBox(width: 12),
+      ConstrainedBox(
+        constraints: BoxConstraints(minWidth: label == null ? 32 : 0),
         child: Text(
-          share == null ? '' : '${(share * 100).round()}%',
+          text,
           textAlign: TextAlign.right,
           style: TextStyle(fontSize: 12, color: scheme.mutedForeground, fontFeatures: const [FontFeature.tabularFigures()]),
         ),

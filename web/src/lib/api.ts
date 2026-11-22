@@ -133,8 +133,8 @@ export type McpServer = { name: string; status: string; kind: string; source: st
 export type MemoryEntry = { key: string; value: string }
 export type McpForm = { name: string; type: 'stdio' | 'http' | 'sse'; command: string; args: string; url: string; headers: string }
 export type ModelItem = { selector: string; provider: string; id: string; name: string | null; context: number; input: number | null; output: number | null; efforts: string[]; fast: boolean }
-/** A server update's download: bytes so far, and its size when known. */
-export type UpdateProgress = { received: number; total: number | null }
+/** A server update's step, and while a file downloads, bytes so far and its size when known. */
+export type UpdateProgress = { stage: 'checking' | 'downloading' | 'installing' | 'web' | null; received: number; total: number | null }
 /** `source`: where the running shell came from (`env` = ASHIRA_SHELL, `config` = config.yml, `auto`). */
 export type ShellStatus = { current: string; source: 'env' | 'config' | 'auto'; configured: string | null; envOverride: string | null; problem: string | null; restartNeeded: boolean }
 
@@ -501,12 +501,13 @@ export const api = {
   },
   /** `ashira update` on the server: the latest release replaces its program; a restart switches to it. */
   updateServer: async () => text(record(await request('/v1/update', { method: 'POST' })).message),
-  /** The running update's download (`total` null when the size is unknown), else null. */
+  /** The running update's step and download (`total` null when the size is unknown), else null. */
   updateProgress: async (): Promise<UpdateProgress | null> => {
-    const download = record(await request('/v1/update')).download
-    if (!download || typeof download !== 'object') return null
-    const row = record(download)
-    return { received: number(row.received), total: metric(row.total) }
+    const body = record(await request('/v1/update'))
+    const stage = body.stage === 'checking' || body.stage === 'downloading' || body.stage === 'installing' || body.stage === 'web' ? body.stage : null
+    const download = body.download && typeof body.download === 'object' ? record(body.download) : null
+    if (!stage && !download) return null
+    return { stage, received: download ? number(download.received) : 0, total: download ? metric(download.total) : null }
   },
   /** The bash tool's shell: running now, saved in config.yml, and what a restart would use. */
   shell: async (): Promise<ShellStatus> => shellStatus(await request('/v1/shell')),

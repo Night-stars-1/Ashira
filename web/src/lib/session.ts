@@ -16,7 +16,7 @@ export function useAshira() {
   /** Has the server replace its program with the latest release; its restart button follows. */
   async function updateServer() {
     updating.value = true
-    // Between files (checksum, unpack, replace) nothing downloads: keep the last one shown.
+    // Polled for the step and download shown under the server row.
     const poll = setInterval(() => { api.updateProgress().then((progress) => { if (updating.value && progress) updateProgress.value = progress }, () => {}) }, 500)
     try {
       await api.updateServer()
