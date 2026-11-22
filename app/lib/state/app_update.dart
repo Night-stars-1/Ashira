@@ -232,7 +232,6 @@ List<int>? _parse(String version) {
   return [for (var i = 0; i < 3; i++) i < parts.length ? parts[i] ?? 0 : 0];
 }
 
-@visibleForTesting
 bool newer(String candidate, String current) {
   final a = _parse(candidate), b = _parse(current);
   if (a == null || b == null) return false;
