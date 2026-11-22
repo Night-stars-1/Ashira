@@ -71,6 +71,7 @@ class _AshiraAppState extends State<AshiraApp> {
       debugShowCheckedModeBanner: false,
       theme: buildTheme(Brightness.light),
       darkTheme: buildTheme(Brightness.dark),
+      builder: (_, child) => WindowResizeEdges(child: child!),
       home: _loading
           ? const Scaffold(body: Column(children: [WindowBar(), Expanded(child: Center(child: CircularProgressIndicator()))]))
           : state == null

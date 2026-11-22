@@ -68,8 +68,10 @@ class SessionList extends StatelessWidget {
           child: SizedBox(
             height: 48,
             child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 12),
+              padding: const EdgeInsets.only(right: 12),
+              // As a column or a drawer, this header sits in the window's top-left corner.
               child: Row(crossAxisAlignment: CrossAxisAlignment.center, children: [
+                const TrafficLightsSpace(normal: 12),
                 // Even leading puts the glyphs on the row's center line, level with the dot and «.
                 const Text('Ashira', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w500, height: 1, leadingDistribution: TextLeadingDistribution.even)),
                 const SizedBox(width: 8),

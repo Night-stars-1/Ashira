@@ -7,6 +7,7 @@ import 'format.dart';
 import 'theme.dart';
 import 'transcript.dart';
 import 'widgets.dart';
+import 'window_frame.dart';
 import 'workspace_image.dart';
 
 String errorText(Object error, String fallback) => error is ApiException ? error.message : '$fallback：$error';
@@ -50,7 +51,7 @@ Future<T?> showPanel<T>(BuildContext context, {required String title, String? de
       ),
     ),
   );
-  if (size.width < 720) return Navigator.of(context).push<T>(MaterialPageRoute(fullscreenDialog: true, builder: (_) => page));
+  if (size.width < 720 && !desktopWindow) return Navigator.of(context).push<T>(MaterialPageRoute(fullscreenDialog: true, builder: (_) => page));
   return showDialog<T>(
     context: context,
     builder: (_) => Dialog(

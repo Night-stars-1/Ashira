@@ -228,7 +228,7 @@ Future<void> showFileEditor(BuildContext context, {required AshiraClient client,
   final editor = FileEditor(client: client, sessionId: sessionId, cwd: cwd, path: path);
   final size = MediaQuery.sizeOf(context);
   final bool? showFiles;
-  if (size.width < 720) {
+  if (size.width < 720 && !desktopWindow) {
     showFiles = await Navigator.of(context).push<bool>(MaterialPageRoute(fullscreenDialog: true, builder: (_) => editor));
   } else {
     showFiles = await showDialog<bool>(

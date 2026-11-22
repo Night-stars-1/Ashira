@@ -169,8 +169,10 @@ class _HomePageState extends State<HomePage> {
         final files = _files(windowButtons: filesShown);
         final header = WindowDrag(
           child: PanelHeader(
-            padding: EdgeInsets.only(left: wide ? (_sessionsOpen ? 24 : 12) : 4, right: filesShown || !customFrame ? (wide ? 24 : 4) : 0),
+            padding: EdgeInsets.only(right: filesShown || !customFrame ? (wide ? 24 : 4) : 0),
             children: [
+              // With the sessions column shut this header owns the window's top-left corner.
+              TrafficLightsSpace(normal: wide ? (_sessionsOpen ? 24 : 12) : 4, topLeft: !wide || !_sessionsOpen),
               if (!wide || !_sessionsOpen)
                 IconButton(
                   tooltip: wide ? '展开会话列表' : '会话列表',
