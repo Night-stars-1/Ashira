@@ -118,7 +118,7 @@ class _HomePageState extends State<HomePage> {
         activeId: state.shownId,
         marks: SessionMarks(running: state.running, asking: state.asking, naming: state.naming),
         connected: state.connected,
-        serverUpdate: state.serverUpdate,
+        serverBehind: () => state.serverBehind,
         restartPending: state.restartPending,
         restarting: state.restarting,
         onRestart: state.restartServer,

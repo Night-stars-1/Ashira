@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 
 import '../api/client.dart';
 import '../api/models.dart';
+import 'app_update.dart';
 import 'settings.dart';
 
 const _coordination = {'task', 'wait', 'task_status', 'task_cancel'};
@@ -23,6 +24,14 @@ class AshiraState extends ChangeNotifier {
   /// already replaced its program (a restart loads it); from `GET /v1`.
   String serverVersion = '';
   String? serverUpdate;
+
+  /// The release the server is behind: its own check (cached for a day on the server), else
+  /// the newer release the App found. Right after a release the server's check still says none.
+  String? get serverBehind {
+    if (serverUpdate != null) return serverUpdate;
+    final latest = appUpdate.latest;
+    return latest != null && serverVersion.isNotEmpty && newer(latest, serverVersion) ? latest : null;
+  }
   bool restartPending = false;
   /// The server runs from the Docker image: it is updated by pulling the image.
   bool serverInContainer = false;

@@ -5,7 +5,7 @@ import Markdown from '@/components/Markdown.vue'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import type { UpdateProgress } from '@/lib/api'
-import { checkWebUpdate, newer, webUpdate, webVersion } from '@/lib/update'
+import { checkWebUpdate, serverBehind as behind, webUpdate, webVersion } from '@/lib/update'
 
 const props = defineProps<{ serverVersion: string; serverUpdate: string | null; hosted: boolean; restartPending: boolean; container: boolean; restarting: boolean; updating: boolean; updateProgress: UpdateProgress | null }>()
 const emit = defineEmits<{ restart: []; update: [] }>()
@@ -20,9 +20,7 @@ const progress = computed(() => {
 const releases = 'https://github.com/Night-stars-1/Ashira/releases'
 const shown = (version: string) => (version ? `v${version.replace(/^v/, '')}` : '未知')
 
-/** Whether the server is behind the latest release we know of (its own check, else ours). */
-const serverBehind = computed(() => props.serverUpdate
-  || (webUpdate.latest && props.serverVersion && newer(webUpdate.latest.tag, props.serverVersion) ? webUpdate.latest.tag : null))
+const serverBehind = computed(() => behind(props.serverUpdate, props.serverVersion))
 
 /** A page the core serves (`--web`) is the core's own: it updates and restarts with it, so it has no row. */
 const webState = computed(() => {

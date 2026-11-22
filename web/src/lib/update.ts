@@ -74,3 +74,11 @@ export function newer(candidate: string, current: string): boolean {
   }
   return false
 }
+
+/** The release the server is behind: its own check (cached for a day on the server), else the
+ *  newer release this page found. Right after a release the server's check still says none. */
+export function serverBehind(serverUpdate: string | null, serverVersion: string): string | null {
+  if (serverUpdate) return serverUpdate
+  const latest = webUpdate.latest
+  return latest && serverVersion && newer(latest.tag, serverVersion) ? latest.tag : null
+}

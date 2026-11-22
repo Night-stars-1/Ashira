@@ -5,11 +5,13 @@ import SessionTree from '@/components/SessionTree.vue'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import type { SessionNode } from '@/lib/api'
-import { webUpdate } from '@/lib/update'
+import { serverBehind, webUpdate } from '@/lib/update'
 
-const props = defineProps<{ tree: SessionNode[]; activeId: string; running: Set<string>; asking: Set<string>; connected: boolean; update?: string | null; hosted?: boolean; restartPending?: boolean; restarting?: boolean; collapsible?: boolean }>()
-/** A page the core serves follows the core, so only a standalone page has its own update. */
-const webAvailable = computed(() => props.hosted ? null : webUpdate.available)
+const props = defineProps<{ tree: SessionNode[]; activeId: string; running: Set<string>; asking: Set<string>; connected: boolean; serverVersion: string; serverUpdate: string | null; hosted?: boolean; restartPending?: boolean; restarting?: boolean; collapsible?: boolean }>()
+const update = computed(() => serverBehind(props.serverUpdate, props.serverVersion))
+/** A page the core serves follows the core, so only a standalone page has its own update.
+ *  Until the server answers, whether this page is the core's own is unknown: no hint yet. */
+const webAvailable = computed(() => !props.serverVersion || props.hosted ? null : webUpdate.available)
 const emit = defineEmits<{ resume: [id: string]; alias: [path: string, name: string]; rename: [id: string, title: string]; archive: [kind: 'session' | 'folder', key: string]; fold: [path: string, folded: boolean]; create: []; settings: []; about: []; collapse: []; restart: [] }>()
 </script>
 

@@ -28,10 +28,7 @@ class AboutSettings extends StatelessWidget {
         final release = appUpdate.available;
         final busy = appUpdate.checking || appUpdate.progress != null || appUpdate.restarting;
         final ready = appUpdate.downloaded != null;
-        // The server's own check is cached for a day; the latest release the App just looked up counts too.
-        final latest = appUpdate.latest;
-        final serverBehind = state.serverUpdate
-            ?? (latest != null && state.serverVersion.isNotEmpty && newer(latest, state.serverVersion) ? latest : null);
+        final serverBehind = state.serverBehind;
         return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
           Row(children: [
             ClipRRect(borderRadius: BorderRadius.circular(12), child: Image.asset('assets/images/app_icon.png', width: 48, height: 48)),

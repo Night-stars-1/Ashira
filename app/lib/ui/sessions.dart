@@ -24,7 +24,7 @@ class SessionList extends StatelessWidget {
     required this.activeId,
     required this.marks,
     required this.connected,
-    this.serverUpdate,
+    required this.serverBehind,
     this.restartPending = false,
     this.restarting = false,
     this.onRestart,
@@ -41,8 +41,9 @@ class SessionList extends StatelessWidget {
   final String activeId;
   final SessionMarks marks;
   final bool connected;
-  /// A newer server release tag (`ashira update` installs it), else null.
-  final String? serverUpdate;
+  /// The newer server release (`ashira update` installs it), else null; read as the App's
+  /// own release check lands, since the server's check is cached for a day.
+  final String? Function() serverBehind;
   /// `ashira update` replaced the server's program; [onRestart] restarts it into the new build.
   final bool restartPending, restarting;
   final VoidCallback? onRestart;
@@ -130,12 +131,13 @@ class SessionList extends StatelessWidget {
           listenable: appUpdate,
           builder: (context, _) {
             final app = appUpdate.available;
-            if (app == null && serverUpdate == null) return const SizedBox.shrink();
-            final label = app != null && serverUpdate != null
+            final server = serverBehind();
+            if (app == null && server == null) return const SizedBox.shrink();
+            final label = app != null && server != null
                 ? 'App 和服务端有新版本'
                 : app != null
                     ? 'App 有新版本 ${app.tag}'
-                    : '服务端有新版本 $serverUpdate';
+                    : '服务端有新版本 $server';
             return Padding(
               padding: const EdgeInsets.fromLTRB(8, 0, 8, 4),
               child: Material(
