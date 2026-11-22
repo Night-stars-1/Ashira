@@ -810,7 +810,7 @@ fn push_subagent_results(blocks: &mut Vec<Value>, data: &str) {
             Some(error) => format!("{name}：{status}\n{error}"),
             None => format!("{name}：{status}"),
         };
-        blocks.push(json!({"kind": "note", "text": text, "error": error.is_some(), "agent": result["id"].as_str().unwrap_or("")}));
+        blocks.push(json!({"kind": "note", "text": text, "error": error.is_some(), "agent": result["id"].as_str().unwrap_or(""), "role": result["agent"].as_str().unwrap_or("task")}));
     }
 }
 
@@ -1225,7 +1225,7 @@ fn encode(shared: &Shared, routing: &mut Routing, event: Event) -> Option<Frame>
             if op.question.as_ref().is_some_and(|question| question.id == id) { op.question = None; }
             json!({"type": "question_cancelled", "id": id})
         }
-        Event::SubagentFinished(completion) => json!({"type": "subagent", "id": completion.identity.id, "name": completion.identity.name, "status": completion.status.as_str(), "error": completion.error.as_deref()}),
+        Event::SubagentFinished(completion) => json!({"type": "subagent", "id": completion.identity.id, "name": completion.identity.name, "role": completion.identity.role.as_str(), "status": completion.status.as_str(), "error": completion.error.as_deref()}),
         Event::PeerMessage(message) => json!({"type": "peer_message", "from": message.from_name, "body": clip(&message.body)}),
         Event::Usage(usage) => json!({"type": "usage", "usage": usage_json(usage)}),
         Event::Statistics(snapshot) => with_statistics(json!({"type": "statistics"}), snapshot),
@@ -1345,13 +1345,16 @@ fn read_subagent(id: &str) -> Result<Value, String> {
     }
     let dir = session::home().join("subagents").join(id);
     if !dir.is_dir() { return Err("没有这个子任务".into()); }
-    // A background shell command has no history; while it runs, its streamed output stands in for the report.
+    // A background shell command has no history; its streamed output is the whole view.
+    let messages = project_history(&read_history(&dir), None);
     let mut report = latest_report(&dir);
+    let shell = messages.is_empty() && dir.join("output.txt").is_file();
     if report.is_empty() && let Ok(output) = std::fs::read_to_string(dir.join("output.txt")) { report = output; }
     Ok(json!({
         "id": id,
+        "shell": shell,
         "report": cap_view(&report),
-        "messages": project_history(&read_history(&dir), None),
+        "messages": messages,
     }))
 }
 

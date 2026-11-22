@@ -207,6 +207,8 @@ export type AgentEvent = {
   tokens?: number
   statistics?: UsageStatistics
   agent?: string | null
+  /** `subagent`: the finished job's kind, `task`, `scout` or `shell` (a background command). */
+  role?: string
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -391,6 +393,7 @@ export function parseEvent(raw: string): AgentEvent | null {
     statistics: body.type === 'statistics' ? statistics(value) : undefined,
     question: body.type === 'question' ? questionRequest(value) ?? undefined : undefined,
     agent: typeof value.agent === 'string' ? value.agent : typeof value.id === 'string' ? value.id : null,
+    role: typeof value.role === 'string' ? value.role : undefined,
   }
 }
 
@@ -470,7 +473,7 @@ export const api = {
   browse: async (path = '') => browseListing(await request(`/v1/browse?path=${encodeURIComponent(path)}`)),
   subagent: async (id: string) => {
     const body = record(await request(`/v1/subagents?id=${encodeURIComponent(id)}`))
-    return { id: text(body.id), report: text(body.report), messages: body.messages }
+    return { id: text(body.id), shell: body.shell === true, report: text(body.report), messages: body.messages }
   },
   plugins: async () => text(record(await request('/v1/plugins')).text),
   mcp: async () => {

@@ -16,7 +16,7 @@ class Transcript extends StatefulWidget {
   const Transcript({super.key, required this.blocks, this.activity = '', this.onOpenAgent, this.emptyText});
   final List<Block> blocks;
   final String activity;
-  final void Function(String id)? onOpenAgent;
+  final void Function(String id, String? role)? onOpenAgent;
   final String? emptyText;
 
   @override
@@ -287,7 +287,7 @@ class _Activity extends StatelessWidget {
 class _BlockView extends StatelessWidget {
   const _BlockView({required this.block, this.onOpenAgent});
   final Block block;
-  final void Function(String id)? onOpenAgent;
+  final void Function(String id, String? role)? onOpenAgent;
 
   @override
   Widget build(BuildContext context) {
@@ -315,11 +315,20 @@ class _BlockView extends StatelessWidget {
             ]),
           ),
         );
-      case NoteBlock(:final text, :final error, :final agent):
+      case NoteBlock(:final text, :final error, :final agent, :final role):
         final color = error ? scheme.error : scheme.mutedForeground;
+        // A finished background job: `shell` is a command moved to the background, not a subagent.
+        final kind = switch (role) { 'shell' => '后台命令', 'scout' => '调研子任务', _ => '子任务' };
         final body = Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          if (agent != null) Padding(padding: const EdgeInsets.only(right: 8, top: 2), child: Icon(Icons.smart_toy_outlined, size: 16, color: color)),
-          Expanded(child: Text(text, style: TextStyle(fontSize: 14, color: color, height: 1.5))),
+          if (agent != null) Padding(padding: const EdgeInsets.only(right: 8, top: 2), child: Icon(role == 'shell' ? Icons.terminal : Icons.smart_toy_outlined, size: 16, color: color)),
+          Expanded(
+            child: agent == null
+                ? Text(text, style: TextStyle(fontSize: 14, color: color, height: 1.5))
+                : Text.rich(TextSpan(style: TextStyle(fontSize: 14, color: color, height: 1.5), children: [
+                    TextSpan(text: kind, style: const TextStyle(fontWeight: FontWeight.w500)),
+                    TextSpan(text: ' · $text'),
+                  ])),
+          ),
           if (agent != null) Text('查看', style: TextStyle(fontSize: 14, color: color, decoration: TextDecoration.underline, decorationColor: color)),
         ]);
         return Material(
@@ -327,7 +336,7 @@ class _BlockView extends StatelessWidget {
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(radius), side: BorderSide(color: error ? scheme.error.withValues(alpha: .4) : scheme.border)),
           clipBehavior: Clip.antiAlias,
           child: InkWell(
-            onTap: agent == null || onOpenAgent == null ? null : () => onOpenAgent!(agent),
+            onTap: agent == null || onOpenAgent == null ? null : () => onOpenAgent!(agent, role),
             child: Padding(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8), child: body),
           ),
         );

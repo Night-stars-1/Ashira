@@ -429,8 +429,9 @@ class AshiraState extends ChangeNotifier {
         }
       case 'subagent':
         final failure = event.field('error');
-        blocks.add(NoteBlock('${event.name ?? '未命名'}：${event.field('status') ?? '已结束'}${failure == null ? '' : '\n$failure'}',
-            error: failure != null, agent: event.field('id')));
+        final status = switch (event.field('status')) { 'completed' => '已完成', 'failed' => '失败', 'cancelled' => '已取消', final other => other ?? '已结束' };
+        blocks.add(NoteBlock('${event.name ?? '未命名'}：$status${failure == null ? '' : '\n$failure'}',
+            error: failure != null, agent: event.field('id'), role: event.field('role')));
       case 'peer_message':
         blocks.add(NoteBlock('${event.field('from') ?? '代理'}：${event.field('body') ?? ''}'));
       case 'done':

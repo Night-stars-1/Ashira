@@ -219,7 +219,7 @@ class _HomePageState extends State<HomePage> {
                       key: ValueKey(state.shownId),
                       blocks: state.blocks,
                       activity: state.activity,
-                      onOpenAgent: (id) => showSubagent(context, state.client, id, (path) => state.client.rawUri(state.shownId, path)),
+                      onOpenAgent: (id, role) => showSubagent(context, state.client, id, role, (path) => state.client.rawUri(state.shownId, path)),
                     ),
                   ),
           ),

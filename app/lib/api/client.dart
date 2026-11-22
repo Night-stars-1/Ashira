@@ -146,7 +146,7 @@ class AshiraClient {
 
   Future<SubagentView> subagent(String id) async {
     final body = asMap(await _get('/v1/subagents', {'id': id}));
-    return SubagentView(blocks: historyBlocks(body['messages']), report: str(body['report']));
+    return SubagentView(blocks: historyBlocks(body['messages']), report: str(body['report']), shell: body['shell'] == true);
   }
 
   Future<String> plugins() async => str(asMap(await _get('/v1/plugins'))['text']);

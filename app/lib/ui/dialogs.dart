@@ -416,9 +416,9 @@ class _ProjectPickerState extends State<_ProjectPicker> {
 // ---------------------------------------------------------------- subagent
 
 /// `images` loads workspace pictures for the parent session (the panel is a new route,
-/// outside the transcript's [WorkspaceImages]).
-Future<void> showSubagent(BuildContext context, AshiraClient client, String id, Uri Function(String path) images) =>
-    showPanel(context, title: '子任务', builder: (_) => WorkspaceImages(uri: images, child: _Subagent(client, id)), width: 960);
+/// outside the transcript's [WorkspaceImages]). `role` `shell` is a background command.
+Future<void> showSubagent(BuildContext context, AshiraClient client, String id, String? role, Uri Function(String path) images) =>
+    showPanel(context, title: role == 'shell' ? '后台命令' : '子任务', builder: (_) => WorkspaceImages(uri: images, child: _Subagent(client, id)), width: 960);
 
 class _Subagent extends StatelessWidget {
   const _Subagent(this.client, this.id);
@@ -438,6 +438,14 @@ class _Subagent extends StatelessWidget {
           if (snapshot.hasError) return Center(child: Text(errorText(snapshot.error!, '无法读取子任务'), style: TextStyle(color: Theme.of(context).colorScheme.error)));
           final agent = snapshot.data;
           if (agent == null) return const Center(child: SizedBox.square(dimension: 18, child: CircularProgressIndicator()));
+          // A background command's output, as the terminal printed it rather than as a reply.
+          if (agent.shell) {
+            if (agent.report.isEmpty) return Center(child: Text('没有输出', style: TextStyle(color: Theme.of(context).colorScheme.mutedForeground)));
+            return SingleChildScrollView(
+              padding: const EdgeInsets.fromLTRB(20, 16, 20, 20),
+              child: SelectableText(agent.report, style: monoStyle(context).copyWith(fontSize: 12, height: 1.5)),
+            );
+          }
           final blocks = agent.blocks.isNotEmpty
               ? [for (final block in agent.blocks) block is UserBlock ? UserBlock(_task(block.text), block.images, block.files) : block]
               : agent.report.isNotEmpty
