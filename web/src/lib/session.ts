@@ -1,5 +1,5 @@
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
-import { api, ApiError, connection, parseEvent, parseReplyMetrics, type AgentEvent, type Archive, type ConfirmRequest, type QuestionAnswers, type QuestionRequest, type SessionNode, type Status, type UpdateProgress } from './api'
+import { api, ApiError, connection, parseEvent, parseReplyMetrics, streamUrl, type AgentEvent, type Archive, type ConfirmRequest, type QuestionAnswers, type QuestionRequest, type SessionNode, type Status, type UpdateProgress } from './api'
 import { toast } from './toast'
 import type { Block, ReplyPart, TextFile } from '@/components/Transcript.vue'
 
@@ -272,9 +272,13 @@ export function useAshira() {
     }
   }
 
-  function connect(id: string) {
+  /** `fresh`: the history was just loaded; the stream's first `ready` need not fetch it again. */
+  function connect(id: string, fresh: boolean) {
     const stream = api.events(id)
     source = stream
+    // History read before the stream was open can miss events; any one since then means re-read.
+    let skipReady = fresh
+    const loadedAt = revision
     stream.onopen = () => {
       if (source !== stream) return
       connected.value = true
@@ -290,6 +294,9 @@ export function useAshira() {
       if (source !== stream) return
       const event = parseEvent(message.data)
       if (event?.type === 'ready' || event?.type === 'lag') {
+        const first = skipReady
+        skipReady = false
+        if (first && event.type === 'ready' && revision === loadedAt && !busy.value) return
         void syncHistory().catch((reason: unknown) => { if (source === stream) fail(reason, '无法加载会话') })
       } else if (event?.type === 'titling' && event.sessionId) {
         const id = event.sessionId
@@ -353,7 +360,7 @@ export function useAshira() {
       question.value = body.question
       try { sessionStorage.setItem(viewKey, JSON.stringify({ id: selected })) } catch { /* storage may be blocked */ }
       loading.value = false
-      connect(selected)
+      connect(selected, true)
       // Also picks up turns running in other sessions (shown in the list).
       await refresh()
     } catch (reason) {
@@ -490,7 +497,7 @@ export function historyBlocks(body: unknown): Block[] {
         const entry = file as Record<string, unknown>
         return typeof entry.text === 'string' ? [{ name: typeof entry.name === 'string' ? entry.name : '附件', text: entry.text, lines: typeof entry.lines === 'number' ? entry.lines : entry.text.split('\n').length }] : []
       }) : []
-      return [{ kind: 'user', text: value('text'), images: Array.isArray(row.images) ? row.images.filter((item): item is string => typeof item === 'string') : [], files }]
+      return [{ kind: 'user', text: value('text'), images: Array.isArray(row.images) ? row.images.flatMap((item) => { const src = imageSrc(item); return src ? [src] : [] }) : [], files }]
     }
     if (row.kind === 'note') return [{ kind: 'note', text: value('text'), error: row.error === true, agent: typeof row.agent === 'string' && row.agent ? row.agent : undefined, role: typeof row.role === 'string' ? row.role : undefined }]
     if (row.kind !== 'assistant') return []
@@ -500,11 +507,17 @@ export function historyBlocks(body: unknown): Block[] {
       const text = (key: string) => typeof part[key] === 'string' ? part[key] : ''
       if (part.type === 'text' || part.type === 'reasoning') return text('text') ? [{ type: part.type, text: text('text') }] : []
       if (part.type !== 'tool') return []
-      const image = text('image')
-      return [{ type: 'tool', name: text('name') || 'tool', summary: text('summary'), output: text('output'), error: part.error === true, done: part.done !== false, image: image.startsWith('data:image/') ? image : undefined }]
+      return [{ type: 'tool', name: text('name') || 'tool', summary: text('summary'), output: text('output'), error: part.error === true, done: part.done !== false, image: imageSrc(part.image) }]
     }) : []
     return [{ kind: 'assistant', parts, live: false, metrics: parseReplyMetrics(row.metrics) }]
   })
+}
+
+/** A picture in a history: a data URL as sent, or a server path (`/v1/...`) loaded on demand. */
+function imageSrc(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  if (value.startsWith('data:image/')) return value
+  return value.startsWith('/v1/') ? streamUrl(value).toString() : undefined
 }
 
 /** The same words the server uses for results in history (`push_subagent_results`). */

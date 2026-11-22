@@ -1,5 +1,4 @@
 import 'dart:convert';
-import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 
@@ -396,6 +395,19 @@ class _ReasoningState extends State<_Reasoning> {
   }
 }
 
+/// A transcript picture: a data URL (a message just sent) decodes in memory; a history
+/// picture's URL loads over the network, and only once it is shown.
+ImageProvider? _picture(String src) {
+  if (!src.startsWith('data:')) return src.startsWith('http') ? NetworkImage(src) : null;
+  final comma = src.indexOf(',');
+  if (comma < 0) return null;
+  try {
+    return MemoryImage(base64Decode(src.substring(comma + 1)));
+  } on FormatException {
+    return null;
+  }
+}
+
 /// An image the user sent; a tap shows it full screen.
 class _DataImage extends StatefulWidget {
   const _DataImage(this.src);
@@ -407,22 +419,12 @@ class _DataImage extends StatefulWidget {
 
 class _DataImageState extends State<_DataImage> {
   // Decoded once, not on every rebuild of the transcript.
-  late MemoryImage? _image = _decode(widget.src);
-
-  static MemoryImage? _decode(String src) {
-    final comma = src.indexOf(',');
-    if (!src.startsWith('data:') || comma < 0) return null;
-    try {
-      return MemoryImage(base64Decode(src.substring(comma + 1)));
-    } on FormatException {
-      return null;
-    }
-  }
+  late ImageProvider? _image = _picture(widget.src);
 
   @override
   void didUpdateWidget(_DataImage old) {
     super.didUpdateWidget(old);
-    if (old.src != widget.src) _image = _decode(widget.src);
+    if (old.src != widget.src) _image = _picture(widget.src);
   }
 
   @override
@@ -438,7 +440,7 @@ class _DataImageState extends State<_DataImage> {
           borderRadius: BorderRadius.circular(12),
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxHeight: 240),
-            child: Image(image: image, fit: BoxFit.contain, gaplessPlayback: true),
+            child: Image(image: image, fit: BoxFit.contain, gaplessPlayback: true, errorBuilder: (_, _, _) => const SizedBox.shrink()),
           ),
         ),
       ),
@@ -540,38 +542,40 @@ class _ReadImage extends StatefulWidget {
 }
 
 class _ReadImageState extends State<_ReadImage> {
-  late Uint8List? _bytes = _decode(widget.src);
-
-  static Uint8List? _decode(String src) {
-    final comma = src.indexOf(',');
-    if (comma < 0) return null;
-    try {
-      return base64Decode(src.substring(comma + 1));
-    } on FormatException {
-      return null;
-    }
-  }
+  late ImageProvider? _image = _picture(widget.src);
 
   @override
   void didUpdateWidget(_ReadImage old) {
     super.didUpdateWidget(old);
-    if (old.src != widget.src) _bytes = _decode(widget.src);
+    if (old.src != widget.src) _image = _picture(widget.src);
   }
 
   @override
   Widget build(BuildContext context) {
-    final bytes = _bytes;
-    if (bytes == null) return const SizedBox.shrink();
+    final image = _image;
+    if (image == null) return const SizedBox.shrink();
+    final muted = Theme.of(context).colorScheme.mutedForeground;
     return Align(
       alignment: Alignment.centerLeft,
       child: Tooltip(
         message: widget.label,
         child: InkWell(
           borderRadius: BorderRadius.circular(radius),
-          onTap: () => showImageViewer(context, MemoryImage(bytes), label: widget.label),
+          onTap: () => showImageViewer(context, image, label: widget.label),
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxHeight: 256),
-            child: ClipRRect(borderRadius: BorderRadius.circular(radius), child: Image.memory(bytes, fit: BoxFit.contain, gaplessPlayback: true)),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(radius),
+              child: Image(
+                image: image,
+                fit: BoxFit.contain,
+                gaplessPlayback: true,
+                errorBuilder: (_, _, _) => Text('图片无法加载', style: TextStyle(fontSize: 12, color: muted)),
+                loadingBuilder: (context, child, progress) => progress == null
+                    ? child
+                    : SizedBox.square(dimension: 64, child: Center(child: SizedBox.square(dimension: 16, child: CircularProgressIndicator(strokeWidth: 1.5, color: muted)))),
+              ),
+            ),
           ),
         ),
       ),

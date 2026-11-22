@@ -152,7 +152,7 @@ async fn accept(listener: TcpListener, hub: Arc<Hub>) -> Result<(), String> {
 async fn handle(mut socket: TcpStream, hub: Arc<Hub>) -> Result<(), String> {
     let (method, target, headers, body) = read_request(&mut socket).await?;
     if method == "OPTIONS" {
-        return write_response(&mut socket, 204, "No Content", "text/plain", b"").await;
+        return write_response(&mut socket, 204, "text/plain", b"").await;
     }
     let (path, query) = target.split_once('?').unwrap_or((target.as_str(), ""));
     // The page itself is public like any static site; everything it can do goes through /v1.
@@ -161,23 +161,25 @@ async fn handle(mut socket: TcpStream, hub: Arc<Hub>) -> Result<(), String> {
     }
     if !authorized(&hub.token, &headers, query) {
         let body = json!({"error": "需要有效的 API Token"}).to_string();
-        return write_response(&mut socket, 401, "Unauthorized", "application/json", body.as_bytes()).await;
+        return write_response(&mut socket, 401, "application/json", body.as_bytes()).await;
     }
     if let Some(id) = path.strip_prefix("/v1/sessions/").and_then(|p| p.strip_suffix("/terminal")) {
         return terminal_upgrade(socket, &hub, &method, id, &headers, &body).await;
     }
     let result = dispatch(&hub, &method, path, query, &body).await;
+    let gzip = headers.iter().any(|(name, value)| name == "accept-encoding" && value.split(',').any(|coding| coding.trim().split(';').next() == Some("gzip")));
     match result {
-        Ok(Response::Json { status, body }) => {
-            let bytes = body.to_string();
-            write_response(&mut socket, status, reason(status), "application/json", bytes.as_bytes()).await
-        }
+        Ok(Response::Json { status, body }) => write_json(&mut socket, status, &body.to_string(), gzip).await,
         Ok(Response::Events(id)) => stream_events(&mut socket, &hub, &id).await,
-        Ok(Response::Bytes { status, content_type, body }) => write_response(&mut socket, status, reason(status), content_type, &body).await,
+        // A picture stored in a history never changes; the browser keeps it.
+        Ok(Response::Bytes { status, content_type, body, immutable }) => {
+            let extra = if immutable { "Cache-Control: private, max-age=31536000, immutable\r\n" } else { "" };
+            write_response_with(&mut socket, status, content_type, extra, &body).await
+        }
         Err(error) => {
             let status = if error.contains("还在进行") { 409 } else if error.contains("unknown") || error.contains("没有") { 404 } else { 400 };
             let body = json!({"error": error}).to_string();
-            write_response(&mut socket, status, reason(status), "application/json", body.as_bytes()).await
+            write_response(&mut socket, status, "application/json", body.as_bytes()).await
         }
     }
 }
@@ -186,10 +188,10 @@ async fn handle(mut socket: TcpStream, hub: Arc<Hub>) -> Result<(), String> {
 /// so an update shows on the next load. A folder with no build yet gets the install page.
 async fn serve_web(socket: &mut TcpStream, dir: &Path, path: &str) -> Result<(), String> {
     if !crate::web::installed(dir) {
-        return write_response(socket, 200, "OK", "text/html; charset=utf-8", INSTALL_PAGE.as_bytes()).await;
+        return write_response(socket, 200, "text/html; charset=utf-8", INSTALL_PAGE.as_bytes()).await;
     }
     let Some(file) = crate::web::resolve(dir, path) else {
-        return write_response(socket, 404, "Not Found", "text/plain", b"Not Found").await;
+        return write_response(socket, 404, "text/plain", b"Not Found").await;
     };
     let body = tokio::fs::read(&file).await.map_err(|error| error.to_string())?;
     let cache = if file.parent().is_some_and(|parent| parent.ends_with("assets")) { "public, max-age=31536000, immutable" } else { "no-cache" };
@@ -233,22 +235,22 @@ async fn terminal_upgrade(mut socket: TcpStream, hub: &Hub, method: &str, id: &s
         matches.next().is_none().then_some(value.as_str())
     };
     let Some(slots) = hub.terminal_slots.as_ref() else {
-        return write_response(&mut socket, 403, "Forbidden", "text/plain", b"Terminal is off; start the API with ASHIRA_WEB_TERMINAL=1").await;
+        return write_response(&mut socket, 403, "text/plain", b"Terminal is off; start the API with ASHIRA_WEB_TERMINAL=1").await;
     };
     let key = header("sec-websocket-key").filter(|key| STANDARD.decode(key).is_ok_and(|bytes| bytes.len() == 16));
     let Some(key) = key.filter(|_| method == "GET" && body.is_empty()
         && header("upgrade").is_some_and(|value| value.eq_ignore_ascii_case("websocket"))
         && header("connection").is_some_and(|value| value.split(',').any(|part| part.trim().eq_ignore_ascii_case("upgrade")))
         && header("sec-websocket-version") == Some("13")) else {
-        return write_response(&mut socket, 400, "Bad Request", "text/plain", b"Expected a WebSocket upgrade").await;
+        return write_response(&mut socket, 400, "text/plain", b"Expected a WebSocket upgrade").await;
     };
     let Ok(_permit) = slots.try_acquire() else {
-        return write_response(&mut socket, 429, "Too Many Requests", "text/plain", b"Too many open terminals").await;
+        return write_response(&mut socket, 429, "text/plain", b"Too many open terminals").await;
     };
     let id = id.to_owned();
     let target = tokio::task::spawn_blocking(move || session::locate(&id)).await.map_err(|error| error.to_string())?;
     let Ok(target) = target else {
-        return write_response(&mut socket, 404, "Not Found", "text/plain", b"Unknown session").await;
+        return write_response(&mut socket, 404, "text/plain", b"Unknown session").await;
     };
     let accept = derive_accept_key(key.as_bytes());
     socket.write_all(format!("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Accept: {accept}\r\n\r\n").as_bytes()).await.map_err(|error| error.to_string())?;
@@ -258,8 +260,16 @@ async fn terminal_upgrade(mut socket: TcpStream, hub: &Hub, method: &str, id: &s
 enum Response {
     Json { status: u16, body: Value },
     Events(String),
-    /// A workspace image for `<img>` (`GET .../raw`); errors are JSON like elsewhere.
-    Bytes { status: u16, content_type: &'static str, body: Vec<u8> },
+    /// An image for `<img>`: a workspace file (`GET .../raw`) or a picture stored in a
+    /// history, which never changes (`immutable`). Errors are JSON like elsewhere.
+    Bytes { status: u16, content_type: &'static str, body: Vec<u8>, immutable: bool },
+}
+
+fn image_response(result: Result<(&'static str, Vec<u8>), (u16, String)>) -> Response {
+    match result {
+        Ok((content_type, body)) => Response::Bytes { status: 200, content_type, body, immutable: true },
+        Err((status, error)) => Response::Json { status, body: json!({"error": error}) },
+    }
 }
 
 async fn dispatch(hub: &Arc<Hub>, method: &str, path: &str, query: &str, body: &[u8]) -> Result<Response, String> {
@@ -332,6 +342,12 @@ async fn dispatch(hub: &Arc<Hub>, method: &str, path: &str, query: &str, body: &
         }
         ("GET", "/v1/models") => Ok(Response::Json { status: 200, body: models(hub) }),
         ("GET", "/v1/subagents") => Ok(Response::Json { status: 200, body: subagent(query_value(query, "id").as_deref().unwrap_or("")).await? }),
+        ("GET", "/v1/subagents/image") => {
+            let id = query_value(query, "id").unwrap_or_default();
+            let n = query_value(query, "n").and_then(|n| n.parse::<usize>().ok()).ok_or("n is required")?;
+            let path = subagent_dir(&id)?.join("history.jsonl");
+            Ok(image_response(tokio::task::spawn_blocking(move || history_image(&path, n, false)).await.map_err(|error| error.to_string())?))
+        }
         ("GET", "/v1/plugins") => Ok(Response::Json { status: 200, body: json!({"text": hub.shared.plugins.list()}) }),
         ("GET", "/v1/mcp") => Ok(Response::Json { status: 200, body: mcp(hub) }),
         ("POST", "/v1/mcp") => {
@@ -452,7 +468,7 @@ async fn session_route(hub: &Arc<Hub>, method: &str, id: &str, action: &str, que
                 if text.trim().is_empty() && images.is_empty() && files.is_empty() { return Err("text, an image, or a file is required".into()); }
                 let input = user_turn(text, &images, &files);
                 let mut user = Vec::new();
-                project_user(&mut user, &input);
+                project_user(&mut user, &input, &mut Images::Inline);
                 (WebAction::Turn(input), user.pop())
             } else { (WebAction::Compact, None) };
             let turn = next_turn();
@@ -484,9 +500,13 @@ async fn session_route(hub: &Arc<Hub>, method: &str, id: &str, action: &str, que
         ("GET", "raw") => {
             let relative = path();
             return match tokio::task::spawn_blocking(move || read_image(&target.cwd, &relative)).await.map_err(|error| error.to_string())? {
-                Ok((content_type, body)) => Ok(Response::Bytes { status: 200, content_type, body }),
+                Ok((content_type, body)) => Ok(Response::Bytes { status: 200, content_type, body, immutable: false }),
                 Err((status, error)) => Ok(Response::Json { status, body: json!({"error": error}) }),
             };
+        }
+        ("GET", action) if action.starts_with("images/") => {
+            let n = action["images/".len()..].parse::<usize>().map_err(|_| "unknown route")?;
+            return Ok(image_response(tokio::task::spawn_blocking(move || history_image(&target.path, n, true)).await.map_err(|error| error.to_string())?));
         }
         ("GET", "file") => read_text(&target.cwd, &path()).await?,
         ("POST", "file") => write_text(&target.cwd, body["path"].as_str().unwrap_or(""), body["text"].as_str().ok_or("text is required")?).await?,
@@ -658,9 +678,10 @@ async fn memory(hub: &Hub) -> Result<Value, String> {
 async fn session_view(hub: &Hub, id: &str, target: session::Target) -> Result<Value, String> {
     let cwd = target.cwd;
     let registry = hub.shared.registry();
+    let images = format!("/v1/sessions/{id}/images/");
     let (messages, model, fast, context, stats) = tokio::task::spawn_blocking(move || {
         let loaded = session::read_http(&target.path, &registry)?;
-        Ok::<_, String>((project_history(&loaded.history, Some(&loaded.reply_stats)), loaded.model.filter(|model| !model.is_empty()), loaded.fast, loaded.usage.context(), loaded.ledger.snapshot()))
+        Ok::<_, String>((project_history(&loaded.history, Some(&loaded.reply_stats), &images), loaded.model.filter(|model| !model.is_empty()), loaded.fast, loaded.usage.context(), loaded.ledger.snapshot()))
     }).await.map_err(|error| error.to_string())??;
     let resolved = model.as_deref().and_then(|selector| hub.shared.registry().resolve(selector).ok());
     let model_name = resolved.as_ref().map(|model| model.display_name.as_deref().filter(|name| !name.is_empty()).unwrap_or(&model.id)).or(model.as_deref());
@@ -726,11 +747,14 @@ fn message_images(value: Option<&Value>) -> Result<Vec<(String, String)>, String
     Ok(images)
 }
 
-fn project_history(history: &[Value], metrics: Option<&HashMap<usize, session::ReplyStats>>) -> Vec<Value> {
+/// `images` is where stored pictures are fetched from: each is `{images}{n}`, numbered in
+/// order and served by [`history_image`]. Inline, a history with screenshots weighs megabytes.
+fn project_history(history: &[Value], metrics: Option<&HashMap<usize, session::ReplyStats>>, images: &str) -> Vec<Value> {
     let mut blocks = Vec::new();
+    let mut shown = Images::Numbered { base: images, next: 0 };
     for (index, message) in history.iter().enumerate() {
         match message["role"].as_str() {
-            Some("user") => project_user(&mut blocks, message),
+            Some("user") => project_user(&mut blocks, message, &mut shown),
             Some("assistant") => project_assistant(&mut blocks, message, metrics.and_then(|metrics| metrics.get(&index))),
             _ => {}
         }
@@ -738,7 +762,38 @@ fn project_history(history: &[Value], metrics: Option<&HashMap<usize, session::R
     blocks
 }
 
-fn project_user(blocks: &mut Vec<Value>, message: &Value) {
+/// How pictures reach the page: a message just sent echoes its own as data URLs; a stored
+/// history refers to each by number so the page loads them only when it shows them.
+enum Images<'a> {
+    Inline,
+    Numbered { base: &'a str, next: usize },
+}
+
+impl Images<'_> {
+    fn show(&mut self, block: &Value) -> Option<String> {
+        let url = crate::api::DataUrl::from_block(block).ok()?;
+        Some(match self {
+            Self::Inline => url.to_string(),
+            Self::Numbered { base, next } => {
+                *next += 1;
+                format!("{base}{}", *next - 1)
+            }
+        })
+    }
+}
+
+/// The picture a user-message block shows: a sent image, or the one a tool result
+/// (`read`) attached for the model. [`project_user`] and [`history_image`] number exactly these.
+fn block_image(block: &Value) -> Option<&Value> {
+    let image = match block["type"].as_str() {
+        Some("image") => block,
+        Some("tool_result") => block["content"].as_array()?.iter().find(|part| part["type"] == "image")?,
+        _ => return None,
+    };
+    crate::api::DataUrl::from_block(image).is_ok().then_some(image)
+}
+
+fn project_user(blocks: &mut Vec<Value>, message: &Value, shown: &mut Images) {
     let Some(content) = message["content"].as_array() else {
         if let Some(text) = message["content"].as_str() { push_user_text(blocks, text); }
         return;
@@ -747,8 +802,9 @@ fn project_user(blocks: &mut Vec<Value>, message: &Value) {
     let mut images = Vec::new();
     let mut files = Vec::new();
     for block in content {
+        let image = block_image(block).and_then(|image| shown.show(image));
         match block["type"].as_str() {
-            Some("tool_result") => attach_result(blocks, block),
+            Some("tool_result") => attach_result(blocks, block, image),
             Some("text") => {
                 let body = block["text"].as_str().unwrap_or("");
                 match crate::attachment::parse(body) {
@@ -756,9 +812,7 @@ fn project_user(blocks: &mut Vec<Value>, message: &Value) {
                     None => append_part(&mut text, body),
                 }
             }
-            Some("image") => {
-                if let Ok(url) = crate::api::DataUrl::from_block(block) { images.push(url.to_string()); }
-            }
+            Some("image") => images.extend(image),
             _ => {}
         }
     }
@@ -870,7 +924,8 @@ fn append_part(buf: &mut String, part: &str) {
     buf.push_str(part);
 }
 
-fn attach_result(blocks: &mut Vec<Value>, result: &Value) {
+/// `image` is the picture `read` attached for the model, shown on the tool card.
+fn attach_result(blocks: &mut Vec<Value>, result: &Value, image: Option<String>) {
     let id = result["tool_use_id"].as_str().unwrap_or("");
     let output = cap_text(&content_text(&result["content"]));
     let error = result["is_error"].as_bool().unwrap_or(false);
@@ -882,11 +937,41 @@ fn attach_result(blocks: &mut Vec<Value>, result: &Value) {
         tool["output"] = json!(output);
         tool["error"] = json!(error);
         tool["done"] = json!(true);
-        // The picture `read` attached for the model, shown on the tool card.
-        let image = result["content"].as_array().into_iter().flatten().find(|part| part["type"] == "image");
-        if let Some(url) = image.and_then(|block| crate::api::DataUrl::from_block(block).ok()) { tool["image"] = json!(url.to_string()); }
+        if let Some(image) = image { tool["image"] = json!(image); }
         return;
     }
+}
+
+/// The `n`th picture [`project_history`] numbered in a history file, as (media type, bytes).
+/// Histories only grow, so a number always names the same picture. `records` is a session
+/// log (`{"type":"message","message":…}`); otherwise each line is a message (a subagent's
+/// `history.jsonl`). Only lines that can hold a picture are parsed.
+fn history_image(path: &Path, n: usize, records: bool) -> Result<(&'static str, Vec<u8>), (u16, String)> {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    use std::io::BufRead;
+    let file = std::fs::File::open(path).map_err(|error| (404, error.to_string()))?;
+    let mut seen = 0;
+    for line in std::io::BufReader::new(file).lines() {
+        let Ok(line) = line else { break };
+        if !line.contains("\"image\"") { continue; }
+        let Ok(mut row) = serde_json::from_str::<Value>(&line) else { continue };
+        let message = if !records { row } else if matches!(row["type"].as_str(), Some("message" | "compact")) { row["message"].take() } else { continue };
+        if message["role"] != "user" { continue; }
+        for image in message["content"].as_array().into_iter().flatten().filter_map(block_image) {
+            if seen < n { seen += 1; continue; }
+            let source = &image["source"];
+            let content_type = match source["media_type"].as_str() {
+                Some("image/png") => "image/png",
+                Some("image/jpeg") => "image/jpeg",
+                Some("image/gif") => "image/gif",
+                Some("image/webp") => "image/webp",
+                _ => "application/octet-stream",
+            };
+            let bytes = STANDARD.decode(source["data"].as_str().unwrap_or("")).map_err(|error| (500, error.to_string()))?;
+            return Ok((content_type, bytes));
+        }
+    }
+    Err((404, format!("没有第 {n} 张图片")))
 }
 
 fn content_text(value: &Value) -> String {
@@ -1274,15 +1359,33 @@ async fn write_event(socket: &mut TcpStream, data: &str) -> Result<(), String> {
     socket.flush().await.map_err(|error| error.to_string())
 }
 
-async fn write_response(socket: &mut TcpStream, status: u16, reason: &str, content_type: &str, body: &[u8]) -> Result<(), String> {
+async fn write_response(socket: &mut TcpStream, status: u16, content_type: &str, body: &[u8]) -> Result<(), String> {
+    write_response_with(socket, status, content_type, "", body).await
+}
+
+/// `extra` is more header lines, each ending in `\r\n`.
+async fn write_response_with(socket: &mut TcpStream, status: u16, content_type: &str, extra: &str, body: &[u8]) -> Result<(), String> {
     let header = format!(
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization\r\n\r\n",
+        "HTTP/1.1 {status} {}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\n{extra}Connection: close\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization\r\n\r\n",
+        reason(status),
         body.len()
     );
     socket.write_all(header.as_bytes()).await.map_err(|error| error.to_string())?;
     socket.write_all(body).await.map_err(|error| error.to_string())?;
     socket.shutdown().await.map_err(|error| error.to_string())?;
     Ok(())
+}
+
+/// JSON, gzipped when the client takes it and it is worth it: a session's history is
+/// mostly text (tool output) and shrinks several times over a slow link.
+async fn write_json(socket: &mut TcpStream, status: u16, body: &str, gzip: bool) -> Result<(), String> {
+    if !gzip || body.len() < 1024 {
+        return write_response_with(socket, status, "application/json", "", body.as_bytes()).await;
+    }
+    let mut encoder = flate2::write::GzEncoder::new(Vec::with_capacity(body.len() / 4), flate2::Compression::fast());
+    std::io::Write::write_all(&mut encoder, body.as_bytes()).map_err(|error| error.to_string())?;
+    let packed = encoder.finish().map_err(|error| error.to_string())?;
+    write_response_with(socket, status, "application/json", "Content-Encoding: gzip\r\nVary: Accept-Encoding\r\n", &packed).await
 }
 
 fn reason(status: u16) -> &'static str {
@@ -1293,10 +1396,12 @@ fn reason(status: u16) -> &'static str {
         204 => "No Content",
         400 => "Bad Request",
         401 => "Unauthorized",
+        403 => "Forbidden",
         404 => "Not Found",
         409 => "Conflict",
         413 => "Payload Too Large",
         415 => "Unsupported Media Type",
+        429 => "Too Many Requests",
         _ => "Error",
     }
 }
@@ -1339,14 +1444,18 @@ async fn subagent(id: &str) -> Result<Value, String> {
     tokio::task::spawn_blocking(move || read_subagent(&id)).await.map_err(|error| error.to_string())?
 }
 
-fn read_subagent(id: &str) -> Result<Value, String> {
-    if id.len() > 80 || !id.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_') {
+fn subagent_dir(id: &str) -> Result<PathBuf, String> {
+    if id.is_empty() || id.len() > 80 || !id.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_') {
         return Err("invalid subagent id".into());
     }
     let dir = session::home().join("subagents").join(id);
-    if !dir.is_dir() { return Err("没有这个子任务".into()); }
+    if dir.is_dir() { Ok(dir) } else { Err("没有这个子任务".into()) }
+}
+
+fn read_subagent(id: &str) -> Result<Value, String> {
+    let dir = subagent_dir(id)?;
     // A background shell command has no history; its streamed output is the whole view.
-    let messages = project_history(&read_history(&dir), None);
+    let messages = project_history(&read_history(&dir), None, &format!("/v1/subagents/image?id={id}&n="));
     let mut report = latest_report(&dir);
     let shell = messages.is_empty() && dir.join("output.txt").is_file();
     if report.is_empty() && let Ok(output) = std::fs::read_to_string(dir.join("output.txt")) { report = output; }
@@ -1465,7 +1574,7 @@ mod tests {
         assert_eq!(message["content"][0]["text"], "看看这个日志");
         assert!(message["content"][1]["text"].as_str().unwrap().ends_with("line 500\n</file>"));
         let mut blocks = Vec::new();
-        project_user(&mut blocks, &message);
+        project_user(&mut blocks, &message, &mut Images::Inline);
         assert_eq!(blocks[0]["text"], "看看这个日志");
         assert_eq!((&blocks[0]["files"][0]["name"], &blocks[0]["files"][0]["lines"]), (&json!("build.log"), &json!(500)));
         assert_eq!(blocks[0]["files"][0]["text"], log);
@@ -1474,8 +1583,11 @@ mod tests {
 
     #[test]
     fn assistant_parts_keep_model_order_and_attach_results() {
-        let history = [
-            json!({"role": "user", "content": "看看"}),
+        let records = [
+            json!({"role": "user", "content": [
+                {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": "/9j/"}},
+                {"type": "text", "text": "看看"},
+            ]}),
             json!({"role": "assistant", "content": [
                 {"type": "text", "text": "先查一下"},
                 {"type": "tool_use", "id": "a", "name": "bash", "input": {"command": "git config user.name"}},
@@ -1491,17 +1603,34 @@ mod tests {
                 ], "is_error": false},
             ]}),
         ];
-        let blocks = project_history(&history, None);
+        let blocks = project_history(&records, None, "/pics/");
+        // Pictures are referred to, not inlined: the user's first, then the one `read` returned.
+        assert_eq!(blocks[0]["images"], json!(["/pics/0"]));
         let parts = blocks[1]["parts"].as_array().unwrap();
         let kinds: Vec<_> = parts.iter().map(|part| part["type"].as_str().unwrap()).collect();
         assert_eq!(kinds, ["text", "tool", "tool", "text"]);
         assert_eq!(parts[0]["text"], "先查一下");
         assert_eq!(parts[1]["output"], "Night");
         assert!(parts[1].get("image").is_none());
-        // A reopened session still shows the picture `read` gave the model.
-        assert_eq!(parts[2]["image"], "data:image/png;base64,iVBORw0KGgo=");
+        assert_eq!(parts[2]["image"], "/pics/1");
         assert!(parts[2]["output"].as_str().unwrap().starts_with("shot.png: 2×2"));
         assert_eq!(parts[3]["text"], "结果如下\n第二段");
+
+        // Each number fetches that picture, from a session log and from a subagent history alike.
+        let dir = std::env::temp_dir().join(format!("ashira-images-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("session.jsonl");
+        let mut lines: Vec<String> = records.iter().map(|message| json!({"type": "message", "message": message}).to_string()).collect();
+        lines.insert(1, json!({"type": "usage", "input": 1}).to_string());
+        std::fs::write(&log, lines.join("\n")).unwrap();
+        let history = dir.join("history.jsonl");
+        std::fs::write(&history, records.iter().map(Value::to_string).collect::<Vec<_>>().join("\n")).unwrap();
+        for (path, records) in [(&log, true), (&history, false)] {
+            assert_eq!(history_image(path, 0, records).unwrap(), ("image/jpeg", vec![0xff, 0xd8, 0xff]));
+            assert_eq!(history_image(path, 1, records).unwrap(), ("image/png", b"\x89PNG\r\n\x1a\n".to_vec()));
+            assert_eq!(history_image(path, 2, records).unwrap_err().0, 404);
+        }
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -1514,7 +1643,7 @@ mod tests {
             ]}},
             {"type": "text", "text": "391"},
         ]})];
-        let parts = project_history(&history, None)[0]["parts"].clone();
+        let parts = project_history(&history, None, "")[0]["parts"].clone();
         assert_eq!(parts, json!([
             {"type": "reasoning", "text": "正在计算 17 乘以 23。\n\n结果是 391。"},
             {"type": "text", "text": "391"},

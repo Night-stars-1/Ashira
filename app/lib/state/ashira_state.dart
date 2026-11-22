@@ -260,7 +260,7 @@ class AshiraState extends ChangeNotifier {
       _apply(view);
       loading = false;
       unawaited(ConnectionSettings.rememberSession(selected));
-      _connect(selected, mine);
+      _connect(selected, mine, fresh: true);
       if (create) await refresh();
       _changed();
     } catch (reason) {
@@ -292,8 +292,12 @@ class AshiraState extends ChangeNotifier {
     _changed();
   }
 
-  void _connect(String id, int mine) {
+  /// `fresh`: the history was just loaded; the stream's first `ready` need not fetch it again.
+  void _connect(String id, int mine, {bool fresh = false}) {
     _closeEvents();
+    // History read before the stream was open can miss events; any one since then means re-read.
+    var skipReady = fresh;
+    final loadedAt = _revision;
     _events = client.events(id).listen(
       (event) {
         if (mine != _view) return;
@@ -302,6 +306,9 @@ class AshiraState extends ChangeNotifier {
           if (event.type == 'ready') unawaited(refreshServer().catchError((Object _) {}));
           connected = true;
           _changed();
+          final first = skipReady;
+          skipReady = false;
+          if (first && event.type == 'ready' && _revision == loadedAt && !busy) return;
           _syncHistory().catchError((Object reason) {
             if (mine == _view) _fail(reason, '无法加载会话');
           });

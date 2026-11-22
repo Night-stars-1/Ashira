@@ -104,7 +104,14 @@ class AshiraClient {
   Future<String> newSession(String? cwd) async =>
       str(asMap(await _post('/v1/sessions', cwd == null || cwd.isEmpty ? const <String, dynamic>{} : {'cwd': cwd}))['sessionId']);
 
-  Future<SessionView> session(String id) async => SessionView.fromJson(await _get(_session(id)));
+  Future<SessionView> session(String id) async => SessionView.fromJson(await _get(_session(id)), imageUri);
+
+  /// A picture stored in a history (a `/v1/…` path from the server) for `Image.network`;
+  /// the token rides in the query.
+  String imageUri(String path) {
+    final uri = Uri.parse('$baseUrl$path');
+    return uri.replace(queryParameters: {...uri.queryParameters, if (token.isNotEmpty) 'token': token}).toString();
+  }
 
   /// Returns the accepted turn id.
   Future<String?> message(String id, String text, List<({String mediaType, String data})> images, [List<TextFile> files = const []]) async {
@@ -146,7 +153,7 @@ class AshiraClient {
 
   Future<SubagentView> subagent(String id) async {
     final body = asMap(await _get('/v1/subagents', {'id': id}));
-    return SubagentView(blocks: historyBlocks(body['messages']), report: str(body['report']), shell: body['shell'] == true);
+    return SubagentView(blocks: historyBlocks(body['messages'], imageUri), report: str(body['report']), shell: body['shell'] == true);
   }
 
   Future<String> plugins() async => str(asMap(await _get('/v1/plugins'))['text']);

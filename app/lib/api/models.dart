@@ -6,8 +6,13 @@ Map<String, dynamic> asMap(Object? value) => value is Map ? value.cast<String, d
 List<dynamic> asList(Object? value) => value is List ? value : const [];
 String str(Object? value, [String fallback = '']) => value is String ? value : fallback;
 String? optStr(Object? value) => value is String && value.isNotEmpty ? value : null;
-/// A `data:image/…` URL, else null.
-String? imageUrl(Object? value) => value is String && value.startsWith('data:image/') ? value : null;
+/// A picture as `<img>` would take it: a `data:image/…` URL, or a history picture's server
+/// path (`/v1/…`) made absolute by `resolve`; anything else is null.
+String? imageUrl(Object? value, [String Function(String path)? resolve]) {
+  if (value is! String) return null;
+  if (value.startsWith('data:image/')) return value;
+  return value.startsWith('/v1/') && resolve != null ? resolve(value) : null;
+}
 double num0(Object? value) => value is num ? value.toDouble() : 0;
 int int0(Object? value) => value is num ? value.toInt() : 0;
 double? metric(Object? value) => value is num && value.isFinite && value >= 0 ? value.toDouble() : null;
@@ -228,11 +233,12 @@ class QuestionRequest {
 
 class SessionView {
   const SessionView({required this.status, required this.blocks, this.turnId, this.confirm, this.question});
-  factory SessionView.fromJson(Object? json) {
+  /// `resolve` turns a history picture's server path into a URL to load it from.
+  factory SessionView.fromJson(Object? json, String Function(String path) resolve) {
     final m = asMap(json);
     return SessionView(
       status: Status.fromJson(m),
-      blocks: historyBlocks(m['messages']),
+      blocks: historyBlocks(m['messages'], resolve),
       turnId: optStr(m['turnId']),
       confirm: m['confirm'] == null ? null : ConfirmRequest.fromJson(m['confirm']),
       question: m['question'] == null ? null : QuestionRequest.fromJson(m['question']),
@@ -409,7 +415,8 @@ class AssistantBlock extends Block {
   String get text => parts.whereType<TextPart>().where((part) => !part.reasoning).map((part) => part.text).join('\n');
 }
 
-List<Block> historyBlocks(Object? messages) {
+/// `resolve` turns a history picture's server path into a URL; a just-sent message carries data URLs.
+List<Block> historyBlocks(Object? messages, [String Function(String path)? resolve]) {
   final blocks = <Block>[];
   for (final item in asList(messages)) {
     final row = asMap(item);
@@ -417,7 +424,7 @@ List<Block> historyBlocks(Object? messages) {
       case 'user':
         blocks.add(UserBlock(
           str(row['text']),
-          [for (final image in asList(row['images'])) if (image is String) image],
+          [for (final image in asList(row['images'])) ?imageUrl(image, resolve)],
           [
             for (final raw in asList(row['files']))
               if (asMap(raw)['text'] is String)
@@ -438,7 +445,7 @@ List<Block> historyBlocks(Object? messages) {
           if ((type == 'text' || type == 'reasoning') && str(part['text']).isNotEmpty) {
             parts.add(TextPart(str(part['text']), reasoning: type == 'reasoning'));
           } else if (type == 'tool') {
-            parts.add(ToolPart(name: str(part['name'], 'tool'), summary: str(part['summary']), output: str(part['output']), error: part['error'] == true, done: part['done'] != false, image: imageUrl(part['image'])));
+            parts.add(ToolPart(name: str(part['name'], 'tool'), summary: str(part['summary']), output: str(part['output']), error: part['error'] == true, done: part['done'] != false, image: imageUrl(part['image'], resolve)));
           }
         }
         blocks.add(AssistantBlock(parts: parts, metrics: ReplyMetrics.fromJson(row['metrics'])));
