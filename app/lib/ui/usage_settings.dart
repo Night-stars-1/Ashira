@@ -166,17 +166,12 @@ class _UsageSettingsState extends State<UsageSettings> {
         const SizedBox(height: 12),
         Container(
           decoration: BoxDecoration(border: Border.all(color: scheme.border), borderRadius: BorderRadius.circular(radius)),
-          child: Column(children: [
-            _ModelRow(cells: const ['模型', 'Token', '缓存命中', '请求', 'TPS', '费用'], header: true),
+          child: _ModelTable(rows: [
             for (final MapEntry(key: model, value: sums) in models)
-              _ModelRow(cells: [
-                model,
-                wan(sums.tokens),
-                cacheRate(sums.cacheRead, sums.prompt),
-                tokens(sums.requests),
-                tpsLabel(sums),
-                costLabel(sums.cost, sums.unknown > 0),
-              ], tooltip: '输入 ${tokens(sums.prompt)} · 输出 ${tokens(sums.output)}'),
+              (
+                cells: [model, wan(sums.tokens), cacheRate(sums.cacheRead, sums.prompt), tokens(sums.requests), tpsLabel(sums), costLabel(sums.cost, sums.unknown > 0)],
+                tooltip: '输入 ${tokens(sums.prompt)} · 输出 ${tokens(sums.output)}',
+              ),
           ]),
         ),
       ],
@@ -447,23 +442,62 @@ class _TooltipCard extends StatelessWidget {
   }
 }
 
-class _ModelRow extends StatelessWidget {
-  const _ModelRow({required this.cells, this.header = false, this.tooltip = ''});
-  final List<String> cells;
-  final bool header;
-  final String tooltip;
+/// Usage by model, like the web's table: the number columns are as wide as their widest
+/// cell and the model name takes the rest, so it shows whole whenever the panel allows.
+/// Narrower than that, the table keeps every name whole and scrolls sideways.
+class _ModelTable extends StatelessWidget {
+  const _ModelTable({required this.rows});
+  final List<({List<String> cells, String tooltip})> rows;
+
+  static const _header = ['模型', 'Token', '缓存命中', '请求', 'TPS', '费用'];
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final style = TextStyle(fontSize: 13, color: header ? scheme.mutedForeground : null, fontWeight: header ? FontWeight.w500 : null, fontFeatures: const [FontFeature.tabularFigures()]);
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
-      decoration: header ? BoxDecoration(border: Border(bottom: BorderSide(color: scheme.border))) : null,
-      child: Row(children: [
-        Expanded(flex: 3, child: Tooltip(message: header ? '' : cells[0], child: Text(cells[0], maxLines: 1, overflow: TextOverflow.ellipsis, style: style))),
-        Expanded(flex: 2, child: Tooltip(message: tooltip, child: Text(cells[1], textAlign: TextAlign.right, style: style))),
-        for (final cell in cells.skip(2)) Expanded(flex: 2, child: Text(cell, textAlign: TextAlign.right, maxLines: 1, style: style)),
-      ]),
-    );
+    const figures = [FontFeature.tabularFigures()];
+    final head = TextStyle(fontSize: 13, color: scheme.mutedForeground, fontWeight: FontWeight.w500, fontFeatures: figures);
+    const body = TextStyle(fontSize: 13, fontFeatures: figures);
+    Widget cell(String text, int column, TextStyle style, {String tooltip = ''}) {
+      final child = Padding(
+        // 12px at the table's edges, 16px between columns.
+        padding: EdgeInsets.fromLTRB(column == 0 ? 12 : 16, 9, column == _header.length - 1 ? 12 : 0, 9),
+        child: Text(text, maxLines: 1, softWrap: false, overflow: column == 0 ? TextOverflow.ellipsis : TextOverflow.visible, textAlign: column == 0 ? TextAlign.left : TextAlign.right, style: style),
+      );
+      return tooltip.isEmpty ? child : Tooltip(message: tooltip, child: child);
+    }
+
+    Table table(TableColumnWidth name) => Table(
+          columnWidths: {0: name},
+          defaultColumnWidth: const IntrinsicColumnWidth(),
+          defaultVerticalAlignment: TableCellVerticalAlignment.middle,
+          children: [
+            TableRow(
+              decoration: BoxDecoration(border: Border(bottom: BorderSide(color: scheme.border))),
+              children: [for (final (column, text) in _header.indexed) cell(text, column, head)],
+            ),
+            for (final row in rows)
+              TableRow(children: [
+                for (final (column, text) in row.cells.indexed)
+                  cell(text, column, body, tooltip: switch (column) { 0 => text, 1 => row.tooltip, _ => '' }),
+              ]),
+          ],
+        );
+
+    return LayoutBuilder(builder: (context, constraints) {
+      // The widest cell of each column plus its padding: when that fits, the name column takes the slack.
+      final scale = MediaQuery.textScalerOf(context);
+      double measure(String text, TextStyle style) => (TextPainter(text: TextSpan(text: text, style: DefaultTextStyle.of(context).style.merge(style)), textDirection: TextDirection.ltr, maxLines: 1, textScaler: scale)..layout()).width;
+      var needed = 0.0;
+      for (var column = 0; column < _header.length; column++) {
+        var widest = measure(_header[column], head);
+        for (final row in rows) {
+          final width = measure(row.cells[column], body);
+          if (width > widest) widest = width;
+        }
+        needed += widest.ceilToDouble() + (column == 0 ? 12 : 16) + (column == _header.length - 1 ? 12 : 0);
+      }
+      if (needed <= constraints.maxWidth) return table(const FlexColumnWidth());
+      return SingleChildScrollView(scrollDirection: Axis.horizontal, child: table(const IntrinsicColumnWidth()));
+    });
   }
 }
