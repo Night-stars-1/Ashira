@@ -201,6 +201,9 @@ jobs:
     steps:
       - uses: actions/download-artifact@v8
         with:
+          # Only the builds: docker/build-push-action uploads its own build record artifact,
+          # which would otherwise be attached when the image job finishes first.
+          pattern: ashira-*
           path: dist
           merge-multiple: true
       - name: Upload
