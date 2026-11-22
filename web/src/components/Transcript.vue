@@ -22,13 +22,6 @@ export type Block =
 const props = defineProps<{ blocks: Block[]; activity?: string }>()
 const emit = defineEmits<{ openAgent: [id: string] }>()
 
-/** What a finished background job was: `shell` is a command moved to the background. */
-function jobKind(role: string | undefined): string {
-  if (role === 'shell') return '后台命令'
-  if (role === 'scout') return '调研子任务'
-  return '子任务'
-}
-
 const content = ref<HTMLElement | null>(null)
 /** A sent picture opened full screen. */
 const viewing = ref<{ src: string; alt: string } | null>(null)
@@ -213,7 +206,7 @@ watch(content, (body, _previous, onCleanup) => {
         >
           <SquareTerminal v-if="row.block.role === 'shell'" class="mt-0.5 size-4 shrink-0" />
           <Bot v-else class="mt-0.5 size-4 shrink-0" />
-          <span class="min-w-0 flex-1 whitespace-pre-wrap"><span class="font-medium">{{ jobKind(row.block.role) }}</span> · {{ row.block.text }}</span>
+          <span class="min-w-0 flex-1 whitespace-pre-wrap">{{ row.block.text }}</span>
           <span class="shrink-0 underline">查看</span>
         </Button>
         <div v-else-if="'block' in row && row.block.kind === 'note'" class="rounded-lg border px-3 py-2 text-sm" :class="row.block.error ? 'border-destructive/40 text-destructive' : 'text-muted-foreground'">
