@@ -398,12 +398,14 @@ class UserBlock extends Block {
 }
 
 class NoteBlock extends Block {
-  NoteBlock(this.text, {this.error = false, this.agent, this.role});
+  NoteBlock(this.text, {this.error = false, this.agent, this.role, this.output});
   final String text;
   final bool error;
   final String? agent;
   /// For a finished background job: `task`, `scout` or `shell` (a command moved to the background).
   final String? role;
+  /// A background command's output, shown on its card.
+  final String? output;
 }
 
 class AssistantBlock extends Block {
@@ -436,7 +438,7 @@ List<Block> historyBlocks(Object? messages, [String Function(String path)? resol
           ],
         ));
       case 'note':
-        blocks.add(NoteBlock(str(row['text']), error: row['error'] == true, agent: optStr(row['agent']), role: optStr(row['role'])));
+        blocks.add(NoteBlock(str(row['text']), error: row['error'] == true, agent: optStr(row['agent']), role: optStr(row['role']), output: optStr(row['output'])));
       case 'assistant':
         final parts = <ReplyPart>[];
         for (final raw in asList(row['parts'])) {
@@ -580,11 +582,9 @@ class MemoryEntry {
 }
 
 class SubagentView {
-  const SubagentView({required this.blocks, required this.report, this.shell = false});
+  const SubagentView({required this.blocks, required this.report});
   final List<Block> blocks;
   final String report;
-  /// A background command: [report] is its output as the terminal printed it.
-  final bool shell;
 }
 
 /// One SSE frame. Fields are read lazily from the raw map; see `encode` in `src/serve.rs`.

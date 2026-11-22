@@ -15,7 +15,7 @@ class Transcript extends StatefulWidget {
   const Transcript({super.key, required this.blocks, this.activity = '', this.onOpenAgent, this.emptyText});
   final List<Block> blocks;
   final String activity;
-  final void Function(String id, String? role)? onOpenAgent;
+  final void Function(String id)? onOpenAgent;
   final String? emptyText;
 
   @override
@@ -286,7 +286,7 @@ class _Activity extends StatelessWidget {
 class _BlockView extends StatelessWidget {
   const _BlockView({required this.block, this.onOpenAgent});
   final Block block;
-  final void Function(String id, String? role)? onOpenAgent;
+  final void Function(String id)? onOpenAgent;
 
   @override
   Widget build(BuildContext context) {
@@ -314,11 +314,27 @@ class _BlockView extends StatelessWidget {
             ]),
           ),
         );
-      case NoteBlock(:final text, :final error, :final agent, :final role):
+      case NoteBlock(:final text, :final error, :final role, :final output) when role == 'shell':
+        // A background command: its output, as printed, right on the card (like a tool's).
+        final color = error ? scheme.error : scheme.mutedForeground;
+        return Container(
+          decoration: BoxDecoration(border: Border.all(color: error ? scheme.error.withValues(alpha: .4) : scheme.border), borderRadius: BorderRadius.circular(radius)),
+          clipBehavior: Clip.antiAlias,
+          child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Padding(padding: const EdgeInsets.only(right: 8, top: 2), child: Icon(Icons.terminal, size: 16, color: color)),
+                Expanded(child: Text(text, style: TextStyle(fontSize: 14, color: color, height: 1.5))),
+              ]),
+            ),
+            if (output != null) ...[const Divider(), _RawOutput(output)],
+          ]),
+        );
+      case NoteBlock(:final text, :final error, :final agent):
         final color = error ? scheme.error : scheme.mutedForeground;
         final body = Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          // The icon tells a background command (`shell`) from a subagent.
-          if (agent != null) Padding(padding: const EdgeInsets.only(right: 8, top: 2), child: Icon(role == 'shell' ? Icons.terminal : Icons.smart_toy_outlined, size: 16, color: color)),
+          if (agent != null) Padding(padding: const EdgeInsets.only(right: 8, top: 2), child: Icon(Icons.smart_toy_outlined, size: 16, color: color)),
           Expanded(child: Text(text, style: TextStyle(fontSize: 14, color: color, height: 1.5))),
           if (agent != null) Text('查看', style: TextStyle(fontSize: 14, color: color, decoration: TextDecoration.underline, decorationColor: color)),
         ]);
@@ -327,7 +343,7 @@ class _BlockView extends StatelessWidget {
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(radius), side: BorderSide(color: error ? scheme.error.withValues(alpha: .4) : scheme.border)),
           clipBehavior: Clip.antiAlias,
           child: InkWell(
-            onTap: agent == null || onOpenAgent == null ? null : () => onOpenAgent!(agent, role),
+            onTap: agent == null || onOpenAgent == null ? null : () => onOpenAgent!(agent),
             child: Padding(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8), child: body),
           ),
         );
@@ -335,6 +351,27 @@ class _BlockView extends StatelessWidget {
         throw StateError('assistant blocks render as turns');
     }
   }
+}
+
+/// Plain command output: monospace, up to 256px tall, wrapped or scrolling sideways per
+/// 设置 → 通用 → 显示 like a tool's output.
+class _RawOutput extends StatelessWidget {
+  const _RawOutput(this.text);
+  final String text;
+  @override
+  Widget build(BuildContext context) => ListenableBuilder(
+        listenable: displayPrefs,
+        builder: (context, _) {
+          final selectable = SelectableText(text, style: monoStyle(context).copyWith(fontSize: 12, height: 1.45));
+          return ConstrainedBox(
+            constraints: const BoxConstraints(maxHeight: 256),
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              child: displayPrefs.wrapToolOutput ? selectable : SingleChildScrollView(scrollDirection: Axis.horizontal, child: selectable),
+            ),
+          );
+        },
+      );
 }
 
 /// The web's reasoning block: short thoughts show inline; long ones (over 6 lines

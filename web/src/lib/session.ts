@@ -249,7 +249,7 @@ export function useAshira() {
     } else if (event.type === 'confirm_cancelled' && confirm.value?.id === event.id) confirm.value = null
     else if (event.type === 'question' && event.question) question.value = event.question
     else if (event.type === 'question_cancelled' && question.value?.id === event.id) question.value = null
-    else if (event.type === 'subagent') blocks.value.push({ kind: 'note', text: `${event.name || '未命名'}：${jobStatus(event.status)}${event.error ? `\n${event.error}` : ''}`, error: Boolean(event.error), agent: event.agent || undefined, role: event.role })
+    else if (event.type === 'subagent') blocks.value.push({ kind: 'note', text: `${event.name || '未命名'}：${jobStatus(event.status)}${event.error ? `\n${event.error}` : ''}`, error: Boolean(event.error), agent: event.agent || undefined, role: event.role, output: event.output || undefined })
     else if (event.type === 'peer_message') blocks.value.push({ kind: 'note', text: `${event.from || '代理'}：${event.body || ''}`, error: false })
     else if (event.type === 'done') {
       turnId.value = null
@@ -499,7 +499,7 @@ export function historyBlocks(body: unknown): Block[] {
       }) : []
       return [{ kind: 'user', text: value('text'), images: Array.isArray(row.images) ? row.images.flatMap((item) => { const src = imageSrc(item); return src ? [src] : [] }) : [], files }]
     }
-    if (row.kind === 'note') return [{ kind: 'note', text: value('text'), error: row.error === true, agent: typeof row.agent === 'string' && row.agent ? row.agent : undefined, role: typeof row.role === 'string' ? row.role : undefined }]
+    if (row.kind === 'note') return [{ kind: 'note', text: value('text'), error: row.error === true, agent: typeof row.agent === 'string' && row.agent ? row.agent : undefined, role: typeof row.role === 'string' ? row.role : undefined, output: value('output') || undefined }]
     if (row.kind !== 'assistant') return []
     const parts = Array.isArray(row.parts) ? row.parts.flatMap((item): ReplyPart[] => {
       if (!item || typeof item !== 'object') return []

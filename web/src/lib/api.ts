@@ -473,7 +473,7 @@ export const api = {
   browse: async (path = '') => browseListing(await request(`/v1/browse?path=${encodeURIComponent(path)}`)),
   subagent: async (id: string) => {
     const body = record(await request(`/v1/subagents?id=${encodeURIComponent(id)}`))
-    return { id: text(body.id), shell: body.shell === true, report: text(body.report), messages: body.messages }
+    return { id: text(body.id), report: text(body.report), messages: body.messages }
   },
   plugins: async () => text(record(await request('/v1/plugins')).text),
   mcp: async () => {

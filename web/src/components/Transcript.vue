@@ -9,6 +9,7 @@ import ImageViewer from '@/components/ImageViewer.vue'
 import WorkspaceImage from '@/components/WorkspaceImage.vue'
 import TextFileCard from '@/components/TextFileCard.vue'
 import { generatedImages, type ReplyMetrics } from '@/lib/api'
+import { wrapToolOutput } from '@/lib/display'
 
 /** `image`: the picture `read` gave the model (a data URL), shown on the card. */
 export type ToolCard = { name: string; summary: string; output: string; error: boolean; done: boolean; image?: string }
@@ -17,7 +18,8 @@ export type TextFile = { name: string; text: string; lines: number }
 export type Block =
   | { kind: 'user'; text: string; images?: string[]; files?: TextFile[] }
   | { kind: 'assistant'; parts: ReplyPart[]; live: boolean; metrics?: ReplyMetrics | null }
-  | { kind: 'note'; text: string; error: boolean; agent?: string; role?: string }
+  /** A finished background job; `role` `shell` is a command, whose `output` shows on the card. */
+  | { kind: 'note'; text: string; error: boolean; agent?: string; role?: string; output?: string }
 
 const props = defineProps<{ blocks: Block[]; activity?: string }>()
 const emit = defineEmits<{ openAgent: [id: string] }>()
@@ -196,6 +198,16 @@ watch(content, (body, _previous, onCleanup) => {
             </button>
           </div>
         </div>
+        <!-- A background command: its output, as printed, right on the card. -->
+        <div v-else-if="'block' in row && row.block.kind === 'note' && row.block.role === 'shell'" class="overflow-hidden rounded-lg border text-sm" :class="row.block.error ? 'border-destructive/40' : ''">
+          <div class="flex items-start gap-2 px-3 py-2" :class="row.block.error ? 'text-destructive' : 'text-muted-foreground'">
+            <SquareTerminal aria-hidden="true" class="mt-0.5 size-4 shrink-0" />
+            <span class="min-w-0 flex-1 whitespace-pre-wrap">{{ row.block.text }}</span>
+          </div>
+          <ScrollArea v-if="row.block.output" class="border-t" viewport-class="max-h-64" :scroll-x="!wrapToolOutput">
+            <pre class="px-3 py-2 font-mono text-xs" :class="wrapToolOutput ? 'whitespace-pre-wrap' : 'w-max min-w-full whitespace-pre [overflow-wrap:normal]'">{{ row.block.output }}</pre>
+          </ScrollArea>
+        </div>
         <Button
           v-else-if="'block' in row && row.block.kind === 'note' && row.block.agent"
           type="button"
@@ -204,8 +216,7 @@ watch(content, (body, _previous, onCleanup) => {
           :class="row.block.error ? 'text-destructive' : 'text-muted-foreground'"
           @click="'block' in row && row.block.kind === 'note' && row.block.agent && emit('openAgent', row.block.agent)"
         >
-          <SquareTerminal v-if="row.block.role === 'shell'" class="mt-0.5 size-4 shrink-0" />
-          <Bot v-else class="mt-0.5 size-4 shrink-0" />
+          <Bot class="mt-0.5 size-4 shrink-0" />
           <span class="min-w-0 flex-1 whitespace-pre-wrap">{{ row.block.text }}</span>
           <span class="shrink-0 underline">查看</span>
         </Button>

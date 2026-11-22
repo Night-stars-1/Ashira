@@ -859,12 +859,27 @@ fn push_subagent_results(blocks: &mut Vec<Value>, data: &str) {
             Some(other) if !other.is_empty() => other,
             _ => "已结束",
         };
-        let error = result["error"].as_str().filter(|error| !error.is_empty());
+        let role = result["agent"].as_str().unwrap_or("task");
+        let (error, output) = job_output(role, result["error"].as_str(), result["report"].as_str());
         let text = match error {
             Some(error) => format!("{name}：{status}\n{error}"),
             None => format!("{name}：{status}"),
         };
-        blocks.push(json!({"kind": "note", "text": text, "error": error.is_some(), "agent": result["id"].as_str().unwrap_or(""), "role": result["agent"].as_str().unwrap_or("task")}));
+        let mut note = json!({"kind": "note", "text": text, "error": error.is_some(), "agent": result["id"].as_str().unwrap_or(""), "role": role});
+        if let Some(output) = output { note["output"] = json!(cap_text(output)); }
+        blocks.push(note);
+    }
+}
+
+/// A finished job's error and the output its card shows. A background command (`shell`)
+/// shows what it printed; a timed-out or cancelled one carries that after its reason.
+/// An agent's report opens in a dialog instead, so it has none.
+fn job_output<'a>(role: &str, error: Option<&'a str>, report: Option<&'a str>) -> (Option<&'a str>, Option<&'a str>) {
+    let error = error.filter(|error| !error.is_empty());
+    if role != "shell" { return (error, None); }
+    match error.and_then(|error| error.split_once("; output so far:\n")) {
+        Some((why, printed)) => (Some(why), Some(printed)),
+        None => (error, report.filter(|report| !report.is_empty())),
     }
 }
 
@@ -1310,7 +1325,11 @@ fn encode(shared: &Shared, routing: &mut Routing, event: Event) -> Option<Frame>
             if op.question.as_ref().is_some_and(|question| question.id == id) { op.question = None; }
             json!({"type": "question_cancelled", "id": id})
         }
-        Event::SubagentFinished(completion) => json!({"type": "subagent", "id": completion.identity.id, "name": completion.identity.name, "role": completion.identity.role.as_str(), "status": completion.status.as_str(), "error": completion.error.as_deref()}),
+        Event::SubagentFinished(completion) => {
+            let role = completion.identity.role.as_str();
+            let (error, output) = job_output(role, completion.error.as_deref(), Some(&completion.output));
+            json!({"type": "subagent", "id": completion.identity.id, "name": completion.identity.name, "role": role, "status": completion.status.as_str(), "error": error, "output": output.map(cap_text)})
+        }
         Event::PeerMessage(message) => json!({"type": "peer_message", "from": message.from_name, "body": clip(&message.body)}),
         Event::Usage(usage) => json!({"type": "usage", "usage": usage_json(usage)}),
         Event::Statistics(snapshot) => with_statistics(json!({"type": "statistics"}), snapshot),
@@ -1454,14 +1473,12 @@ fn subagent_dir(id: &str) -> Result<PathBuf, String> {
 
 fn read_subagent(id: &str) -> Result<Value, String> {
     let dir = subagent_dir(id)?;
-    // A background shell command has no history; its streamed output is the whole view.
+    // A background shell command has no history; while it runs, its streamed output stands in for the report.
     let messages = project_history(&read_history(&dir), None, &format!("/v1/subagents/image?id={id}&n="));
     let mut report = latest_report(&dir);
-    let shell = messages.is_empty() && dir.join("output.txt").is_file();
     if report.is_empty() && let Ok(output) = std::fs::read_to_string(dir.join("output.txt")) { report = output; }
     Ok(json!({
         "id": id,
-        "shell": shell,
         "report": cap_view(&report),
         "messages": messages,
     }))
