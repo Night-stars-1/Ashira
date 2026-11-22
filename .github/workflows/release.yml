@@ -159,6 +159,10 @@ jobs:
           "$iscc" -Q "-DAppVersion=${version:-0.0.0}" "-DSourceDir=$(cygpath -w "$PWD/build/windows/x64/runner/Release")" "-DOutputName=$name" windows/installer/ashira.iss
           mkdir -p ../dist
           cp "windows/installer/Output/$name.exe" ../dist/
+          # Portable zip as well: v0.2.10 and older update from `-windows-x64.zip` and would not see the installer.
+          portable="ashira-app-${VERSION:-dev}-windows-x64"
+          cp -r build/windows/x64/runner/Release "../dist/$portable"
+          (cd ../dist && 7z a "$portable.zip" "$portable" > /dev/null && rm -r "$portable")
       - name: Build Linux
         if: matrix.name == 'linux-x64'
         run: |
