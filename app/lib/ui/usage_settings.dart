@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
 
@@ -221,7 +223,7 @@ class _TokenBars extends StatelessWidget {
   const _TokenBars({required this.slots});
   final List<_Slot> slots;
 
-  static const _leftAxis = 44.0, _bottomAxis = 22.0;
+  static const _leftAxis = 48.0, _bottomAxis = 22.0;
 
   double get _barWidth => (360 / slots.length).clamp(3, 18).toDouble();
 
@@ -229,8 +231,9 @@ class _TokenBars extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final top = slots.fold<int>(0, (max, slot) => slot.input + slot.output > max ? slot.input + slot.output : max);
-    final maxY = top == 0 ? 1.0 : top * 1.1;
-    final step = (slots.length / 7).ceil().clamp(1, 1 << 30);
+    final step = top == 0 ? 1.0 : axisStep(top.toDouble());
+    final maxY = top == 0 ? 1.0 : (top / step).ceil() * step;
+    final every = (slots.length / 7).ceil().clamp(1, 1 << 30);
     final label = TextStyle(fontSize: 11, color: scheme.mutedForeground);
     // `spaceBetween` puts the first and last bar edges on the plot edges, so bar
     // centers run from half a bar in on the left to half a bar in on the right.
@@ -250,7 +253,7 @@ class _TokenBars extends StatelessWidget {
           maxY: maxY,
           alignment: BarChartAlignment.spaceBetween,
           borderData: FlBorderData(show: false),
-          gridData: FlGridData(drawVerticalLine: false, horizontalInterval: top == 0 ? 1 : top / 2, getDrawingHorizontalLine: (_) => FlLine(color: scheme.border, strokeWidth: 1)),
+          gridData: FlGridData(drawVerticalLine: false, horizontalInterval: step, getDrawingHorizontalLine: (_) => FlLine(color: scheme.border, strokeWidth: 1)),
           titlesData: FlTitlesData(
             topTitles: const AxisTitles(),
             rightTitles: const AxisTitles(),
@@ -258,8 +261,8 @@ class _TokenBars extends StatelessWidget {
               sideTitles: SideTitles(
                 showTitles: true,
                 reservedSize: _leftAxis,
-                interval: top == 0 ? 1 : top / 2,
-                getTitlesWidget: (value, meta) => SideTitleWidget(meta: meta, child: Text(wan(value.round()), style: label)),
+                interval: step,
+                getTitlesWidget: (value, meta) => SideTitleWidget(meta: meta, child: Text(wan(value.round()), maxLines: 1, softWrap: false, style: label)),
               ),
             ),
             bottomTitles: AxisTitles(
@@ -268,7 +271,7 @@ class _TokenBars extends StatelessWidget {
                 reservedSize: _bottomAxis,
                 getTitlesWidget: (value, meta) {
                   final index = value.toInt();
-                  if (index % step != 0 && index != slots.length - 1) return const SizedBox.shrink();
+                  if (index % every != 0 && index != slots.length - 1) return const SizedBox.shrink();
                   return SideTitleWidget(meta: meta, child: Text(slots[index].tick, style: label));
                 },
               ),
@@ -296,6 +299,15 @@ class _TokenBars extends StatelessWidget {
       ),
     );
   }
+}
+
+/// A round 1/2/5 × 10ⁿ y-axis step giving about two ticks above zero, like the web's
+/// `numTicks: 3`. Topping the axis out on a tick keeps the labels short (`500万`, not `1021.6万`).
+double axisStep(double top) {
+  final rough = top / 2;
+  final power = math.pow(10, (math.log(rough) / math.ln10).floor()).toDouble();
+  final unit = rough / power;
+  return (unit <= 1 ? 1 : unit <= 2 ? 2 : unit <= 5 ? 5 : 10) * power;
 }
 
 /// The web's unovis crosshair over an fl_chart: anywhere in a column shows a 1px #888

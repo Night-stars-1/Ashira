@@ -192,7 +192,9 @@ class _TrendChart extends StatelessWidget {
     final scheme = Theme.of(context).colorScheme;
     final tick = TextStyle(fontSize: 11, color: scheme.mutedForeground);
     final top = metric == 'hit' ? 1.0 : points.fold<double>(0, (max, point) => (point.value ?? 0) > max ? point.value! : max);
-    final maxY = top == 0 ? 1.0 : (metric == 'hit' ? 1.0 : top * 1.1);
+    // The hit rate's axis is 0–100% in halves; others step at a round value up to a tick past the top.
+    final yStep = metric == 'hit' ? 0.5 : top == 0 ? 1.0 : axisStep(top);
+    final maxY = metric == 'hit' ? 1.0 : top == 0 ? 1.0 : (top / yStep).ceil() * yStep;
     final maxX = points.length == 1 ? 1.0 : (points.length - 1).toDouble();
     // A gap in the data breaks the line instead of drawing through zero.
     final spots = [for (final (index, point) in points.indexed) point.value == null ? FlSpot.nullSpot : FlSpot(index.toDouble(), point.value!)];
@@ -214,7 +216,7 @@ class _TrendChart extends StatelessWidget {
           minX: 0,
           maxX: maxX,
           borderData: FlBorderData(show: false),
-          gridData: FlGridData(drawVerticalLine: false, horizontalInterval: maxY / 2, getDrawingHorizontalLine: (_) => FlLine(color: scheme.border, strokeWidth: 1)),
+          gridData: FlGridData(drawVerticalLine: false, horizontalInterval: yStep, getDrawingHorizontalLine: (_) => FlLine(color: scheme.border, strokeWidth: 1)),
           titlesData: FlTitlesData(
             topTitles: const AxisTitles(),
             rightTitles: const AxisTitles(),
@@ -222,8 +224,8 @@ class _TrendChart extends StatelessWidget {
               sideTitles: SideTitles(
                 showTitles: true,
                 reservedSize: _leftAxis,
-                interval: maxY / 2,
-                getTitlesWidget: (value, meta) => SideTitleWidget(meta: meta, child: Text(_format(value, metric, short: true), style: tick)),
+                interval: yStep,
+                getTitlesWidget: (value, meta) => SideTitleWidget(meta: meta, child: Text(_format(value, metric, short: true), maxLines: 1, softWrap: false, style: tick)),
               ),
             ),
             bottomTitles: AxisTitles(
