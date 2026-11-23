@@ -55,6 +55,9 @@ pub struct Response {
     pub usage: Usage,
     pub usage_reported: bool,
     pub duration_ms: u64,
+    /// The output stopped at the token limit (`max_tokens`, `length`, `max_output_tokens`):
+    /// whatever it was writing, text or a tool call, is cut off.
+    pub truncated: bool,
 }
 
 pub enum StreamEvent<'a> {
@@ -435,6 +438,7 @@ struct AnthropicStream {
     output_reported: bool,
     done: bool,
     reasoning: bool,
+    truncated: bool,
 }
 
 impl Decoder for AnthropicStream {
@@ -517,6 +521,7 @@ impl Decoder for AnthropicStream {
                 self.input_reported |= u["input_tokens"].as_u64().is_some();
                 self.output_reported |= u["output_tokens"].as_u64().is_some();
                 self.usage.merge(u);
+                self.truncated |= ev["delta"]["stop_reason"] == "max_tokens";
             }
             "message_stop" => {
                 if self.reasoning {
@@ -540,7 +545,7 @@ impl Decoder for AnthropicStream {
             return Err("stream ended before message_stop".into());
         }
         self.content.retain(|b| !b.is_null());
-        Ok(Response { content: self.content, usage: self.usage, usage_reported: self.input_reported && self.output_reported, duration_ms: 0 })
+        Ok(Response { content: self.content, usage: self.usage, usage_reported: self.input_reported && self.output_reported, duration_ms: 0, truncated: self.truncated })
     }
 }
 

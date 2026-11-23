@@ -577,6 +577,9 @@ impl Ui {
                         if let Ok(messages) = serde_json::from_str::<Vec<crate::subagents::PeerMessage>>(data) {
                             for message in messages { self.commit_note(&format!("来自 {} [{}]：{}", message.from_name, message.from_role, message.body), DIM); }
                         } else { self.commit_note("收到子代理消息（历史记录）", DIM); }
+                    } else if text.starts_with(crate::recovery::TAG) {
+                        self.flush_reads();
+                        self.commit_note(crate::recovery::note(text), DIM);
                     } else { user.push_str(text); }
                 },
                 ("user", "image") => user.push_str("[图片附件]"),

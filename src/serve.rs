@@ -881,7 +881,7 @@ fn project_user(blocks: &mut Vec<Value>, message: &Value, shown: &mut Images) {
     let text = text.trim();
     if text.is_empty() && images.is_empty() && files.is_empty() { return; }
     if images.is_empty() && files.is_empty() { push_user_text(blocks, text); return; }
-    if !text.is_empty() && (text.starts_with("This session continues from an earlier conversation that was compacted") || text.starts_with("Untrusted subagent result data") || text.starts_with("Untrusted peer message")) {
+    if !text.is_empty() && crate::recovery::is_internal(text) {
         push_user_text(blocks, text);
         return;
     }
@@ -902,6 +902,10 @@ fn push_user_text(blocks: &mut Vec<Value>, text: &str) {
     }
     if text.starts_with("Untrusted peer message") {
         blocks.push(json!({"kind": "note", "text": "收到代理消息", "error": false}));
+        return;
+    }
+    if text.starts_with(crate::recovery::TAG) {
+        blocks.push(json!({"kind": "note", "text": crate::recovery::note(text), "error": false}));
         return;
     }
     blocks.push(json!({"kind": "user", "text": text}));

@@ -136,11 +136,12 @@ pub struct Stream {
     usage: Usage,
     usage_reported: bool,
     done: bool,
+    truncated: bool,
 }
 
 impl Stream {
     pub fn new(source: &str) -> Stream {
-        Stream { source: source.into(), items: Vec::new(), args: Vec::new(), text: Vec::new(), summaries: BTreeMap::new(), active_summary: None, usage: Usage::default(), usage_reported: false, done: false }
+        Stream { source: source.into(), items: Vec::new(), args: Vec::new(), text: Vec::new(), summaries: BTreeMap::new(), active_summary: None, usage: Usage::default(), usage_reported: false, done: false, truncated: false }
     }
 
     fn slot(&mut self, ev: &Value) -> usize {
@@ -201,6 +202,7 @@ impl Stream {
             let cached = get(&u["input_tokens_details"]["cached_tokens"]).min(input);
             self.usage = Usage { input: input - cached, output: get(&u["output_tokens"]), cache_read: cached, cache_write: 0 };
         }
+        self.truncated = resp["status"] == "incomplete" && resp["incomplete_details"]["reason"] == "max_output_tokens";
         self.done = true;
     }
 }
@@ -324,6 +326,6 @@ impl Decoder for Stream {
                 _ => {}
             }
         }
-        Ok(Response { content, usage: self.usage, usage_reported: self.usage_reported, duration_ms: 0 })
+        Ok(Response { content, usage: self.usage, usage_reported: self.usage_reported, duration_ms: 0, truncated: self.truncated })
     }
 }

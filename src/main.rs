@@ -23,6 +23,7 @@ mod openai;
 mod process_guard;
 mod model_config;
 mod serve;
+mod recovery;
 mod report;
 mod resume;
 mod question;

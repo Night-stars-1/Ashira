@@ -973,6 +973,9 @@ impl Agent {
     async fn respond_loop(&mut self, cancel: &CancellationToken, memory_baseline: Option<Arc<Snapshot>>, memory_user: Option<String>) -> Result<(), String> {
         let mut retried = false;
         let mut first = true;
+        // Consecutive recoveries of each kind; a reply that makes progress resets them.
+        let (mut empty_retries, mut length_retries, mut stop_retries) = (0u32, 0u32, 0u32);
+        let mut loops = crate::recovery::LoopGuard::default();
         loop {
             if self.identity.is_none() { self.deliver(); }
             self.receive_messages(cancel).await?;
@@ -1028,13 +1031,22 @@ impl Agent {
                 Err(e) => return Err(e),
             };
             retried = false;
-            let empty = resp.content.is_empty();
+            let empty = resp.content.iter().all(|block| match block["type"].as_str() {
+                Some("text") => block["text"].as_str().is_none_or(|text| text.trim().is_empty()),
+                Some("thinking" | "redacted_thinking") => true,
+                _ => false,
+            });
             let uses: Vec<Value> = resp.content.iter().filter(|b| b["type"] == "tool_use").cloned().collect();
-            if !empty {
-                let message = json!({ "role": "assistant", "content": resp.content });
-                if let Some(session) = &mut self.session { session.reply(&message, &record.id); }
-                self.push_history(message);
-            }
+            // Cut off at the output limit, or nothing to show: drop the reply, remind and ask again.
+            let retry = if resp.truncated && length_retries < crate::recovery::MAX_RETRIES {
+                length_retries += 1;
+                Some(crate::recovery::reminder("length", length_retries))
+            } else if empty && !resp.truncated && empty_retries < crate::recovery::MAX_RETRIES {
+                empty_retries += 1;
+                Some(crate::recovery::reminder("empty", empty_retries))
+            } else {
+                None
+            };
             if resp.usage_reported {
                 // The provider snapshot already includes this assistant response.
                 self.usage = resp.usage;
@@ -1042,13 +1054,36 @@ impl Agent {
                 if let Some(s) = &mut self.session { s.usage(&resp.usage); }
                 if !sub { sh.emit(Event::Usage(resp.usage)); }
             }
+            if let Some(reminder) = retry {
+                if !sub { sh.emit(Event::Notice(if resp.truncated { "回复超出输出长度上限，已丢弃并提醒模型分步完成".into() } else { "模型返回了空回复，已提醒它继续".into() })); }
+                self.push(api::user_text(&reminder));
+                continue;
+            }
+            if !resp.content.is_empty() {
+                let message = json!({ "role": "assistant", "content": resp.content });
+                if let Some(session) = &mut self.session { session.reply(&message, &record.id); }
+                self.push_history(message);
+            }
             self.publish_context();
-            if empty {
+            if empty && uses.is_empty() {
                 if sub { return Err("child returned no response".into()); }
                 return Ok(());
             }
+            empty_retries = 0;
+            if !resp.truncated { length_retries = 0; }
             if uses.is_empty() {
                 if self.receive_messages(cancel).await? || self.take_steered() { continue; }
+                // A reply that answers a stop reminder is the final answer; judging it again
+                // would only chain more reminders.
+                if stop_retries == 0 && let Some(request) = self.last_request() {
+                    let message = self.last_text();
+                    if !message.trim().is_empty() && self.stopped_early(&model, request, &message, cancel).await {
+                        stop_retries += 1;
+                        if !sub { sh.emit(Event::Notice("模型说要继续却停下了，已提醒它接着做".into())); }
+                        self.push(api::user_text(&crate::recovery::reminder("stop", stop_retries)));
+                        continue;
+                    }
+                }
                 if let Some(baseline) = memory_baseline {
                     let answer = self.last_text();
                     if !answer.trim().is_empty() && memory_user.as_ref().is_some_and(|user| !user.trim().is_empty()) {
@@ -1059,8 +1094,14 @@ impl Agent {
                 self.name_session(&model);
                 return Ok(());
             }
+            stop_retries = 0;
             let results = self.run_tools(&uses, cancel).await;
+            let reminder = loops.record(&uses, &results);
             self.push(json!({ "role": "user", "content": results }));
+            if let Some(reminder) = reminder {
+                if !sub { sh.emit(Event::Notice("模型在重复同样的工具调用，已提醒它换个做法".into())); }
+                self.push(api::user_text(&reminder));
+            }
             if cancel.is_cancelled() {
                 return Err(CANCELLED.into());
             }
@@ -1506,6 +1547,26 @@ impl Agent {
 
     fn last_text(&self) -> String {
         self.history.iter().rev().find(|m| m["role"] == "assistant").map(|m| text_of(&m["content"])).unwrap_or_default()
+    }
+
+    /// The user's latest typed request: user text that is not a tool result, a subagent or
+    /// peer delivery, a compaction summary or one of our own reminders.
+    fn last_request(&self) -> Option<String> {
+        self.history.iter().rev().filter(|m| m["role"] == "user").map(|m| text_of(&m["content"]))
+            .find(|text| !text.trim().is_empty() && !crate::recovery::is_internal(text))
+    }
+
+    /// Asks the `title` role model whether `message` announced work and then stopped.
+    async fn stopped_early(&self, model: &Arc<Model>, request: String, message: &str, cancel: &CancellationToken) -> bool {
+        let judge = self.shared.role_model("title", model);
+        let client = &judge.client;
+        let Ok(request_id) = self.begin_request(client, crate::stats::Kind::Title, cancel).await else { return false };
+        let mut record = None;
+        let stopped = crate::recovery::stopped_early(client, &request, message, cancel, |response, started| {
+            record = Some(self.request_record(request_id, client, crate::stats::Kind::Title, response, started));
+        }).await;
+        if let Some(record) = record { let _ = self.record_request(&record).await; }
+        stopped
     }
 
     /// Replaces the history with a model-written summary. Uses the same system

@@ -195,6 +195,7 @@ pub struct Stream {
     finished: bool,
     reasoning_open: bool,
     done: bool,
+    truncated: bool,
 }
 
 impl Decoder for Stream {
@@ -271,6 +272,7 @@ impl Decoder for Stream {
                 self.reasoning_open = false;
             }
             self.finished = true;
+            self.truncated |= choice["finish_reason"] == "length";
         }
         Ok(())
     }
@@ -294,6 +296,6 @@ impl Decoder for Stream {
             let id = if c.id.is_empty() { format!("call_{i}") } else { c.id };
             content.push(json!({ "type": "tool_use", "id": id, "name": c.name, "input": parse_input(c.args) }));
         }
-        Ok(Response { content, usage: self.usage, usage_reported: self.usage_reported, duration_ms: 0 })
+        Ok(Response { content, usage: self.usage, usage_reported: self.usage_reported, duration_ms: 0, truncated: self.truncated })
     }
 }
