@@ -47,7 +47,7 @@ pub fn definitions(role: Option<crate::subagents::Role>, mcp: &[Value], plugins:
     let mut tools = vec![
         json!({
             "name": "bash",
-            "description": "Run a command in the working directory with the shell named in the system prompt, as `<shell> -c <command>`, and return combined stdout/stderr. The command is POSIX shell (bash) syntax on every platform, Windows included: use forward slashes or quoted paths, `$VAR` not `%VAR%` or `$env:VAR`. To call PowerShell or cmd, wrap the script in single quotes so the shell passes `$` through untouched, e.g. `powershell.exe -NoProfile -Command 'Get-Process | Where-Object { $_.CPU -gt 10 }'`; for a longer script, feed it from a quoted heredoc (`powershell.exe -NoProfile -Command - <<'EOF'`). A command still running after 60 seconds moves to the background as a job (`background: true` does that at once): the call returns a job receipt, the result arrives later as subagent-results data, and `wait`, `task_status` and `task_cancel` work on it. Use that for builds, test suites and other long commands instead of `&`. Servers and watchers that never exit still need `cmd > log.txt 2>&1 &`.",
+            "description": "Run a command in the working directory with the shell named in the system prompt, as `<shell> -c <command>`, and return combined stdout/stderr. Each call starts fresh in the working directory, so a `cd` does not carry over to the next call. The command is POSIX shell (bash) syntax on every platform, Windows included: use forward slashes or quoted paths, `$VAR` not `%VAR%` or `$env:VAR`. To call PowerShell or cmd, wrap the script in single quotes so the shell passes `$` through untouched, e.g. `powershell.exe -NoProfile -Command 'Get-Process | Where-Object { $_.CPU -gt 10 }'`; for a longer script, feed it from a quoted heredoc (`powershell.exe -NoProfile -Command - <<'EOF'`). Use `read`, `grep`, `glob` and `edit` rather than cat, find, grep or sed for files. Long output keeps its start and end and names a file holding the full text, so do not pipe through head or tail by habit. A command still running after 60 seconds moves to the background as a job (`background: true` does that at once): the call returns a job receipt, the result arrives later as subagent-results data, and `wait`, `task_status` and `task_cancel` work on it; never poll it with sleep. Use that for builds, test suites and other long commands instead of `&`. Servers and watchers that never exit still need `cmd > log.txt 2>&1 &`.",
             "input_schema": {
                 "type": "object",
                 "properties": {
@@ -73,7 +73,7 @@ pub fn definitions(role: Option<crate::subagents::Role>, mcp: &[Value], plugins:
         }),
         json!({
             "name": "write",
-            "description": "Create or overwrite a file, or send an untrusted peer message with agent://parent or agent://<id>; parent may send to agent://all. Sending returns an acceptance receipt, not delivery confirmation.",
+            "description": "Create a new file or replace a whole file, or send an untrusted peer message with agent://parent or agent://<id>; parent may send to agent://all. Change existing files with `edit` instead. Do not create documentation files unless asked. Sending returns an acceptance receipt, not delivery confirmation.",
             "input_schema": {
                 "type": "object",
                 "properties": {
@@ -112,13 +112,13 @@ pub fn definitions(role: Option<crate::subagents::Role>, mcp: &[Value], plugins:
         }),
     ];
     tools.extend([json!({
-        "name": "glob", "description": "Find local paths matching a glob pattern, respecting ignore files. Results are bounded.",
+        "name": "glob", "description": "Find local paths matching a glob pattern, respecting ignore files. `*.rs` matches at any depth; `src/*.rs` only direct children of src; `src/**/*.rs` recurses. Results are bounded.",
         "input_schema": { "type": "object", "properties": {
             "pattern": {"type": "string"}, "path": {"type": "string", "description": "Search root, default current directory"},
             "limit": {"type": "integer", "description": "Maximum results, default 100, maximum 1000"}
         }, "required": ["pattern"] }
     }), json!({
-        "name": "grep", "description": "Search local text files using a regular expression, respecting ignore files. Results are bounded.",
+        "name": "grep", "description": "Search local text files using a regular expression, respecting ignore files. Narrow with `path` and `glob` instead of searching the whole tree repeatedly. Results are bounded.",
         "input_schema": { "type": "object", "properties": {
             "pattern": {"type": "string"}, "path": {"type": "string", "description": "File or search root, default current directory"},
             "glob": {"type": "string", "description": "Optional file glob"}, "case_sensitive": {"type": "boolean", "description": "Default true"},
@@ -127,7 +127,7 @@ pub fn definitions(role: Option<crate::subagents::Role>, mcp: &[Value], plugins:
     })]);
     if role.is_none() {
         tools.push(json!({
-            "name": "todo", "description": "Maintain the current main session's phased task list. Identify tasks by exact full content, never invented IDs. init replaces the list; start marks one or more tasks in progress without clearing the others; done completes; drop abandons; rm removes; block/unblock pause/resume; append adds unique items; view reads the current list. Several tasks may stay in progress. When none is active, the earliest pending task starts automatically. Blocked, completed, and abandoned tasks never auto-start. State survives compaction and resume.",
+            "name": "todo", "description": "Maintain the current main session's phased task list. Identify tasks by exact full content, never invented IDs. init replaces the list; start marks one or more tasks in progress without clearing the others; done completes; drop abandons; rm removes; block/unblock pause/resume; append adds unique items; view reads the current list. Several tasks may stay in progress. When none is active, the earliest pending task starts automatically. Blocked, completed, and abandoned tasks never auto-start. State survives compaction and resume. Call it alongside your next real tool call, not as a step of its own: init beside the first read, done beside the next action. List every item the user asked for separately; never leave one out.",
             "input_schema": {"type": "object", "properties": {
                 "op": {"type": "string", "enum": ["init", "start", "done", "drop", "rm", "block", "unblock", "append", "view"]},
                 "list": {"type": "array", "minItems": 1, "description": "For init: ordered phases with unique names and globally unique task contents; do not combine with items or phase.", "items": {"type": "object", "properties": {"phase": {"type": "string"}, "items": {"type": "array", "minItems": 1, "items": {"type": "string"}}}, "required": ["phase", "items"]}},
@@ -176,7 +176,7 @@ pub fn definitions(role: Option<crate::subagents::Role>, mcp: &[Value], plugins:
         })]);
     }
     tools.push(json!({
-        "name": "wait", "description": "Wait for incoming messages or selected jobs. Does not consume messages or completions; message receipts become delivered only after history persistence.",
+        "name": "wait", "description": "Wait for incoming messages or selected jobs, only when you are blocked on them and have nothing else to do. Results and messages arrive on their own; never poll. When one result arrives while others still run, act on it before waiting again. Does not consume messages or completions; message receipts become delivered only after history persistence.",
         "input_schema": {"type": "object", "properties": {"ids": {"type": "array", "items": {"type": "string"}}}}
     }));
     if image { tools.push(crate::image_gen::definition()); }

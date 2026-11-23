@@ -4,9 +4,16 @@ use tokio_util::sync::CancellationToken;
 
 use crate::api::{self, Client};
 
-const SYSTEM: &str = "You name conversations. Reply with only a short title for the conversation below: \
-in the user's language, at most 20 Chinese characters or 8 English words, \
-describing the task rather than quoting it. No quotes, no trailing punctuation, no explanation.";
+const SYSTEM: &str = "You name coding-agent sessions. Reply with only a short title for the task in the conversation below: \
+in the user's language, at most 20 Chinese characters or 8 English words.
+
+Rules:
+- Name the user's goal as a short phrase built from their own key words (the feature, component or error they name), not the assistant's current step. Avoid vague words like 逻辑, 问题, 功能, logic, issues.
+- No quotes, trailing punctuation or explanation.
+
+Examples:
+- \"重试队列在 redis 重启后会丢任务，帮我看看\" → 修复重试队列丢任务
+- \"can we get rid of the npm run build warning about peer deps\" → Remove peer dependency build warning";
 
 /// Input is clipped so a pasted log cannot make naming expensive.
 const MAX_INPUT_CHARS: usize = 2000;

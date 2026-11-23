@@ -1155,7 +1155,7 @@ impl Agent {
         let mut out = if cancel.is_cancelled() {
             Output::err("skipped: cancelled by user")
         } else if let Some(raw) = input.get("_invalid_json") {
-            Output::err(format!("tool input was not valid JSON (likely cut off by max_tokens): {raw}"))
+            Output::err(format!("tool input was not valid JSON, most likely cut off by the output token limit: {raw}\nDo not resend the same large input. Plan only the next step, and write a large file as a short working version first, then extend it with further edits."))
         } else if !tools::allowed(self.identity.as_ref().map(|i| i.role), name, input) {
             Output::err(format!("tool `{name}` is not allowed for this agent"))
         } else {
