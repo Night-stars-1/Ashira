@@ -5,6 +5,7 @@ import '../api/models.dart';
 import '../state/ashira_state.dart';
 import '../state/display_prefs.dart';
 import 'about_settings.dart';
+import 'approval_settings.dart';
 import 'dialogs.dart';
 import 'format.dart';
 import 'model_settings.dart';
@@ -309,6 +310,9 @@ class _SettingsState extends State<_Settings> {
             ])),
         ],
       'display' => [
+          sectionTitle('审批'),
+          ApprovalSettingsCard(state: widget.state),
+          const SizedBox(height: 16),
           sectionTitle('显示'),
           ListenableBuilder(
             listenable: displayPrefs,

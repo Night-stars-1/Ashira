@@ -264,45 +264,82 @@ class _FileEditorState extends State<FileEditor> {
   bool _loading = true;
   bool _writing = false;
   String _error = '';
+  String? _kind;
+  int _request = 0;
+  int _offset = 0;
+  int? _nextOffset;
+  final _previousOffsets = <int>[];
 
-  bool get _dirty => !_loading && _code.text != _saved;
+  bool get _dirty => _kind == 'text' && !_loading && _code.text != _saved;
 
   @override
   void initState() {
     super.initState();
-    _code.addListener(() => setState(() {}));
-    _read();
+    _code.addListener(() {
+      if (_kind == 'text' && !_loading) setState(() {});
+    });
+    _read(_path);
   }
 
-  void _read() {
-    final path = _path;
-    widget.client.readFile(widget.sessionId, path).then((text) {
-      if (!mounted || path != _path) return;
-      _code.text = text;
-      // Compare against what the editor holds, so line-ending normalization is not an edit.
-      _saved = _code.text;
+  Future<void> _read(String path, {int offset = 0, bool? forward}) async {
+    final request = ++_request;
+    setState(() {
+      if (forward == null) {
+        _path = path;
+        _kind = null;
+        _saved = '';
+        _writing = false;
+        _offset = 0;
+        _nextOffset = null;
+        _previousOffsets.clear();
+      }
+      _loading = true;
+      _error = '';
+    });
+    if (forward == null) {
+      _code.text = '';
       _code.clearHistory();
-      setState(() => _loading = false);
-    }).catchError((Object error) {
-      if (!mounted || path != _path) return;
+    }
+    try {
+      final file = await widget.client.readFile(widget.sessionId, path, offset: offset);
+      if (!mounted || request != _request) return;
+      _code.text = file.kind == 'binary' ? '' : file.text;
+      _code.clearHistory();
+      setState(() {
+        _kind = file.kind;
+        // Compare against what the editor holds, so line-ending normalization is not an edit.
+        _saved = file.kind == 'text' ? _code.text : '';
+        if (file.kind == 'large') {
+          if (forward == true) _previousOffsets.add(_offset);
+          if (forward == false) _previousOffsets.removeLast();
+          _offset = offset;
+          _nextOffset = file.nextOffset;
+        } else {
+          _offset = 0;
+          _nextOffset = null;
+          _previousOffsets.clear();
+        }
+        _loading = false;
+      });
+    } catch (error) {
+      if (!mounted || request != _request) return;
       setState(() {
         _loading = false;
         _error = errorText(error, '无法读取文件');
       });
-    });
+    }
+  }
+
+  void _movePage(bool forward) {
+    if (_loading || _kind != 'large') return;
+    final target = forward ? _nextOffset : (_previousOffsets.isEmpty ? null : _previousOffsets.last);
+    if (target != null) _read(_path, offset: target, forward: forward);
   }
 
   /// Opens another file from the tree; unsaved edits ask first.
   Future<void> _open(String path) async {
     if (path == _path || (_dirty && !await _confirmDiscard()) || !mounted) return;
-    setState(() {
-      _path = path;
-      _loading = true;
-      _error = '';
-      _saved = '';
-    });
-    _code.text = '';
-    _read();
+    await _read(path);
   }
 
   @override
@@ -313,19 +350,24 @@ class _FileEditorState extends State<FileEditor> {
 
   Future<void> _save() async {
     if (!_dirty || _writing) return;
+    final request = _request;
     final text = _code.text;
     setState(() {
       _writing = true;
       _error = '';
     });
+    String? failure;
     try {
       await widget.client.writeFile(widget.sessionId, _path, text);
-      _saved = text;
     } catch (error) {
-      _error = errorText(error, '保存失败');
-    } finally {
-      if (mounted) setState(() => _writing = false);
+      failure = errorText(error, '保存失败');
     }
+    if (!mounted || request != _request) return;
+    setState(() {
+      if (failure == null) _saved = text;
+      _error = failure ?? '';
+      _writing = false;
+    });
   }
 
   Future<bool> _confirmDiscard() async =>
@@ -348,10 +390,38 @@ class _FileEditorState extends State<FileEditor> {
     if (mounted) Navigator.of(context).pop(showFiles);
   }
 
+  Widget _editorView(BuildContext context) {
+    if (_kind == 'text') return CodeView(key: ValueKey(_path), controller: _code, path: _path);
+    if (_kind == 'large') {
+      final scheme = Theme.of(context).colorScheme;
+      final mono = monoStyle(context);
+      return CodeEditor(
+        key: ValueKey((_path, _offset)),
+        controller: _code,
+        readOnly: true,
+        wordWrap: true,
+        padding: const EdgeInsets.all(12),
+        style: CodeEditorStyle(
+          fontSize: 13,
+          fontHeight: 1.5,
+          fontFamily: mono.fontFamily,
+          fontFamilyFallback: mono.fontFamilyFallback,
+          textColor: scheme.onSurface,
+          backgroundColor: scheme.surface,
+          selectionColor: scheme.outline.withValues(alpha: .4),
+        ),
+      );
+    }
+    if (_loading) return const Center(child: SizedBox.square(dimension: 18, child: CircularProgressIndicator()));
+    return const SizedBox.shrink();
+  }
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final wide = MediaQuery.sizeOf(context).width >= 720;
+    final notice = _error.isNotEmpty ? _error : (_kind == 'binary' ? '此文件不是文本，无法预览。' : '');
+    final statusStyle = TextStyle(fontSize: 13, color: scheme.mutedForeground);
     return PopScope(
       canPop: !_dirty,
       onPopInvokedWithResult: (popped, _) async {
@@ -371,12 +441,6 @@ class _FileEditorState extends State<FileEditor> {
                 IconButton(tooltip: '关闭', icon: const Icon(Icons.close), onPressed: () => _close()),
               ]),
             ),
-            if (_error.isNotEmpty)
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
-                color: scheme.error.withValues(alpha: .1),
-                child: Text(_error, style: TextStyle(fontSize: 13, color: scheme.error)),
-              ),
             Expanded(
               child: Container(
                 decoration: BoxDecoration(border: Border.symmetric(horizontal: BorderSide(color: scheme.border))),
@@ -389,21 +453,37 @@ class _FileEditorState extends State<FileEditor> {
                       child: FilesPanel(client: widget.client, sessionId: widget.sessionId, cwd: widget.cwd, active: _path, onOpen: _open),
                     ),
                   Expanded(
-                    child: _loading
-                        ? const Center(child: SizedBox.square(dimension: 18, child: CircularProgressIndicator()))
-                        : CodeView(key: ValueKey(_path), controller: _code, path: _path),
+                    child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+                      if (notice.isNotEmpty)
+                        Semantics(
+                          liveRegion: true,
+                          child: Padding(padding: const EdgeInsets.all(12), child: Text(notice, style: statusStyle)),
+                        ),
+                      Expanded(child: _editorView(context)),
+                    ]),
                   ),
                 ]),
               ),
             ),
-            Padding(
-              padding: const EdgeInsets.all(12),
-              child: Row(children: [
-                if (_dirty) Text('未保存', style: TextStyle(fontSize: 13, color: scheme.mutedForeground)),
-                const Spacer(),
-                FilledButton(onPressed: _dirty && !_writing ? _save : null, child: Text(_writing ? '保存中…' : '保存')),
-              ]),
-            ),
+            if (_kind == 'large')
+              Padding(
+                padding: const EdgeInsets.all(12),
+                child: Row(children: [
+                  Expanded(child: Text(_loading ? '正在加载…' : '只读预览 · 第 ${_previousOffsets.length + 1} 段', style: statusStyle)),
+                  OutlinedButton(onPressed: _loading || _previousOffsets.isEmpty ? null : () => _movePage(false), child: const Text('上一段')),
+                  const SizedBox(width: 8),
+                  OutlinedButton(onPressed: _loading || _nextOffset == null ? null : () => _movePage(true), child: const Text('下一段')),
+                ]),
+              ),
+            if (_kind == 'text')
+              Padding(
+                padding: const EdgeInsets.all(12),
+                child: Row(children: [
+                  if (_dirty) Text('未保存', style: statusStyle),
+                  const Spacer(),
+                  FilledButton(onPressed: _dirty && !_writing ? _save : null, child: Text(_writing ? '保存中…' : '保存')),
+                ]),
+              ),
           ]),
         ),
       ),

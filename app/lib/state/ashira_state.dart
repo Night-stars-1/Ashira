@@ -35,6 +35,8 @@ class AshiraState extends ChangeNotifier {
   bool restartPending = false;
   /// The server runs from the Docker image: it is updated by pulling the image.
   bool serverInContainer = false;
+  /// 设置 → 通用 hid the chat's approval switch: sessions run in the default mode.
+  bool approvalHidden = false;
   bool restarting = false;
   bool updating = false;
   /// The server update's download while it runs, polled for the progress bar.
@@ -61,11 +63,24 @@ class AshiraState extends ChangeNotifier {
   /// Opening a session: the chat stays blank until its history arrives, like the web.
   bool loading = true;
   bool sending = false;
+  final Set<String> _approvalRequests = {};
   String error = '';
+  /// [error] is a failed turn, so 重试 can ask the model again.
+  bool errorRetry = false;
+  /// Messages sent while the reply ran, until the model reads them or hands them back.
+  List<String> pendingSteer = [];
+  /// The text of steered messages the turn ended without reading; the composer takes it back.
+  String? returnedDraft;
+  /// History paging: the index of the first block shown, and how many the session has.
+  int historyStart = 0;
+  int historyTotal = 0;
+  bool loadingEarlier = false;
   bool unauthorized = false;
 
   int _view = 0;
   int _revision = 0;
+  // Approval changes run outside turns, so they must not invalidate an in-flight send.
+  int _approvalRevision = 0;
   StreamSubscription<AgentEvent>? _events;
   Timer? _reconnect;
   Timer? _notify;
@@ -76,6 +91,9 @@ class AshiraState extends ChangeNotifier {
   bool get hasReplyText => turnId != null && _textTurnId == turnId;
   String get cwd => status?.cwd.isNotEmpty == true ? status!.cwd : initialCwd;
   String get modelTitle => _titled(status?.model ?? '', status?.modelName ?? '');
+  bool get approvalSubmitting => _approvalRequests.contains(shownId);
+  bool get canSetApprovalMode => !(_disposed || unauthorized || loading || busy || sending || approvalSubmitting) &&
+      connected && shownId.isNotEmpty && status != null;
 
   String get sessionName {
     if (shownId.isEmpty) return '新会话';
@@ -121,6 +139,7 @@ class AshiraState extends ChangeNotifier {
     serverUpdate = service.update;
     restartPending = service.restartPending;
     serverInContainer = service.container;
+    approvalHidden = service.approvalHidden;
   }
 
   /// Re-reads the server-wide facts, so an `ashira update` on the server shows its restart
@@ -257,19 +276,22 @@ class AshiraState extends ChangeNotifier {
     question = null;
     status = null;
     blocks = [];
+    historyStart = 0;
+    historyTotal = 0;
+    pendingSteer = [];
     shownId = '';
-    error = '';
+    _clearError();
     _changed();
     try {
       final selected = create ? await client.newSession(cwd) : id;
       if (mine != _view || selected == null || selected.isEmpty) return;
-      final view = await client.session(selected);
+      final view = await client.session(selected, limit: _historyPage);
       if (mine != _view) return;
       shownId = selected;
       _apply(view);
       loading = false;
       unawaited(ConnectionSettings.rememberSession(selected));
-      _connect(selected, mine, fresh: true);
+      _connect(selected, mine);
       if (create) await refresh();
       _changed();
     } catch (reason) {
@@ -282,9 +304,18 @@ class AshiraState extends ChangeNotifier {
     }
   }
 
-  void _apply(SessionView view) {
-    status = view.status;
+  void _setStatus(Status value, {int? approvalSnapshot}) {
+    final currentMode = status?.approvalMode;
+    status = currentMode != null && approvalSnapshot != null && approvalSnapshot != _approvalRevision
+        ? value.copyWith(approvalMode: currentMode)
+        : value;
+  }
+
+  void _apply(SessionView view, {int? approvalSnapshot}) {
+    _setStatus(view.status, approvalSnapshot: approvalSnapshot);
     blocks = view.blocks;
+    historyStart = view.start;
+    historyTotal = view.total;
     turnId = view.turnId;
     confirm = view.confirm;
     question = view.question;
@@ -293,20 +324,43 @@ class AshiraState extends ChangeNotifier {
   Future<void> _syncHistory() async {
     final mine = _view;
     final snapshot = _revision;
+    final approvalSnapshot = _approvalRevision;
     final id = shownId;
     if (id.isEmpty) return;
-    final view = await client.session(id);
+    // Keep the pages already scrolled back to: re-read from the same first block.
+    final limit = historyTotal - historyStart + 50 > _historyPage ? historyTotal - historyStart + 50 : _historyPage;
+    final view = await client.session(id, limit: limit);
     if (mine != _view || snapshot != _revision) return;
-    _apply(view);
+    _apply(view, approvalSnapshot: approvalSnapshot);
     _changed();
   }
 
-  /// `fresh`: the history was just loaded; the stream's first `ready` need not fetch it again.
-  void _connect(String id, int mine, {bool fresh = false}) {
+  /// The page before the first block shown, prepended; returns whether it added any.
+  Future<bool> loadEarlier() async {
+    final id = shownId;
+    final mine = _view;
+    if (id.isEmpty || loadingEarlier || historyStart == 0) return false;
+    loadingEarlier = true;
+    _changed();
+    try {
+      final view = await client.session(id, before: historyStart, limit: _historyPage);
+      if (mine != _view) return false;
+      blocks = [...view.blocks, ...blocks];
+      historyStart = view.start;
+      return view.blocks.isNotEmpty;
+    } catch (reason) {
+      if (mine == _view) _fail(reason, '无法加载更早的消息');
+      return false;
+    } finally {
+      if (mine == _view) {
+        loadingEarlier = false;
+        _changed();
+      }
+    }
+  }
+
+  void _connect(String id, int mine) {
     _closeEvents();
-    // History read before the stream was open can miss events; any one since then means re-read.
-    var skipReady = fresh;
-    final loadedAt = _revision;
     _events = client.events(id).listen(
       (event) {
         if (mine != _view) return;
@@ -315,9 +369,7 @@ class AshiraState extends ChangeNotifier {
           if (event.type == 'ready') unawaited(refreshServer().catchError((Object _) {}));
           connected = true;
           _changed();
-          final first = skipReady;
-          skipReady = false;
-          if (first && event.type == 'ready' && _revision == loadedAt && !busy) return;
+          // Re-read on the first ready too: settings may have changed before the stream subscribed.
           _syncHistory().catchError((Object reason) {
             if (mine == _view) _fail(reason, '无法加载会话');
           });
@@ -389,12 +441,21 @@ class AshiraState extends ChangeNotifier {
 
   void _onEvent(AgentEvent event) {
     if (event.sessionId != shownId) return;
+    if (event.type == 'approval_mode') {
+      final mode = event.field('approvalMode');
+      if (mode != null && status != null && (mode == 'manual' || mode == 'auto' || mode == 'full')) {
+        _approvalRevision++;
+        status = status!.copyWith(approvalMode: mode);
+        _changed();
+      }
+      return;
+    }
     if (event.type == 'turn_start' && event.turnId != null) {
       _revision++;
       turnId = event.turnId;
       confirm = null;
       question = null;
-      error = '';
+      _clearError();
       running = {...running, shownId};
       _changed();
       return;
@@ -407,6 +468,18 @@ class AshiraState extends ChangeNotifier {
     switch (event.type) {
       case 'user_message':
         blocks.addAll(historyBlocks([event.raw['message']]));
+      case 'steered':
+        // Shown where the model read them; the pending copies go as they arrive.
+        final read = historyBlocks(event.raw['messages']);
+        pendingSteer = pendingSteer.skip(read.length).toList();
+        final current = blocks.isEmpty ? null : blocks.last;
+        if (current is AssistantBlock) current.live = false;
+        blocks.addAll(read);
+      case 'steer_returned':
+        // The turn ended before reading them: back into the composer to send next.
+        final texts = [for (final block in historyBlocks(event.raw['messages'])) if (block is UserBlock && block.text.isNotEmpty) block.text];
+        pendingSteer = [];
+        if (texts.isNotEmpty) returnedDraft = texts.join('\n\n');
       case 'text':
         _appendText(event.text, reasoning: false);
         if (event.text.trim().isNotEmpty && event.turnId != null) _textTurnId = event.turnId;
@@ -460,7 +533,10 @@ class AshiraState extends ChangeNotifier {
         if (current is AssistantBlock) current.live = false;
         // A stop the user asked for is not a failure worth a red line.
         final failure = event.field('error');
-        if (event.raw['ok'] == false && failure != 'cancelled') error = failure ?? '回合失败';
+        if (event.raw['ok'] == false && failure != 'cancelled') {
+          error = failure ?? '回合失败';
+          errorRetry = true;
+        }
         final mine = _view;
         _syncHistory().catchError((Object reason) {
           if (mine == _view && error.isEmpty) _fail(reason, '无法加载会话');
@@ -476,20 +552,25 @@ class AshiraState extends ChangeNotifier {
     _changed(coalesce: event.type == 'text' || event.type == 'reasoning');
   }
 
+  /// While the reply runs the message joins that turn (`steered`) instead of starting one.
   Future<bool> send(String text, List<({String mediaType, String data})> images, [List<TextFile> files = const []]) async {
     final id = shownId;
     final mine = _view;
     final atSend = _revision;
-    if (id.isEmpty || !connected || busy || sending || (text.trim().isEmpty && images.isEmpty && files.isEmpty)) return false;
-    error = '';
+    if (id.isEmpty || !connected || sending || approvalSubmitting || (text.trim().isEmpty && images.isEmpty && files.isEmpty)) return false;
+    _clearError();
     sending = true;
     _changed();
     try {
       final accepted = await client.message(id, text.trim(), images, files);
-      // A stream event, including done, can arrive before the POST response.
-      if (mine == _view && accepted != null && _revision == atSend) {
-        _revision++;
-        turnId = accepted;
+      if (mine == _view) {
+        if (accepted.steered) {
+          pendingSteer = [...pendingSteer, text.trim().isEmpty ? '（附件）' : text.trim()];
+        } else if (accepted.turnId != null && _revision == atSend) {
+          // A stream event, including done, can arrive before the POST response.
+          _revision++;
+          turnId = accepted.turnId;
+        }
       }
       return true;
     } catch (reason) {
@@ -499,6 +580,39 @@ class AshiraState extends ChangeNotifier {
       sending = false;
       _changed();
     }
+  }
+
+  /// 重试 on a failed turn: the model answers again from the history as it stands.
+  Future<void> retry() async {
+    final id = shownId;
+    final mine = _view;
+    final atSend = _revision;
+    if (id.isEmpty || busy) return;
+    _clearError();
+    _changed();
+    try {
+      final accepted = await client.retry(id);
+      if (mine == _view && accepted != null && _revision == atSend) {
+        _revision++;
+        turnId = accepted;
+        _changed();
+      }
+    } catch (reason) {
+      if (mine == _view) {
+        _fail(reason, '重试失败');
+        errorRetry = true;
+      }
+    }
+  }
+
+  void dismissError() {
+    _clearError();
+    _changed();
+  }
+
+  void _clearError() {
+    error = '';
+    errorRetry = false;
   }
 
   Future<void> decide(String decision) async {
@@ -530,15 +644,48 @@ class AshiraState extends ChangeNotifier {
 
   Future<void> setFast(bool enabled) => _updateSettings((id) => client.setFast(id, enabled));
 
+  /// 设置 → 通用 saved `approval:`; hiding moved idle sessions to the default, so re-read this one.
+  void approvalSaved(ApprovalSettings value) {
+    approvalHidden = value.hidden;
+    _changed();
+    unawaited(_updateSettings((_) async {}));
+  }
+
+  Future<void> setApprovalMode(String mode, {Future<bool> Function()? confirmFullAccess}) async {
+    if (!canSetApprovalMode || status?.approvalMode == mode) return;
+    final id = shownId;
+    final mine = _view;
+    if (mode == 'full' && (confirmFullAccess == null || !await confirmFullAccess())) return;
+    if (mine != _view || !canSetApprovalMode || status?.approvalMode == mode) return;
+    final approvalSnapshot = _approvalRevision;
+    _approvalRequests.add(id);
+    error = '';
+    _changed();
+    try {
+      final saved = await client.setApprovalMode(id, mode);
+      // A live update received during the request may be newer than its response.
+      if (!_disposed && mine == _view && _approvalRevision == approvalSnapshot) {
+        status = status?.copyWith(approvalMode: saved);
+        _approvalRevision++;
+      }
+    } catch (reason) {
+      if (!_disposed && mine == _view) _fail(reason, '切换审批模式失败');
+    } finally {
+      _approvalRequests.remove(id);
+      if (shownId == id) _changed();
+    }
+  }
+
   Future<void> _updateSettings(Future<void> Function(String id) action) async {
     final id = shownId;
     final mine = _view;
     if (id.isEmpty) return;
     await _run(() async {
       await action(id);
+      final approvalSnapshot = _approvalRevision;
       final view = await client.session(id);
       if (mine == _view) {
-        status = view.status;
+        _setStatus(view.status, approvalSnapshot: approvalSnapshot);
         _changed();
       }
     });
@@ -557,6 +704,7 @@ class AshiraState extends ChangeNotifier {
   void _fail(Object reason, String fallback) {
     if (reason is ApiException && reason.unauthorized) unauthorized = true;
     error = reason is ApiException ? reason.message : (reason.toString().isEmpty ? fallback : '$fallback：$reason');
+    errorRetry = false;
     _changed();
   }
 
@@ -597,3 +745,6 @@ String _titled(String selector, String name) {
   final label = level[0].toUpperCase() + level.substring(1);
   return base.endsWith(' $label') ? base : '$base $label';
 }
+
+/// Blocks a history page holds: a long session opens with its end and pages back.
+const _historyPage = 200;

@@ -89,7 +89,7 @@ impl AgentHub {
         if let Some((id, _, report)) = &mut self.transcript {
             if let Some(job) = jobs.iter().find(|job| job.identity.id == *id) {
                 let (glyph, style) = status_style(job.status);
-                Line::from(vec![Span::styled(glyph, style), Span::styled(one_line(&job.identity.name), ACCENT), Span::styled(format!(" · {}", status_label(job.status)), DIM)])
+                Line::from(vec![Span::styled(glyph, style), Span::styled(job_kind(job), DIM), Span::styled(one_line(&job.identity.name), ACCENT), Span::styled(format!(" · {}", status_label(job.status)), DIM)])
                     .render(Rect { height: 1, ..area }, buf);
             }
             let body = Rect { y: area.y + 1, height: area.height - 1, ..area };
@@ -102,7 +102,7 @@ impl AgentHub {
         }
 
         let frame = Block::new().borders(Borders::ALL).border_type(BorderType::Rounded)
-            .border_style(DIM).title(Line::styled(" Agent Hub · 子代理 ", ACCENT));
+            .border_style(DIM).title(Line::styled(" Agent Hub · 后台任务 ", ACCENT));
         let inner = frame.inner(area);
         frame.render(area, buf);
         self.split = inner.width >= SPLIT_WIDTH && inner.height >= 4;
@@ -146,11 +146,11 @@ impl AgentHub {
                 _ => {}
             }
         }
-        Line::from(vec![Span::styled("代理列表", ACCENT), Span::styled(format!("  {} 个 · {} 活动 · {} 完成 · {} 失败", jobs.len(), active, completed, failed), DIM)])
+        Line::from(vec![Span::styled("任务列表", ACCENT), Span::styled(format!("  {} 个 · {} 活动 · {} 完成 · {} 失败", jobs.len(), active, completed, failed), DIM)])
             .render(Rect { height: 1, ..area }, buf);
         if area.height < 2 { return; }
         let Some(selected) = selected else {
-            Line::styled("本次运行没有子代理", DIM).render(Rect { y: area.y + 1, height: 1, ..area }, buf);
+            Line::styled("本次运行没有后台任务", DIM).render(Rect { y: area.y + 1, height: 1, ..area }, buf);
             return;
         };
         let rows = (area.height - 1) as usize;
@@ -166,6 +166,7 @@ impl AgentHub {
             Line::from(vec![
                 Span::styled(if selected { "› " } else { "  " }, ACCENT),
                 Span::styled(glyph, status),
+                Span::styled(job_kind(job), DIM),
                 Span::styled(one_line(&job.identity.name), if selected { ACCENT } else { Style::default() }),
             ]).render(Rect { width: row.width - status_width, ..row }, buf);
             if show_status {
@@ -175,19 +176,19 @@ impl AgentHub {
     }
 
     fn details(&mut self, area: Rect, buf: &mut Buffer, job: Option<&Snapshot>) {
-        Line::styled("代理详情", ACCENT).render(Rect { height: 1, ..area }, buf);
+        Line::styled("任务详情", ACCENT).render(Rect { height: 1, ..area }, buf);
         self.detail_height = area.height.saturating_sub(1) as usize;
         let Some(job) = job else {
-            if self.detail_height > 0 { Line::styled("请选择子代理", DIM).render(Rect { y: area.y + 1, height: 1, ..area }, buf); }
+            if self.detail_height > 0 { Line::styled("请选择任务", DIM).render(Rect { y: area.y + 1, height: 1, ..area }, buf); }
             return;
         };
         if self.detail_height == 0 { return; }
         let (glyph, status) = status_style(job.status);
-        let mut lines = vec![Line::from(vec![Span::styled(glyph, status), Span::styled(one_line(&job.identity.name), ACCENT)])];
+        let mut lines = vec![Line::from(vec![Span::styled(glyph, status), Span::styled(job_kind(job), DIM), Span::styled(one_line(&job.identity.name), ACCENT)])];
         let pid = job.worker_pid.map_or_else(|| "—".into(), |pid| pid.to_string());
         for (label, text) in [
             ("状态", format!("{} · {:.1}s", status_label(job.status), job.elapsed_ms as f64 / 1000.0)),
-            ("模型", format!("{} · {}", job.model, job.identity.role.as_str())),
+            (if job.identity.role == crate::subagents::Role::Shell { "执行器" } else { "模型" }, job.model.to_string()),
             ("ID", job.identity.id.clone()),
             ("进程", format!("代次 {} · PID {pid} · 收件箱 {}{}", job.generation, job.pending_messages, if job.closed { " · 已关闭" } else { "" })),
         ] {
@@ -201,6 +202,10 @@ impl AgentHub {
             line.render(Rect { y: area.y + 1 + offset as u16, height: 1, ..area }, buf);
         }
     }
+}
+
+fn job_kind(job: &Snapshot) -> &'static str {
+    if job.identity.role == crate::subagents::Role::Shell { "命令 · " } else { "子代理 · " }
 }
 
 fn one_line(text: &str) -> String { sanitize(text).replace('\n', " ") }

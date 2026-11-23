@@ -1,11 +1,11 @@
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     env,
     future::Future,
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex, RwLock,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicU8, AtomicU64, Ordering},
     },
     time::Duration,
 };
@@ -86,6 +86,20 @@ const COMPACT_PROMPT: &str = "The conversation is about to be compacted to free 
 
 pub(crate) enum CompactCause { Manual, Auto }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum ApprovalMode { Manual, Auto, Full }
+
+impl ApprovalMode {
+    pub fn parse(mode: &str) -> Option<Self> {
+        match mode { "manual" => Some(Self::Manual), "auto" => Some(Self::Auto), "full" => Some(Self::Full), _ => None }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self { Self::Manual => "manual", Self::Auto => "auto", Self::Full => "full" }
+    }
+}
+
 pub enum Decision {
     Yes,
     No,
@@ -115,6 +129,7 @@ pub enum Event {
     ToolBatchEnd,
     Confirm { id: u64, call: Arc<ToolCall>, command: String, reason: String, always: &'static str, cancel: CancellationToken, reply: oneshot::Sender<Decision> },
     ConfirmCancelled(u64),
+    ApprovalMode(ApprovalMode),
     /// `ask_user`: the model is waiting for answers. `reply` gets one answer per
     /// question, or `None` when the user skipped the group.
     Question { id: u64, questions: Arc<[question::Question]>, cancel: CancellationToken, reply: oneshot::Sender<Option<question::Answers>> },
@@ -129,9 +144,9 @@ pub enum Event {
     Titling { id: String, done: bool, title: Option<String> },
     /// Steered user messages that just entered the running turn, in order.
     Steered(Vec<Value>),
-    /// Steered messages were left unread (the turn ended or failed first);
-    /// frontends send them next.
-    SteerReturned,
+    /// Steered user messages were left unread (the turn ended or failed first);
+    /// frontends put them back to send next.
+    SteerReturned(Vec<Value>),
     PeerMessage(subagents::PeerMessage),
     SubagentTranscript { id: String, request: u64, result: Result<String, String> },
     Usage(Usage),
@@ -156,6 +171,8 @@ pub enum Event {
 
 pub enum Command {
     Turn(Value),
+    /// Asks the model again from the history as it stands, after a failed reply.
+    Retry,
     Compact,
     Clear,
     /// Switch to a model from the registry; the conversation continues.
@@ -167,6 +184,8 @@ pub enum Command {
 
 pub enum WebAction {
     Turn(Value),
+    /// Asks the model again from the history as it stands, after a failed reply.
+    Retry,
     Compact,
     Model(String),
     Fast(bool),
@@ -250,9 +269,12 @@ pub struct Shared {
     pub events: UnboundedSender<Event>,
     /// Whether a human can answer confirmations.
     pub interactive: bool,
-    pub approve_all: AtomicBool,
-    /// MCP tools (`server/tool`) the user allowed for this session.
-    approved: Mutex<HashSet<String>>,
+    /// `--yes`: every session starts with full access, whatever config.yml `approval:` says.
+    approve_all: bool,
+    initial_approval_mode: ApprovalMode,
+    approval_mode: AtomicU8,
+    /// MCP tools the user allowed for this session, keyed by exact server and tool name.
+    approved: Mutex<HashMap<String, HashSet<String>>>,
     system: Mutex<Option<(PathBuf, String)>>,
     sub_system: Mutex<Option<(String, String)>>,
     /// [main, task, scout]
@@ -323,6 +345,7 @@ impl Shared {
     pub fn new(registry: Registry, client: Option<Client>, mcp: Mcp, plugins: crate::plugin::Plugins, cwd: PathBuf, events: UnboundedSender<Event>, interactive: bool, approve_all: bool) -> Shared {
         let root = CancellationToken::new();
         let subagents = Arc::new(subagents::Manager::new(root.clone(), events.clone()));
+        let initial_approval_mode = Self::start_mode(approve_all);
         Shared {
             model: RwLock::new(client.map(Model::new)),
             root, subagents, parent_turn: Mutex::new(None), launch: Mutex::new(()), next_confirm: AtomicU64::new(0),
@@ -334,7 +357,9 @@ impl Shared {
             cwd: RwLock::new(cwd),
             events,
             interactive,
-            approve_all: AtomicBool::new(approve_all),
+            approve_all,
+            initial_approval_mode,
+            approval_mode: AtomicU8::new(initial_approval_mode as u8),
             approved: Mutex::default(),
             system: Mutex::new(None),
             sub_system: Mutex::new(None),
@@ -345,16 +370,55 @@ impl Shared {
             steer: Mutex::new(Vec::new()),
         }
     }
+
+    /// The mode a new session starts in: full under `--yes`, else config.yml `approval.default`.
+    fn start_mode(approve_all: bool) -> ApprovalMode {
+        if approve_all { ApprovalMode::Full } else { crate::config::approval_settings().default }
+    }
+
+    /// What a session not yet started would run with, read fresh from the settings.
+    pub fn start_approval_mode(&self) -> ApprovalMode { Self::start_mode(self.approve_all) }
+
+    /// Whether `--yes` fixed every session at full access, so the saved default does not apply.
+    pub fn approve_all(&self) -> bool { self.approve_all }
+
+    pub fn approval_mode(&self) -> ApprovalMode {
+        match self.approval_mode.load(Ordering::Relaxed) {
+            value if value == ApprovalMode::Auto as u8 => ApprovalMode::Auto,
+            value if value == ApprovalMode::Full as u8 => ApprovalMode::Full,
+            _ => ApprovalMode::Manual,
+        }
+    }
+
+    /// Sets the mode without publishing an event; the initiating frontend announces it.
+    pub fn set_approval_mode(&self, mode: ApprovalMode) {
+        self.approval_mode.store(mode as u8, Ordering::Relaxed);
+    }
+
+    pub(crate) fn try_set_approval_mode(&self, mode: ApprovalMode) -> bool {
+        let turn = self.parent_turn.lock().unwrap();
+        if turn.is_some() || self.subagents.active_count() > 0 { return false; }
+        self.set_approval_mode(mode);
+        true
+    }
+
+    fn reset_approvals(&self) {
+        self.approved.lock().expect("approved").clear();
+        self.set_approval_mode(self.initial_approval_mode);
+    }
+
     pub fn cwd(&self) -> PathBuf {
         self.cwd.read().expect("cwd").clone()
     }
 
     /// A separate runtime for one API session, so sessions answer in parallel. It shares
-    /// what is global (model registry, MCP, plugins, memory, `--yes`) and owns the rest:
-    /// model, workspace, turn, sub-agents, confirmations, statistics.
+    /// what is global (model registry, MCP, plugins, memory) and owns the rest:
+    /// model, workspace, turn, sub-agents, approvals, statistics.
     pub fn for_session(&self, cwd: PathBuf, events: UnboundedSender<Event>) -> Shared {
         let root = CancellationToken::new();
         let subagents = Arc::new(subagents::Manager::new(root.clone(), events.clone()));
+        // Read now: the default may have changed in the settings since the server started.
+        let initial_approval_mode = Self::start_mode(self.approve_all);
         Shared {
             model: RwLock::new(self.model()),
             root, subagents, parent_turn: Mutex::new(None), launch: Mutex::new(()), next_confirm: AtomicU64::new(0),
@@ -366,7 +430,9 @@ impl Shared {
             cwd: RwLock::new(cwd),
             events,
             interactive: self.interactive,
-            approve_all: AtomicBool::new(self.approve_all.load(Ordering::Relaxed)),
+            approve_all: self.approve_all,
+            initial_approval_mode,
+            approval_mode: AtomicU8::new(initial_approval_mode as u8),
             approved: Mutex::default(),
             system: Mutex::new(None),
             sub_system: Mutex::new(None),
@@ -825,6 +891,22 @@ impl Agent {
         result
     }
 
+    /// Root only: asks the model again from the history as it stands. Only a turn that
+    /// stopped before the model answered (history ends with the user's message or tool
+    /// results) can be retried, so nothing is sent twice.
+    async fn retry(&mut self, cancel: &CancellationToken) -> Result<(), String> {
+        self.current_model()?;
+        if self.history.last().is_none_or(|message| message["role"] != "user") {
+            return Err("没有可以重试的回合：上一条回复已经完成".into());
+        }
+        self.compact_veto = false;
+        self.hook_notice("turn_start", json!({})).await;
+        let result = self.respond(cancel, None, None).await;
+        self.hook_notice("turn_end", json!({"ok": result.is_ok()})).await;
+        self.remind_todos().await;
+        result
+    }
+
     async fn turn_body(&mut self, input: Value, cancel: &CancellationToken, web: bool) -> Result<(), String> {
         // Keep the pre-turn snapshot so later manual edits/deletions win over
         // an automatic proposal based on this turn.
@@ -1119,8 +1201,7 @@ impl Agent {
             }
             "bash" => {
                 if let Some(cmd) = input["command"].as_str()
-                    && let Some(reason) = danger::check(cmd)
-                    && let Err(denied) = self.confirm(cmd, &reason, call.clone(), cancel).await
+                    && let Err(denied) = self.approve_shell(cmd, call, cancel).await
                 {
                     return Output::err(denied);
                 }
@@ -1172,9 +1253,7 @@ impl Agent {
                     let hint = if self.shared.mcp.searching() { "; use mcp_search to find tools" } else { "" };
                     return Output::err(format!("MCP tool `{asked}` is not available (server removed, disabled or not connected){hint}"));
                 };
-                if self.shared.mcp.needs_approval(&server, &tool)
-                    && let Err(denied) = self.approve_mcp(&server, &tool, &args, call.clone(), cancel).await
-                {
+                if let Err(denied) = self.approve_mcp(&server, &tool, &args, call, cancel).await {
                     return Output::err(denied);
                 }
                 if cancel.is_cancelled() { return Output::err("cancelled"); }
@@ -1324,32 +1403,39 @@ impl Agent {
         }
     }
 
-    async fn confirm(&self, cmd: &str, reason: &str, call: Arc<ToolCall>, cancel: &CancellationToken) -> Result<(), String> {
+    async fn approve_shell(&self, cmd: &str, call: Arc<ToolCall>, cancel: &CancellationToken) -> Result<(), String> {
         let sh = &self.shared;
-        if sh.approve_all.load(Ordering::Relaxed) {
-            return Ok(());
+        let mode = sh.approval_mode();
+        if mode == ApprovalMode::Full { return Ok(()); }
+        let Some(reason) = danger::check(cmd) else { return Ok(()); };
+        if mode == ApprovalMode::Auto {
+            return Err(format!("automatic approval blocked this command ({reason}); do not retry it or circumvent the check"));
         }
         if !sh.interactive {
             return Err(format!("blocked: command needs confirmation ({reason}) and no user is attached; rerun with --yes to allow"));
         }
-        match self.ask(cmd, reason, "本次会话全部允许", call, cancel).await {
+        match self.ask(cmd, &reason, "本次会话全部允许", call, cancel).await {
             Some(Decision::Yes) => Ok(()),
             Some(Decision::Always) if !cancel.is_cancelled() => {
-                sh.approve_all.store(true, Ordering::Relaxed);
+                if sh.approval_mode.swap(ApprovalMode::Full as u8, Ordering::Relaxed) != ApprovalMode::Full as u8 {
+                    sh.emit(Event::ApprovalMode(ApprovalMode::Full));
+                }
                 Ok(())
             }
             _ => Err(format!("the user denied this command ({reason}); do not retry it, ask or take another approach")),
         }
     }
 
-    /// MCP calls ask unless the server is trusted, the tool is auto-approved,
-    /// `--yes` / "a" on a bash prompt approved everything, or the user already
-    /// allowed this tool for the session.
+    /// Trusted servers, configured allowlists and explicit session grants can run in either mode.
     async fn approve_mcp(&self, server: &str, tool: &str, args: &Value, call: Arc<ToolCall>, cancel: &CancellationToken) -> Result<(), String> {
         let sh = &self.shared;
+        let mode = sh.approval_mode();
+        if mode == ApprovalMode::Full || !sh.mcp.needs_approval(server, tool)
+            || sh.approved.lock().expect("approved").get(server).is_some_and(|tools| tools.contains(tool))
+        { return Ok(()); }
         let key = format!("{server}/{tool}");
-        if sh.approve_all.load(Ordering::Relaxed) || sh.approved.lock().expect("approved").contains(&key) {
-            return Ok(());
+        if mode == ApprovalMode::Auto {
+            return Err(format!("automatic approval blocked unauthorized MCP tool {key}; do not retry it or circumvent the check"));
         }
         if !sh.interactive {
             return Err(format!(
@@ -1363,7 +1449,7 @@ impl Agent {
         match self.ask(&shown, "调用 MCP 工具", "本次会话允许此工具", call, cancel).await {
             Some(Decision::Yes) => Ok(()),
             Some(Decision::Always) if !cancel.is_cancelled() => {
-                sh.approved.lock().expect("approved").insert(key);
+                sh.approved.lock().expect("approved").entry(server.to_owned()).or_default().insert(tool.to_owned());
                 Ok(())
             }
             _ => Err(format!("the user denied MCP tool {key}; do not retry it, ask or take another approach")),
@@ -1471,6 +1557,7 @@ impl Agent {
     }
     async fn activate(&mut self, loaded: session::Loaded) -> Result<(), String> {
         self.shared.subagents.retire().await;
+        self.shared.reset_approvals();
         if let Some(model) = loaded.model.clone() {
             if let Err(error) = self.shared.switch_model(&model) {
                 self.shared.emit(Event::Notice(format!("会话模型未能恢复：{error}")));
@@ -1519,7 +1606,7 @@ impl Agent {
             let Some((mut cmd, cancel)) = next else { break };
             {
                 let mut active = self.shared.parent_turn.lock().unwrap();
-                if matches!(&cmd, Command::Turn(_)) && !cancel.is_cancelled() { self.shared.subagents.suppress(false); }
+                if matches!(&cmd, Command::Turn(_) | Command::Retry) && !cancel.is_cancelled() { self.shared.subagents.suppress(false); }
                 *active = Some(cancel.clone());
             }
             let mut web = false;
@@ -1547,6 +1634,10 @@ impl Agent {
                         if !cancel.is_cancelled() { manager.suppress(false); }
                         Command::Turn(input)
                     }
+                    WebAction::Retry => {
+                        if !cancel.is_cancelled() { manager.suppress(false); }
+                        Command::Retry
+                    }
                     WebAction::Compact => Command::Compact,
                     WebAction::Model(selector) => Command::Model(selector),
                     WebAction::Fast(enabled) => Command::Fast(enabled),
@@ -1554,9 +1645,11 @@ impl Agent {
             }
             let result = match cmd {
                 Command::Turn(message) => { if !cancel.is_cancelled() { self.run_turn(message, &cancel, web).await } else { Err(CANCELLED.into()) } },
+                Command::Retry => { if !cancel.is_cancelled() { self.retry(&cancel).await } else { Err(CANCELLED.into()) } },
                 Command::Compact => self.compact(&cancel, CompactCause::Manual).await.map(|_| ()),
                 Command::Clear => {
                     self.shared.subagents.retire().await;
+                    self.shared.reset_approvals();
                     let model = self.shared.model().map(|m| m.client.name().to_owned()).unwrap_or_default();
                     let fast = self.shared.model().is_some_and(|m| m.client.fast_enabled());
                     let mut session = Session::new(&self.shared.cwd(), &model);
@@ -1567,6 +1660,7 @@ impl Agent {
                     self.history.clear(); self.seen_messages.clear(); self.usage = Usage::default(); self.pending = 0;
                     self.publish_context();
                     self.shared.emit(Event::Usage(self.usage));
+                    self.shared.emit(Event::Notice(format!("已恢复启动审批模式（{}），上一会话的 MCP 授权已清除。", self.shared.approval_mode().as_str())));
                     let session_id = self.session.as_ref().map(Session::id).unwrap_or_default();
                     self.hook_notice("session_start", json!({"resumed": false, "sessionId": session_id})).await;
                     Ok(())
@@ -1591,8 +1685,8 @@ impl Agent {
             };
             self.shared.parent_turn.lock().unwrap().take();
             // Nothing can take them after the turn ends; hand them back to send next.
-            let leftover = !std::mem::take(&mut *self.shared.steer.lock().expect("steer")).is_empty();
-            if leftover { self.shared.emit(Event::SteerReturned); }
+            let returned = std::mem::take(&mut *self.shared.steer.lock().expect("steer"));
+            if !returned.is_empty() { self.shared.emit(Event::SteerReturned(returned)); }
             self.shared.emit(Event::Done(result));
             if manager.resumable() { manager.signal(); }
         }

@@ -1,5 +1,5 @@
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
-import { api, ApiError, connection, parseEvent, parseReplyMetrics, streamUrl, type AgentEvent, type Archive, type ConfirmRequest, type QuestionAnswers, type QuestionRequest, type SessionNode, type Status, type UpdateProgress } from './api'
+import { api, ApiError, connection, parseEvent, parseReplyMetrics, streamUrl, type AgentEvent, type ApprovalMode, type Archive, type ConfirmRequest, type QuestionAnswers, type QuestionRequest, type SessionNode, type SessionView, type Status, type UpdateProgress } from './api'
 import { toast } from './toast'
 import type { Block, ReplyPart, TextFile } from '@/components/Transcript.vue'
 
@@ -8,7 +8,7 @@ const viewKey = 'ashira.session'
 export function useAshira() {
   const status = ref<Status | null>(null)
   /** The server's version and newer release, from `GET /v1`; session views don't carry them. */
-  const server = ref<{ version: string; update: string | null; restartPending: boolean; container: boolean; web: Status['web'] }>({ version: '', update: null, restartPending: false, container: false, web: null })
+  const server = ref<{ version: string; update: string | null; restartPending: boolean; container: boolean; web: Status['web']; approvalHidden: boolean }>({ version: '', update: null, restartPending: false, container: false, web: null, approvalHidden: false })
   const restarting = ref(false)
   const updating = ref(false)
   /** The server update's download while it runs, polled for the progress bar. */
@@ -51,7 +51,7 @@ export function useAshira() {
    *  `ashira update` on the server shows its restart button on pages already open. */
   async function refreshServer() {
     const service = await api.status()
-    server.value = { version: service.version, update: service.update, restartPending: service.restartPending, container: service.container, web: service.web }
+    server.value = serverFacts(service)
   }
   const tree = ref<SessionNode[]>([])
   // Sessions with a turn running on the server, from the last list refresh.
@@ -79,10 +79,22 @@ export function useAshira() {
   const textTurnId = ref<string | null>(null)
   const hasReplyText = computed(() => turnId.value !== null && textTurnId.value === turnId.value)
   const busy = computed(() => turnId.value !== null)
+  /** The last turn's failure, shown above the composer with 重试; `retry` false for other errors. */
+  const turnError = ref<{ message: string; retry: boolean } | null>(null)
+  /** Messages sent while the reply ran, until the model reads them (`steered`) or hands them back. */
+  const pendingSteer = ref<string[]>([])
+  /** History paging: the index of the first block shown, and how many the session has. */
+  const historyStart = ref(0)
+  const historyTotal = ref(0)
+  const loadingEarlier = ref(false)
+  const approvalRequests = reactive(new Set<string>())
+  const approvalSubmitting = computed(() => approvalRequests.has(shownId.value))
   const shownCwd = computed(() => status.value?.cwd || initialCwd.value)
   let source: EventSource | undefined
   let view = 0
   let revision = 0
+  // Approval changes run outside turns, so they must not invalidate an in-flight send.
+  let approvalRevision = 0
   async function refresh() { ({ tree: tree.value, running: listedRunning.value, asking: listedAsking.value, archive: archive.value } = await api.sessions()) }
 
   /** Applies a change to the list right away, then confirms it with the server. */
@@ -157,8 +169,9 @@ export function useAshira() {
   const modelTitle = computed(() => titled(model.value, modelName.value))
   const sessionName = computed(() => shownId.value ? (sessionPrompt(tree.value, shownId.value) || '空会话') : '新会话')
 
-  function setStatus(value: Status) {
-    status.value = value
+  function setStatus(value: Status, approvalSnapshot = approvalRevision) {
+    const currentMode = status.value?.approvalMode
+    status.value = currentMode && approvalSnapshot !== approvalRevision ? { ...value, approvalMode: currentMode } : value
     model.value = value.model || ''
     modelName.value = value.modelName || ''
     fast.value = value.fast
@@ -166,6 +179,7 @@ export function useAshira() {
 
   /** Set when the API rejected the token or could not be reached at all. */
   const needsConnection = ref(false)
+  const canSetApprovalMode = computed(() => Boolean(status.value && shownId.value && connected.value && !needsConnection.value && !loading.value && !busy.value && !approvalSubmitting.value))
 
   function fail(reason: unknown, fallback: string) {
     if (reason instanceof ApiError && reason.status === 401) {
@@ -179,17 +193,42 @@ export function useAshira() {
   async function syncHistory() {
     const mine = view
     const snapshot = revision
+    const approvalSnapshot = approvalRevision
     const id = shownId.value
     if (!id) return
-    const body = await api.session(id)
+    // Keep the pages already scrolled back to: re-read from the same first block.
+    const body = await api.session(id, { limit: Math.max(HISTORY_PAGE, historyTotal.value - historyStart.value + 50) })
     if (mine !== view || revision !== snapshot) return
-    setStatus(body)
-    blocks.value = historyBlocks(body)
+    setStatus(body, approvalSnapshot)
+    showHistory(body)
     turnId.value = body.turnId
     confirm.value = body.confirm
     question.value = body.question
   }
 
+  function showHistory(body: SessionView) {
+    blocks.value = historyBlocks(body)
+    historyStart.value = body.start
+    historyTotal.value = body.total
+  }
+
+  /** The page before the first block shown; prepended, so the reader stays where they were. */
+  async function loadEarlier() {
+    const id = shownId.value
+    const mine = view
+    if (!id || loadingEarlier.value || historyStart.value === 0) return
+    loadingEarlier.value = true
+    try {
+      const body = await api.session(id, { before: historyStart.value, limit: HISTORY_PAGE })
+      if (mine !== view) return
+      blocks.value = [...historyBlocks(body), ...blocks.value]
+      historyStart.value = body.start
+    } catch (reason) {
+      if (mine === view) fail(reason, '无法加载更早的消息')
+    } finally {
+      if (mine === view) loadingEarlier.value = false
+    }
+  }
 
   function assistant(): Extract<Block, { kind: 'assistant' }> {
     const last = blocks.value.at(-1)
@@ -209,9 +248,17 @@ export function useAshira() {
 
   function onEvent(event: AgentEvent) {
     if (event.sessionId !== shownId.value) return
+    if (event.type === 'approval_mode') {
+      if (event.approvalMode && status.value) {
+        approvalRevision++
+        status.value = { ...status.value, approvalMode: event.approvalMode }
+      }
+      return
+    }
     if (event.type === 'turn_start' && event.turnId) {
       revision++
       turnId.value = event.turnId
+      turnError.value = null
       confirm.value = null
       question.value = null
       return
@@ -223,6 +270,18 @@ export function useAshira() {
     }
     if (event.type === 'user_message') {
       blocks.value.push(...historyBlocks({ messages: [event.message] }))
+    } else if (event.type === 'steered') {
+      // Shown where the model read them; the pending copies go as they arrive.
+      const read = historyBlocks({ messages: event.messages })
+      pendingSteer.value = pendingSteer.value.slice(read.length)
+      const current = blocks.value.at(-1)
+      if (current?.kind === 'assistant') current.live = false
+      blocks.value.push(...read)
+    } else if (event.type === 'steer_returned') {
+      // The turn ended before reading them: back into the composer to send next.
+      const texts = historyBlocks({ messages: event.messages }).flatMap((block) => block.kind === 'user' && block.text ? [block.text] : [])
+      pendingSteer.value = []
+      if (texts.length) draft.value = [...texts, draft.value].filter(Boolean).join('\n\n')
     } else if (event.type === 'text') {
       const text = event.text ?? ''
       appendText('text', text)
@@ -257,7 +316,7 @@ export function useAshira() {
       question.value = null
       const current = blocks.value.at(-1)
       if (current?.kind === 'assistant') current.live = false
-      if (event.ok === false && event.error !== 'cancelled') toast(event.error || '回合失败')
+      if (event.ok === false && event.error !== 'cancelled') turnError.value = { message: event.error || '回合失败', retry: true }
       const mine = view
       void syncHistory().catch((reason: unknown) => { if (mine === view) fail(reason, '无法加载会话') })
       void refresh().catch(() => {})
@@ -272,13 +331,9 @@ export function useAshira() {
     }
   }
 
-  /** `fresh`: the history was just loaded; the stream's first `ready` need not fetch it again. */
-  function connect(id: string, fresh: boolean) {
+  function connect(id: string) {
     const stream = api.events(id)
     source = stream
-    // History read before the stream was open can miss events; any one since then means re-read.
-    let skipReady = fresh
-    const loadedAt = revision
     stream.onopen = () => {
       if (source !== stream) return
       connected.value = true
@@ -294,9 +349,7 @@ export function useAshira() {
       if (source !== stream) return
       const event = parseEvent(message.data)
       if (event?.type === 'ready' || event?.type === 'lag') {
-        const first = skipReady
-        skipReady = false
-        if (first && event.type === 'ready' && revision === loadedAt && !busy.value) return
+        // Re-read on the first ready too: settings may have changed before the stream subscribed.
         void syncHistory().catch((reason: unknown) => { if (source === stream) fail(reason, '无法加载会话') })
       } else if (event?.type === 'titling' && event.sessionId) {
         const id = event.sessionId
@@ -316,21 +369,41 @@ export function useAshira() {
     const id = shownId.value
     const mine = view
     const atSend = revision
-    if (!id || !connected.value || busy.value || (!text.trim() && images.length === 0 && files.length === 0)) return false
+    if (!id || !connected.value || approvalSubmitting.value || (!text.trim() && images.length === 0 && files.length === 0)) return false
     try {
       const accepted = await api.message(id, text.trim(), images.map(({ mediaType, data }) => ({ mediaType, data })), files)
       if (mine === view) {
+        if (accepted.steered) pendingSteer.value = [...pendingSteer.value, text.trim() || '（附件）']
         // A stream event can arrive before the POST response, including done.
-        if (accepted && revision === atSend) {
+        else if (accepted.turnId && revision === atSend) {
           revision++
-          turnId.value = accepted
+          turnId.value = accepted.turnId
+          turnError.value = null
         }
         if (draft.value === text) draft.value = ''
       }
       return true
     } catch (reason) {
-      if (mine === view) fail(reason, '发送失败')
+      if (mine === view) turnError.value = { message: reason instanceof Error ? reason.message : '发送失败', retry: false }
       return false
+    }
+  }
+
+  /** 重试 on a failed turn: the model answers again from the history as it stands. */
+  async function retry() {
+    const id = shownId.value
+    const mine = view
+    const atSend = revision
+    if (!id || busy.value) return
+    turnError.value = null
+    try {
+      const accepted = await api.retry(id)
+      if (mine === view && accepted && revision === atSend) {
+        revision++
+        turnId.value = accepted
+      }
+    } catch (reason) {
+      if (mine === view) turnError.value = { message: reason instanceof Error ? reason.message : '重试失败', retry: true }
     }
   }
 
@@ -338,29 +411,34 @@ export function useAshira() {
     const mine = ++view
     source?.close()
     source = undefined
+    connected.value = false
     loading.value = true
     turnId.value = null
+    turnError.value = null
+    pendingSteer.value = []
     confirm.value = null
     question.value = null
     status.value = null
     blocks.value = []
+    historyStart.value = 0
+    historyTotal.value = 0
     // Known target: the title updates at once instead of passing through "新会话".
     shownId.value = create ? '' : id ?? ''
     draft.value = ''
     try {
       const selected = create ? await api.newSession(cwd) : id
       if (mine !== view || !selected) return
-      const body = await api.session(selected)
+      const body = await api.session(selected, { limit: HISTORY_PAGE })
       if (mine !== view) return
       shownId.value = selected
       setStatus(body)
-      blocks.value = historyBlocks(body)
+      showHistory(body)
       turnId.value = body.turnId
       confirm.value = body.confirm
       question.value = body.question
       try { sessionStorage.setItem(viewKey, JSON.stringify({ id: selected })) } catch { /* storage may be blocked */ }
       loading.value = false
-      connect(selected, true)
+      connect(selected)
       // Also picks up turns running in other sessions (shown in the list).
       await refresh()
     } catch (reason) {
@@ -410,9 +488,30 @@ export function useAshira() {
     if (!id) return
     await run(async () => {
       await action(id)
+      const approvalSnapshot = approvalRevision
       const body = await api.session(id)
-      if (mine === view) setStatus(body)
+      if (mine === view) setStatus(body, approvalSnapshot)
     })
+  }
+
+  async function setApprovalMode(mode: ApprovalMode) {
+    if (!canSetApprovalMode.value || mode === status.value?.approvalMode) return
+    const id = shownId.value
+    const mine = view
+    const approvalSnapshot = approvalRevision
+    approvalRequests.add(id)
+    try {
+      const saved = await api.setApprovalMode(id, mode)
+      // A live update received during the request may be newer than its response.
+      if (mine === view && approvalRevision === approvalSnapshot && status.value) {
+        approvalRevision++
+        status.value = { ...status.value, approvalMode: saved }
+      }
+    } catch (reason) {
+      if (mine === view) fail(reason, '切换审批模式失败')
+    } finally {
+      approvalRequests.delete(id)
+    }
   }
 
   function savedId(): string {
@@ -437,7 +536,7 @@ export function useAshira() {
       listedAsking.value = listing.asking
       archive.value = listing.archive
       initialCwd.value = service.cwd
-      server.value = { version: service.version, update: service.update, restartPending: service.restartPending, container: service.container, web: service.web }
+      server.value = serverFacts(service)
       if (mine !== view) return
       const ids = listing.tree.flatMap(function collect(node): string[] {
         return [...node.sessions.map((item) => item.id), ...node.children.flatMap(collect)]
@@ -458,11 +557,19 @@ export function useAshira() {
       }
     }
   })
-  onUnmounted(() => { source?.close(); clearTimeout(listTimer) })
+  onUnmounted(() => { view++; source?.close(); clearTimeout(listTimer) })
 
   return { status, server, refreshServer, restarting, restartServer, updating, updateProgress, updateServer, tree, archive, blocks, draft, model, modelTitle, fast, connected, loading, naming, confirm, question,
-    busy, hasReplyText, shownId, shownCwd, sessionName, needsConnection, runningIds, askingIds, send, openSession, decide, answer, interrupt, refresh, updateSettings, renameSession, setArchived, setFolded }
+    busy, hasReplyText, shownId, shownCwd, sessionName, needsConnection, runningIds, askingIds, send, openSession, decide, answer, interrupt, refresh, updateSettings, renameSession, setArchived, setFolded,
+    canSetApprovalMode, approvalSubmitting, setApprovalMode, turnError, retry, pendingSteer, historyStart, loadingEarlier, loadEarlier }
 }
+
+function serverFacts(service: Status) {
+  return { version: service.version, update: service.update, restartPending: service.restartPending, container: service.container, web: service.web, approvalHidden: service.approvalHidden }
+}
+
+/** Blocks a history page holds: a long session opens with its end and pages back. */
+const HISTORY_PAGE = 200
 
 const LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
 

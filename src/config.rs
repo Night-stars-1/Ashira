@@ -512,6 +512,30 @@ pub fn set_shell(shell: &str) -> Result<(), String> {
     })
 }
 
+/// config.yml `approval:`: the mode new sessions start in, and whether the pages hide their
+/// switch (then sessions keep that mode).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ApprovalSettings { pub default: crate::agent::ApprovalMode, pub hidden: bool }
+
+/// Unreadable or missing values fall back to manual and shown, the safe side.
+pub fn approval_settings() -> ApprovalSettings {
+    let settings = read_settings(&settings_path()).ok();
+    let approval = settings.as_ref().and_then(|s| s.get("approval"));
+    ApprovalSettings {
+        default: approval.and_then(|a| a.get("default")).and_then(Value::as_str).and_then(crate::agent::ApprovalMode::parse).unwrap_or(crate::agent::ApprovalMode::Manual),
+        hidden: approval.and_then(|a| a.get("hidden")).and_then(Value::as_bool).unwrap_or(false),
+    }
+}
+
+pub fn set_approval_settings(value: ApprovalSettings) -> Result<(), String> {
+    edit_settings(&settings_path(), |root| {
+        let next = serde_json::json!({"default": value.default.as_str(), "hidden": value.hidden});
+        if root.get("approval") == Some(&next) { return Ok(false); }
+        root.insert("approval".into(), next);
+        Ok(true)
+    })
+}
+
 /// Changes config.yml under its lock, keeping every other key; `edit` returns whether it
 /// changed anything, and an unchanged file is not rewritten.
 fn edit_settings(path: &Path, edit: impl FnOnce(&mut Map<String, Value>) -> Result<bool, String>) -> Result<(), String> {

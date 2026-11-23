@@ -21,8 +21,10 @@ export type Block =
   /** A finished background job; `role` `shell` is a command, whose `output` shows on the card. */
   | { kind: 'note'; text: string; error: boolean; agent?: string; role?: string; output?: string }
 
-const props = defineProps<{ blocks: Block[]; activity?: string }>()
-const emit = defineEmits<{ openAgent: [id: string] }>()
+/** `start`: the history index of `blocks[0]`, so row keys stay put when earlier pages load.
+ *  `pending`: messages sent while the reply runs, shown until the model reads them. */
+const props = withDefaults(defineProps<{ blocks: Block[]; activity?: string; start?: number; pending?: string[]; hasEarlier?: boolean; loadingEarlier?: boolean }>(), { start: 0, pending: () => [], hasEarlier: false, loadingEarlier: false })
+const emit = defineEmits<{ openAgent: [id: string]; loadEarlier: [] }>()
 
 const content = ref<HTMLElement | null>(null)
 /** A sent picture opened full screen. */
@@ -86,7 +88,8 @@ const rows = computed<Row[]>(() => {
     if (pending) out.push({ key: pending.key, reply: turn(pending.parts, pending.live, pending.durationMs) })
     pending = null
   }
-  props.blocks.forEach((block, index) => {
+  props.blocks.forEach((block, offset) => {
+    const index = props.start + offset
     if (block.kind !== 'assistant') {
       flush()
       out.push({ key: index, block })
@@ -114,6 +117,8 @@ function duration(ms: number) {
 // Shown while the reader has scrolled up; clicking jumps back and resumes following.
 const awayFromBottom = ref(false)
 let toBottom = () => {}
+let keepPlace = () => {}
+watch(() => props.start, () => keepPlace(), { flush: 'post' })
 
 watch(content, (body, _previous, onCleanup) => {
   const viewport = body?.closest<HTMLElement>('[data-slot="scroll-area-viewport"]')
@@ -147,6 +152,21 @@ watch(content, (body, _previous, onCleanup) => {
       follow = false
     }
     awayFromBottom.value = !follow
+    // Near the top: the page before. Kept in view by `keepPlace` once it lands.
+    if (viewport.scrollTop < 200 && props.hasEarlier && !props.loadingEarlier) {
+      heightBefore = viewport.scrollHeight
+      topBefore = viewport.scrollTop
+      emit('loadEarlier')
+    }
+  }
+
+  // Prepended blocks push the content down; move by as much so the reader stays put.
+  let heightBefore = 0
+  let topBefore = 0
+  keepPlace = () => {
+    if (!heightBefore) return
+    viewport.scrollTop = topBefore + viewport.scrollHeight - heightBefore
+    heightBefore = 0
   }
 
   toBottom = () => {
@@ -172,6 +192,9 @@ watch(content, (body, _previous, onCleanup) => {
   <div class="relative h-full">
   <ScrollArea class="h-full" viewport-class="[overflow-anchor:none]">
     <div ref="content" class="mx-auto flex max-w-3xl flex-col gap-4 px-3 py-4 [overflow-wrap:anywhere] sm:px-6 sm:py-6">
+      <p v-if="loadingEarlier" role="status" class="flex items-center justify-center gap-2 text-xs text-muted-foreground">
+        <LoaderCircle aria-hidden="true" class="size-3.5 motion-safe:animate-spin" /> 加载更早的消息…
+      </p>
       <p v-if="blocks.length === 0 && !activity" class="text-sm text-muted-foreground">发送一条消息开始。回复、工具和确认都会出现在这里。</p>
       <article v-for="row in rows" :key="row.key" class="flex flex-col gap-2">
         <div v-if="'block' in row && row.block.kind === 'user'" class="ml-auto flex max-w-[85%] flex-col items-end gap-2">
@@ -202,7 +225,10 @@ watch(content, (body, _previous, onCleanup) => {
         <div v-else-if="'block' in row && row.block.kind === 'note' && row.block.role === 'shell'" class="overflow-hidden rounded-lg border text-sm" :class="row.block.error ? 'border-destructive/40' : ''">
           <div class="flex items-start gap-2 px-3 py-2" :class="row.block.error ? 'text-destructive' : 'text-muted-foreground'">
             <SquareTerminal aria-hidden="true" class="mt-0.5 size-4 shrink-0" />
-            <span class="min-w-0 flex-1 whitespace-pre-wrap">{{ row.block.text }}</span>
+            <div class="min-w-0 flex-1">
+              <div class="text-xs font-medium">后台命令</div>
+              <div class="whitespace-pre-wrap">{{ row.block.text }}</div>
+            </div>
           </div>
           <ScrollArea v-if="row.block.output" class="border-t" viewport-class="max-h-64" :scroll-x="!wrapToolOutput">
             <pre class="px-3 py-2 font-mono text-xs" :class="wrapToolOutput ? 'whitespace-pre-wrap' : 'w-max min-w-full whitespace-pre [overflow-wrap:normal]'">{{ row.block.output }}</pre>
@@ -217,8 +243,11 @@ watch(content, (body, _previous, onCleanup) => {
           @click="'block' in row && row.block.kind === 'note' && row.block.agent && emit('openAgent', row.block.agent)"
         >
           <Bot class="mt-0.5 size-4 shrink-0" />
-          <span class="min-w-0 flex-1 whitespace-pre-wrap">{{ row.block.text }}</span>
-          <span class="shrink-0 underline">查看</span>
+          <span class="min-w-0 flex-1">
+            <span class="block text-xs font-medium">子代理</span>
+            <span class="block whitespace-pre-wrap">{{ row.block.text }}</span>
+          </span>
+          <span class="shrink-0 underline">查看对话</span>
         </Button>
         <div v-else-if="'block' in row && row.block.kind === 'note'" class="rounded-lg border px-3 py-2 text-sm" :class="row.block.error ? 'border-destructive/40 text-destructive' : 'text-muted-foreground'">
           {{ row.block.text }}
@@ -264,6 +293,10 @@ watch(content, (body, _previous, onCleanup) => {
           <Markdown v-for="(text, answerIndex) in row.reply.answer" :key="answerIndex" :text="text" />
         </div>
       </article>
+      <div v-for="(text, index) in pending" :key="`pending-${index}`" class="ml-auto flex max-w-[85%] flex-col items-end gap-1 opacity-60">
+        <div class="rounded-2xl bg-primary px-4 py-2 text-sm whitespace-pre-wrap text-primary-foreground">{{ text }}</div>
+        <span class="text-xs text-muted-foreground">等待模型读取</span>
+      </div>
       <p v-if="activity" role="status" class="flex items-center gap-2 text-sm text-muted-foreground">
         <LoaderCircle aria-hidden="true" class="size-4 motion-safe:animate-spin" />
         {{ activity }}

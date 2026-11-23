@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 
 import '../api/models.dart';
 import '../state/ashira_state.dart';
+import '../state/display_prefs.dart';
 import 'dialogs.dart';
 import 'format.dart';
 import 'theme.dart';
@@ -70,6 +71,28 @@ double? _value(ReplyMetrics? reply, String metric) {
   // Share of this reply's prompt read from cache.
   if (metric == 'hit') return usage.prompt == 0 ? null : usage.cacheRead / usage.prompt;
   return (metric == 'output' ? usage.output : usage.prompt + usage.output).toDouble();
+}
+
+/// The value a detail column sorts by; null where the reply has none.
+double? _cell(({int number, ReplyMetrics? metrics}) reply, String key) {
+  final usage = reply.metrics?.usage;
+  return switch (key) {
+    'number' => reply.number.toDouble(),
+    'input' => usage?.prompt.toDouble(),
+    'cache' => usage?.cacheRead.toDouble(),
+    _ => _value(reply.metrics, key),
+  };
+}
+
+/// The page in [sort] order; replies without the value stay at the end either way.
+List<({int number, ReplyMetrics? metrics})> _sorted(List<({int number, ReplyMetrics? metrics})> page, ReplySort sort) {
+  int compare(({int number, ReplyMetrics? metrics}) a, ({int number, ReplyMetrics? metrics}) b) {
+    final x = _cell(a, sort.key), y = _cell(b, sort.key);
+    if (x == null || y == null) return x == y ? a.number - b.number : (x == null ? 1 : -1);
+    final order = sort.ascending ? x.compareTo(y) : y.compareTo(x);
+    return order != 0 ? order : a.number - b.number;
+  }
+  return [...page]..sort(compare);
 }
 
 String _format(double? amount, String metric, {bool short = false}) {
@@ -150,17 +173,17 @@ class _ReplyTrendState extends State<_ReplyTrend> {
               ),
             ),
             if (_details)
-              // A horizontal scroll view gives unbounded width, which the rows' `Expanded`
-              // columns cannot split; pin the table to the panel width, at least 620.
-              LayoutBuilder(
-                builder: (context, constraints) => SingleChildScrollView(
-                  scrollDirection: Axis.horizontal,
-                  child: SizedBox(
-                    width: constraints.maxWidth < 620 ? 620 : constraints.maxWidth,
-                    child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-                      const _ReplyRow(cells: ['回复', '输入', '输出', '缓存读 / 写', '缓存命中', 'TPS', '估算费用'], header: true),
-                      for (final reply in page)
-                        _ReplyRow(cells: [
+              ListenableBuilder(
+                listenable: displayPrefs,
+                builder: (context, _) {
+                  final sort = displayPrefs.replySort;
+                  return _ReplyTable(
+                    sort: sort,
+                    // A new column starts with the biggest first; 回复 starts from the first.
+                    onSort: (key) => displayPrefs.setReplySort(sort.key == key ? (key: key, ascending: !sort.ascending) : (key: key, ascending: key == 'number')),
+                    rows: [
+                      for (final reply in _sorted(page, sort))
+                        [
                           '#${reply.number}${reply.metrics?.model == null ? '' : '  ${reply.metrics!.model}'}',
                           reply.metrics?.usage == null ? '—' : tokens(reply.metrics!.usage!.prompt),
                           _format(_value(reply.metrics, 'output'), 'output'),
@@ -168,10 +191,10 @@ class _ReplyTrendState extends State<_ReplyTrend> {
                           _format(_value(reply.metrics, 'hit'), 'hit'),
                           _format(_value(reply.metrics, 'rate'), 'rate', short: true),
                           _format(_value(reply.metrics, 'cost'), 'cost'),
-                        ]),
-                    ]),
-                  ),
-                ),
+                        ],
+                    ],
+                  );
+                },
               ),
           ]),
         ),
@@ -262,21 +285,83 @@ class _TrendChart extends StatelessWidget {
   }
 }
 
-class _ReplyRow extends StatelessWidget {
-  const _ReplyRow({required this.cells, this.header = false});
-  final List<String> cells;
-  final bool header;
+/// The per-reply detail: number columns as wide as their widest cell, the reply and model
+/// name in the rest. Narrower than that (phones), every name stays whole and it scrolls sideways.
+/// Tapping a header sorts by that column; tapping it again flips the order.
+class _ReplyTable extends StatelessWidget {
+  const _ReplyTable({required this.rows, required this.sort, required this.onSort});
+  final List<List<String>> rows;
+  final ReplySort sort;
+  final ValueChanged<String> onSort;
+
+  static const _header = ['回复', '输入', '输出', '缓存读 / 写', '缓存命中', 'TPS', '估算费用'];
+  /// The arrow beside the sorted column's name, and the gap before it.
+  static const _arrow = 14.0;
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final style = TextStyle(fontSize: 12, color: header ? scheme.mutedForeground : null, fontWeight: header ? FontWeight.w500 : null, fontFeatures: const [FontFeature.tabularFigures()]);
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
-      decoration: BoxDecoration(border: Border(top: BorderSide(color: scheme.border))),
-      child: Row(children: [
-        Expanded(flex: 4, child: Text(cells[0], maxLines: 1, overflow: TextOverflow.ellipsis, style: style.copyWith(fontWeight: FontWeight.w500))),
-        for (final cell in cells.skip(1)) Expanded(flex: 2, child: Text(cell, textAlign: TextAlign.right, maxLines: 1, style: style)),
-      ]),
-    );
+    const figures = [FontFeature.tabularFigures()];
+    final head = TextStyle(fontSize: 12, color: scheme.mutedForeground, fontWeight: FontWeight.w500, fontFeatures: figures);
+    final activeHead = head.copyWith(color: scheme.onSurface);
+    const body = TextStyle(fontSize: 12, fontFeatures: figures);
+    final name = body.copyWith(fontWeight: FontWeight.w500);
+    final sorted = replySortKeys.indexOf(sort.key);
+    EdgeInsets pad(int column) => EdgeInsets.fromLTRB(column == 0 ? 12 : 16, 7, column == _header.length - 1 ? 12 : 0, 7);
+    Widget cell(String text, int column, TextStyle style) => Padding(
+          padding: pad(column),
+          child: Text(text, maxLines: 1, softWrap: false, overflow: column == 0 ? TextOverflow.ellipsis : TextOverflow.visible, textAlign: column == 0 ? TextAlign.left : TextAlign.right, style: style),
+        );
+    Widget headCell(String text, int column) {
+      final active = column == sorted;
+      return Semantics(
+        button: true,
+        label: '按$text排序',
+        child: MouseRegion(
+          cursor: SystemMouseCursors.click,
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: () => onSort(replySortKeys[column]),
+            child: Padding(
+              padding: pad(column),
+              child: Row(mainAxisAlignment: column == 0 ? MainAxisAlignment.start : MainAxisAlignment.end, children: [
+                Flexible(child: Text(text, maxLines: 1, softWrap: false, overflow: TextOverflow.ellipsis, style: active ? activeHead : head)),
+                if (active) ...[
+                  const SizedBox(width: 2),
+                  Icon(sort.ascending ? Icons.arrow_upward : Icons.arrow_downward, size: 12, color: scheme.onSurface),
+                ],
+              ]),
+            ),
+          ),
+        ),
+      );
+    }
+    final border = BoxDecoration(border: Border(top: BorderSide(color: scheme.border)));
+    Table table(TableColumnWidth first) => Table(
+          columnWidths: {0: first},
+          defaultColumnWidth: const IntrinsicColumnWidth(),
+          defaultVerticalAlignment: TableCellVerticalAlignment.middle,
+          children: [
+            TableRow(decoration: border, children: [for (final (column, text) in _header.indexed) headCell(text, column)]),
+            for (final row in rows) TableRow(decoration: border, children: [for (final (column, text) in row.indexed) cell(text, column, column == 0 ? name : body)]),
+          ],
+        );
+    return LayoutBuilder(builder: (context, constraints) {
+      // The widest cell of each column plus its padding: when that fits, the first column takes the slack.
+      final scale = MediaQuery.textScalerOf(context);
+      final base = DefaultTextStyle.of(context).style;
+      double measure(String text, TextStyle style) => (TextPainter(text: TextSpan(text: text, style: base.merge(style)), textDirection: TextDirection.ltr, maxLines: 1, textScaler: scale)..layout()).width;
+      var needed = 0.0;
+      for (var column = 0; column < _header.length; column++) {
+        var widest = measure(_header[column], column == sorted ? activeHead : head) + (column == sorted ? _arrow : 0);
+        for (final row in rows) {
+          final width = measure(row[column], column == 0 ? name : body);
+          if (width > widest) widest = width;
+        }
+        needed += widest.ceilToDouble() + pad(column).horizontal;
+      }
+      if (needed <= constraints.maxWidth) return table(const FlexColumnWidth());
+      return SingleChildScrollView(scrollDirection: Axis.horizontal, child: table(const IntrinsicColumnWidth()));
+    });
   }
 }

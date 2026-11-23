@@ -20,7 +20,7 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    agent::{Command, Decision, Event, Shared, WebAction},
+    agent::{ApprovalMode, Command, Decision, Event, Shared, WebAction},
     api::Usage,
     config::ProviderStatus,
     mcp::Status,
@@ -130,8 +130,10 @@ async fn pump(hub: Arc<Hub>, runtime: Arc<Runtime>, mut events: tokio::sync::mps
     while let Some(event) = events.recv().await {
         // A turn starting or ending changes which sessions the list marks as running.
         let listed = matches!(event, Event::WebStarted | Event::BackgroundTurnStarted { .. } | Event::Done(_));
-        let frame = encode(&runtime.shared, &mut runtime.routing.lock().expect("routing"), event);
-        if let Some(frame) = frame { let _ = hub.events.send(frame); }
+        {
+            let mut routing = runtime.routing.lock().expect("routing");
+            if let Some(frame) = encode(&runtime.shared, &mut routing, event) { let _ = hub.events.send(frame); }
+        }
         if listed { hub.sessions_changed(); }
     }
 }
@@ -410,6 +412,16 @@ async fn dispatch(hub: &Arc<Hub>, method: &str, path: &str, query: &str, body: &
             Ok(Response::Json { status: 200, body: json!({"version": tag.trim_start_matches('v')}) })
         }
         ("GET", "/v1/shell") => Ok(Response::Json { status: 200, body: shell_status() }),
+        ("GET", "/v1/approval") => Ok(Response::Json { status: 200, body: approval_status(hub) }),
+        ("POST", "/v1/approval") => {
+            let default = json_body.get("default").and_then(Value::as_str).and_then(ApprovalMode::parse).ok_or("无效的审批模式")?;
+            let hidden = json_body.get("hidden").and_then(Value::as_bool).ok_or("hidden is required")?;
+            crate::config::set_approval_settings(crate::config::ApprovalSettings { default, hidden })?;
+            // Hidden: nothing on the pages can switch a session any more, so idle ones take the
+            // default now; one mid-turn keeps its mode until the turn ends and it is reopened.
+            if hidden && !hub.shared.approve_all() { hub.apply_approval(default); }
+            Ok(Response::Json { status: 200, body: approval_status(hub) })
+        }
         ("POST", "/v1/shell") => {
             // Saved to config.yml after a test run; the bash tool picks it up on restart.
             let shell = json_body.get("shell").and_then(Value::as_str).unwrap_or("").trim().to_owned();
@@ -461,21 +473,31 @@ async fn session_route(hub: &Arc<Hub>, method: &str, id: &str, action: &str, que
     };
     let path = || query_value(query, "path").unwrap_or_default();
     let result = match (method, action) {
-        ("GET", "") => session_view(hub, id, target).await?,
+        ("GET", "") => {
+            let number = |key: &str| query_value(query, key).map(|value| value.parse::<usize>().map_err(|_| format!("{key} 无效"))).transpose();
+            session_view(hub, id, target, number("before")?, number("limit")?.unwrap_or(HISTORY_PAGE).clamp(1, 1000)).await?
+        }
         ("GET", "events") => return Ok(Response::Events(id.to_owned())),
-        ("POST", "messages" | "compact") => {
-            let (command, message) = if action == "messages" {
-                let text = body["text"].as_str().unwrap_or("");
-                let images = message_images(body.get("images"))?;
-                let files = message_files(body.get("files"))?;
-                if text.trim().is_empty() && images.is_empty() && files.is_empty() { return Err("text, an image, or a file is required".into()); }
-                let input = user_turn(text, &images, &files);
-                let mut user = Vec::new();
-                project_user(&mut user, &input, &mut Images::Inline);
-                (WebAction::Turn(input), user.pop())
-            } else { (WebAction::Compact, None) };
+        ("POST", "messages") => {
+            let text = body["text"].as_str().unwrap_or("");
+            let images = message_images(body.get("images"))?;
+            let files = message_files(body.get("files"))?;
+            if text.trim().is_empty() && images.is_empty() && files.is_empty() { return Err("text, an image, or a file is required".into()); }
+            let input = user_turn(text, &images, &files);
+            // Typed while the reply runs: it joins that turn, read between tool rounds like the TUI's.
+            if let Some(turn) = hub.steer(id, &input) {
+                return Ok(Response::Json { status: 202, body: json!({"sessionId": id, "turnId": turn, "steered": true}) });
+            }
+            let mut user = Vec::new();
+            project_user(&mut user, &input, &mut Images::Inline);
             let turn = next_turn();
-            hub.enqueue(id, target, command, Some(turn.clone()), message, None)?;
+            hub.enqueue(id, target, WebAction::Turn(input), Some(turn.clone()), user.pop(), None)?;
+            return Ok(Response::Json { status: 202, body: json!({"sessionId": id, "turnId": turn}) });
+        }
+        ("POST", "compact" | "retry") => {
+            let action = if action == "retry" { WebAction::Retry } else { WebAction::Compact };
+            let turn = next_turn();
+            hub.enqueue(id, target, action, Some(turn.clone()), None, None)?;
             return Ok(Response::Json { status: 202, body: json!({"sessionId": id, "turnId": turn}) });
         }
         ("POST", "model" | "fast") => {
@@ -487,6 +509,17 @@ async fn session_route(hub: &Arc<Hub>, method: &str, id: &str, action: &str, que
             hub.enqueue(id, target, command, None, None, Some(sender))?;
             receiver.await.map_err(|_| "代理已停止".to_owned())??;
             json!({"ok": true})
+        }
+        ("POST", "approval") => {
+            let mode = body["mode"].as_str().and_then(ApprovalMode::parse).ok_or("无效的审批模式")?;
+            if crate::config::approval_settings().hidden { return Err("审批模式已在设置中固定为默认值".into()); }
+            let runtime = hub.runtime(id, &target)?;
+            let routing = runtime.routing.lock().expect("routing");
+            if routing.queued.is_some() || routing.active.is_some() || !runtime.shared.try_set_approval_mode(mode) {
+                return Err("当前回合或后台任务还在进行".into());
+            }
+            let _ = hub.events.send(approval_frame(id, mode));
+            json!({"ok": true, "approvalMode": mode.as_str()})
         }
         ("GET", "files") => files(&target.cwd, &path()).await?,
         ("POST", "files") => {
@@ -511,7 +544,11 @@ async fn session_route(hub: &Arc<Hub>, method: &str, id: &str, action: &str, que
             let n = action["images/".len()..].parse::<usize>().map_err(|_| "unknown route")?;
             return Ok(image_response(tokio::task::spawn_blocking(move || history_image(&target.path, n, true)).await.map_err(|error| error.to_string())?));
         }
-        ("GET", "file") => read_text(&target.cwd, &path()).await?,
+        ("GET", "file") => {
+            let offset = query_value(query, "offset").map_or(Ok(0), |s| s.parse::<u64>())
+                .map_err(|_| "文件分页位置无效")?;
+            read_text(&target.cwd, &path(), offset).await?
+        }
         ("POST", "file") => write_text(&target.cwd, body["path"].as_str().unwrap_or(""), body["text"].as_str().ok_or("text is required")?).await?,
         ("POST", action) => {
             let (turn, control) = action.strip_prefix("turns/").and_then(|s| s.split_once('/')).ok_or("unknown route")?;
@@ -579,6 +616,12 @@ fn shell_status() -> Value {
     })
 }
 
+/// config.yml `approval:` for 设置 → 通用; `forced` is `--yes`, which overrides the default.
+fn approval_status(hub: &Hub) -> Value {
+    let settings = crate::config::approval_settings();
+    json!({"default": settings.default.as_str(), "hidden": settings.hidden, "forced": hub.shared.approve_all()})
+}
+
 async fn status(hub: &Hub) -> Value {
     with_statistics(json!({
         "ok": true,
@@ -597,6 +640,8 @@ async fn status(hub: &Hub) -> Value {
         "modelName": hub.shared.model().map(|model| model.client.display_name().to_owned()),
         "busy": hub.shared.busy(),
         "fast": hub.shared.model().is_some_and(|model| model.client.fast_enabled()),
+        "approvalMode": hub.shared.approval_mode().as_str(),
+        "approvalHidden": crate::config::approval_settings().hidden,
         "context": hub.shared.context_tokens(),
     }), hub.shared.statistics())
 }
@@ -678,13 +723,25 @@ async fn memory(hub: &Hub) -> Result<Value, String> {
     }))
 }
 
-async fn session_view(hub: &Hub, id: &str, target: session::Target) -> Result<Value, String> {
+/// Blocks a history page holds when the client does not say.
+const HISTORY_PAGE: usize = 200;
+
+/// `messages` are history blocks `[start, start + len)` of `total`: the `limit` before
+/// `before` (default: the newest), so a long session opens with its end and pages back.
+async fn session_view(hub: &Hub, id: &str, target: session::Target, before: Option<usize>, limit: usize) -> Result<Value, String> {
     let cwd = target.cwd;
     let registry = hub.shared.registry();
     let images = format!("/v1/sessions/{id}/images/");
-    let (messages, model, fast, context, stats) = tokio::task::spawn_blocking(move || {
+    let (messages, start, total, model, fast, context, stats) = tokio::task::spawn_blocking(move || {
         let loaded = session::read_http(&target.path, &registry)?;
-        Ok::<_, String>((project_history(&loaded.history, Some(&loaded.reply_stats), &images), loaded.model.filter(|model| !model.is_empty()), loaded.fast, loaded.usage.context(), loaded.ledger.snapshot()))
+        // Projected whole, then sliced: picture numbers count from the start of the history.
+        let mut blocks = project_history(&loaded.history, Some(&loaded.reply_stats), &images);
+        let total = blocks.len();
+        let end = before.unwrap_or(total).min(total);
+        let start = end.saturating_sub(limit);
+        blocks.truncate(end);
+        let page = blocks.split_off(start);
+        Ok::<_, String>((page, start, total, loaded.model.filter(|model| !model.is_empty()), loaded.fast, loaded.usage.context(), loaded.ledger.snapshot()))
     }).await.map_err(|error| error.to_string())??;
     let resolved = model.as_deref().and_then(|selector| hub.shared.registry().resolve(selector).ok());
     let model_name = resolved.as_ref().map(|model| model.display_name.as_deref().filter(|name| !name.is_empty()).unwrap_or(&model.id)).or(model.as_deref());
@@ -698,8 +755,10 @@ async fn session_view(hub: &Hub, id: &str, target: session::Target) -> Result<Va
     let confirm = operation.and_then(|op| op.confirm.as_ref()).filter(|confirm| !confirm.cancel.is_cancelled()).map(|confirm| &confirm.data);
     let question = operation.and_then(|op| op.question.as_ref()).filter(|question| !question.cancel.is_cancelled()).map(|question| &question.data);
     let body = json!({
-        "ok": true, "sessionId": id, "cwd": cwd, "messages": messages,
+        "ok": true, "sessionId": id, "cwd": cwd, "messages": messages, "start": start, "total": total,
         "modelName": model_name, "model": model, "fast": fast,
+        // Not started yet: the mode its runtime will start with, from the settings.
+        "approvalMode": runtime.as_ref().map_or_else(|| hub.shared.start_approval_mode(), |runtime| runtime.shared.approval_mode()).as_str(),
         "context": context, "window": window, "price": price,
         "busy": operation.is_some(), "turnId": operation.and_then(|op| op.turn.as_deref()), "confirm": confirm, "question": question,
     });
@@ -1067,11 +1126,12 @@ fn list_directory(cwd: &Path, relative: &str) -> Result<Value, String> {
 }
 
 const MAX_TEXT: usize = 1024 * 1024;
+const TEXT_PAGE: usize = 128 * 1024;
 
-async fn read_text(cwd: &Path, relative: &str) -> Result<Value, String> {
+async fn read_text(cwd: &Path, relative: &str, offset: u64) -> Result<Value, String> {
     let cwd = cwd.to_path_buf();
     let relative = relative.to_owned();
-    tokio::task::spawn_blocking(move || read_text_file(&cwd, &relative)).await.map_err(|error| error.to_string())?
+    tokio::task::spawn_blocking(move || read_text_file(&cwd, &relative, offset)).await.map_err(|error| error.to_string())?
 }
 
 async fn write_text(cwd: &Path, relative: &str, text: &str) -> Result<Value, String> {
@@ -1108,20 +1168,42 @@ fn create_workspace_entry(cwd: &Path, relative: &str, directory: bool) -> Result
     Ok(json!({"path": relative}))
 }
 
-fn read_text_file(cwd: &Path, relative: &str) -> Result<Value, String> {
+fn read_text_file(cwd: &Path, relative: &str, offset: u64) -> Result<Value, String> {
+    use std::io::{Read, Seek, SeekFrom};
+
     let path = workspace_file(cwd, relative, false)?;
-    if path.is_dir() { return Err(format!("{relative} is a directory")); }
-    let bytes = std::fs::read(&path).map_err(|error| format!("{relative}: {error}"))?;
-    if bytes.len() > MAX_TEXT { return Err("file is too large".into()); }
-    if bytes.contains(&0) { return Err("file is not text".into()); }
-    let text = String::from_utf8(bytes).map_err(|_| "file is not text".to_owned())?;
-    Ok(json!({"path": shown_path(cwd, &path), "text": text}))
+    let io_error = |error| format!("无法读取「{relative}」：{error}");
+    if !path.metadata().map_err(io_error)?.is_file() { return Err("只能预览普通文件".into()); }
+    let mut file = std::fs::File::open(&path).map_err(io_error)?;
+    let size = file.metadata().map_err(io_error)?.len();
+    let mut large = size > MAX_TEXT as u64;
+    if offset != 0 && (!large || offset >= size) { return Err("文件大小已变化，无法继续预览，请重新打开".into()); }
+    if offset != 0 { file.seek(SeekFrom::Start(offset)).map_err(io_error)?; }
+    let limit = if large { TEXT_PAGE } else { MAX_TEXT };
+    let mut bytes = Vec::with_capacity((size - offset).min((limit + 1) as u64) as usize);
+    file.take((limit + 1) as u64).read_to_end(&mut bytes).map_err(io_error)?;
+    let more = bytes.len() > limit;
+    // Handle growth after opening without ever passing a large buffer to the editor.
+    large |= more;
+    if more { bytes.truncate(TEXT_PAGE); }
+    let path = shown_path(cwd, &path);
+    let binary = || json!({"path": path, "kind": "binary", "text": "", "nextOffset": null});
+    if bytes.contains(&0) { return Ok(binary()); }
+    let text = match std::str::from_utf8(&bytes) {
+        Ok(text) => text,
+        // The byte limit can land inside a multibyte character. Start the next page there.
+        Err(error) if more && error.error_len().is_none() => std::str::from_utf8(&bytes[..error.valid_up_to()]).expect("valid UTF-8 prefix"),
+        Err(_) => return Ok(binary()),
+    };
+    let next = more.then_some(offset + text.len() as u64);
+    Ok(json!({"path": path, "kind": if large { "large" } else { "text" }, "text": text, "nextOffset": next}))
 }
 
 fn write_text_file(cwd: &Path, relative: &str, text: &str) -> Result<Value, String> {
-    if text.len() > MAX_TEXT { return Err("file is too large".into()); }
+    if text.len() > MAX_TEXT { return Err("内容超过 1 MiB，无法保存".into()); }
     let path = workspace_file(cwd, relative, true)?;
     if path.is_dir() { return Err(format!("{relative} is a directory")); }
+    if path.metadata().is_ok_and(|meta| meta.len() > MAX_TEXT as u64) { return Err("大文件仅支持预览，无法保存".into()); }
     std::fs::write(&path, text).map_err(|error| format!("{relative}: {error}"))?;
     Ok(json!({"ok": true, "path": shown_path(cwd, &path)}))
 }
@@ -1186,6 +1268,15 @@ impl Hub {
         self.runtimes.lock().expect("runtimes").get(id).cloned()
     }
 
+    /// Moves every idle session to `mode` and tells the pages; busy ones are left alone.
+    fn apply_approval(&self, mode: ApprovalMode) {
+        for (id, runtime) in self.runtimes.lock().expect("runtimes").iter() {
+            let routing = runtime.routing.lock().expect("routing");
+            if routing.queued.is_some() || routing.active.is_some() || runtime.shared.approval_mode() == mode { continue; }
+            if runtime.shared.try_set_approval_mode(mode) { let _ = self.events.send(approval_frame(id, mode)); }
+        }
+    }
+
     /// Tells every open page that the session list changed (a session was created, renamed,
     /// archived, or started or ended a turn), so sidebars refresh without polling.
     fn sessions_changed(&self) {
@@ -1221,6 +1312,16 @@ impl Hub {
             return Err("代理已停止".into());
         }
         Ok(())
+    }
+
+    /// Queues `message` into the session's running turn; its turn id, or `None` when no
+    /// turn is taking messages (none running, or a model switch / compaction), so the
+    /// caller starts one instead.
+    fn steer(&self, id: &str, message: &Value) -> Option<String> {
+        let runtime = self.running(id)?;
+        let routing = runtime.routing.lock().expect("routing");
+        let turn = routing.active.as_ref().filter(|op| op.turn.is_some() && op.completion.is_none())?.turn.clone()?;
+        runtime.shared.steer(message.clone()).then_some(turn)
     }
 
     fn control(&self, id: &str, turn: &str, action: &str, body: &Value) -> Result<(), String> {
@@ -1273,6 +1374,10 @@ impl Operation {
     }
 }
 
+fn approval_frame(id: &str, mode: ApprovalMode) -> Frame {
+    Frame { session: Arc::from(id), json: Arc::from(json!({"type": "approval_mode", "sessionId": id, "approvalMode": mode.as_str()}).to_string()) }
+}
+
 fn encode(shared: &Shared, routing: &mut Routing, event: Event) -> Option<Frame> {
     let event = match event {
         Event::WebStarted => {
@@ -1297,11 +1402,14 @@ fn encode(shared: &Shared, routing: &mut Routing, event: Event) -> Option<Frame>
         }
         // The title often lands after the turn ended; tell every page, not one session.
         Event::Titling { id, done, title } => return Some(Frame { session: Arc::from(""), json: Arc::from(json!({"type": "titling", "sessionId": id, "done": done, "title": title}).to_string()) }),
+        Event::ApprovalMode(mode) => return Some(approval_frame(&shared.session_id(), mode)),
         event => event,
     };
     let op = routing.active.as_mut()?;
     let value = match event {
         Event::WebUserMessage => json!({"type": "user_message", "message": op.user_message.take()?}),
+        Event::Steered(messages) => json!({"type": "steered", "messages": steered_blocks(&messages)}),
+        Event::SteerReturned(messages) => json!({"type": "steer_returned", "messages": steered_blocks(&messages)}),
         Event::Text(text) => json!({"type": "text", "text": text}),
         Event::TextEnd => json!({"type": "text_end"}),
         Event::Reasoning(text) => json!({"type": "reasoning", "text": text}),
@@ -1347,6 +1455,13 @@ fn encode(shared: &Shared, routing: &mut Routing, event: Event) -> Option<Frame>
         _ => return None,
     };
     Some(op.frame(value))
+}
+
+/// Steered messages as the transcript shows user messages (pictures inline: they were just sent).
+fn steered_blocks(messages: &[Value]) -> Vec<Value> {
+    let mut blocks = Vec::new();
+    for message in messages { project_user(&mut blocks, message, &mut Images::Inline); }
+    blocks
 }
 
 fn clip(text: &str) -> String {
@@ -1843,8 +1958,19 @@ mod tests {
                 }
             }
         }
-        assert_eq!(request(addr, "GET", &a_path, "").await.1["messages"], json!([]));
+        let view = request(addr, "GET", &a_path, "").await.1;
+        assert_eq!((&view["messages"], &view["start"], &view["total"]), (&json!([]), &json!(0), &json!(0)));
         assert_eq!(request(addr, "GET", &b_path, "").await.1["messages"], json!([]));
+        assert_eq!(request(addr, "GET", &format!("{a_path}?before=x"), "").await.0, 400);
+        // Retry runs as a turn of its own and ends with the agent's error when there is nothing to ask again.
+        let (code, retry) = request(addr, "POST", &format!("{a_path}/retry"), "{}").await;
+        assert_eq!(code, 202);
+        assert_eq!(next_event(&mut events_a).await["type"], "turn_start");
+        loop {
+            let event = next_event(&mut events_a).await;
+            assert_eq!(event["turnId"], retry["turnId"]);
+            if event["type"] == "done" { assert_eq!(event["ok"], false); break; }
+        }
 
         // Titles and the archive: a renamed, archived session leaves the list and
         // shows up under `archived`; restoring brings it back with its title.

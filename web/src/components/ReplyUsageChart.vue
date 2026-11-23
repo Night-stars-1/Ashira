@@ -1,5 +1,7 @@
 <script setup lang="ts">
+import { useLocalStorage } from '@vueuse/core'
 import { computed, ref } from 'vue'
+import { ArrowDown, ArrowUp } from '@lucide/vue'
 import { CurveType } from '@unovis/ts'
 import { VisArea, VisAxis, VisLine, VisScatter, VisXYContainer } from '@unovis/vue'
 import { Button } from '@/components/ui/button'
@@ -25,6 +27,40 @@ const tokens = new Intl.NumberFormat('zh-CN')
 const short = new Intl.NumberFormat('zh-CN', { notation: 'compact', maximumFractionDigits: 1 })
 const dollars = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumSignificantDigits: 5 })
 const percent = new Intl.NumberFormat('zh-CN', { style: 'percent', maximumFractionDigits: 1 })
+
+// The detail table's order; kept in this browser only.
+const columns = [
+  { key: 'number', label: '回复' }, { key: 'input', label: '输入' }, { key: 'output', label: '输出' }, { key: 'cache', label: '缓存读 / 写' },
+  { key: 'hit', label: '缓存命中' }, { key: 'rate', label: 'TPS' }, { key: 'cost', label: '估算费用' },
+] as const
+type Column = typeof columns[number]['key']
+type Sort = { key: Column; dir: 'asc' | 'desc' }
+const defaultSort: Sort = { key: 'number', dir: 'asc' }
+const storedSort = useLocalStorage<Sort>('ashira.replySort', defaultSort, { mergeDefaults: false })
+const sort = computed<Sort>(() => {
+  const value = storedSort.value
+  return value && columns.some((column) => column.key === value.key) && (value.dir === 'asc' || value.dir === 'desc') ? value : defaultSort
+})
+function sortBy(key: Column) {
+  // A new column starts with the biggest first; 回复 starts from the first.
+  storedSort.value = sort.value.key === key ? { key, dir: sort.value.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: key === 'number' ? 'asc' : 'desc' }
+}
+function cell(row: { number: number; metrics: ReplyMetrics | null | undefined }, key: Column): number | null {
+  if (key === 'number') return row.number
+  if (key === 'input') return row.metrics?.usage ? row.metrics.usage.input + row.metrics.usage.cacheRead + row.metrics.usage.cacheWrite : null
+  if (key === 'cache') return row.metrics?.usage ? row.metrics.usage.cacheRead : null
+  return value(row.metrics, key)
+}
+/** The page's rows in the chosen order; replies without the value stay at the end either way. */
+const sortedPage = computed(() => {
+  const { key, dir } = sort.value
+  return [...page.value].sort((a, b) => {
+    const x = cell(a, key)
+    const y = cell(b, key)
+    if (x === null || y === null) return x === y ? a.number - b.number : x === null ? 1 : -1
+    return (dir === 'asc' ? x - y : y - x) || a.number - b.number
+  })
+})
 
 function value(reply: ReplyMetrics | null | undefined, key: Metric): number | null {
   if (!reply) return null
@@ -104,10 +140,17 @@ const tooltipTemplate = computed(() => {
         <div class="overflow-x-auto">
           <table aria-label="逐回复用量明细" class="w-full text-right text-xs whitespace-nowrap tabular-nums">
             <thead class="border-t border-b text-muted-foreground">
-              <tr><th scope="col" class="px-3 py-2 text-left">回复</th><th scope="col" class="px-2">输入</th><th scope="col" class="px-2">输出</th><th scope="col" class="px-2">缓存读 / 写</th><th scope="col" class="px-2">缓存命中</th><th scope="col" class="px-2">TPS</th><th scope="col" class="px-3">估算费用</th></tr>
+              <tr>
+                <th v-for="column in columns" :key="column.key" scope="col" :class="column.key === 'number' ? 'px-3 py-2 text-left' : column.key === 'cost' ? 'px-3' : 'px-2'" :aria-sort="sort.key === column.key ? (sort.dir === 'asc' ? 'ascending' : 'descending') : 'none'">
+                  <button type="button" class="inline-flex items-center gap-0.5 rounded font-medium hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:outline-none" :class="{ 'text-foreground': sort.key === column.key }" @click="sortBy(column.key)">
+                    {{ column.label }}
+                    <component :is="sort.dir === 'asc' ? ArrowUp : ArrowDown" v-if="sort.key === column.key" aria-hidden="true" class="size-3" />
+                  </button>
+                </th>
+              </tr>
             </thead>
             <tbody class="divide-y">
-              <tr v-for="row in page" :key="row.number">
+              <tr v-for="row in sortedPage" :key="row.number">
                 <th scope="row" class="px-3 py-2 text-left font-medium" :title="row.text.slice(0, 120)">#{{ row.number }}<span v-if="row.metrics?.model" class="ml-2 text-muted-foreground">{{ row.metrics.model }}</span></th>
                 <td class="px-2">{{ row.metrics?.usage ? tokens.format(row.metrics.usage.input + row.metrics.usage.cacheRead + row.metrics.usage.cacheWrite) : '—' }}</td>
                 <td class="px-2">{{ format(value(row.metrics, 'output'), 'output') }}</td>

@@ -11,7 +11,7 @@ import UsageDialog from '@/components/UsageDialog.vue'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { api } from '@/lib/api'
+import { api, type ApprovalSettings } from '@/lib/api'
 import ConnectionForm from '@/components/ConnectionForm.vue'
 import { useAshira } from '@/lib/session'
 import { checkWebUpdate } from '@/lib/update'
@@ -35,6 +35,7 @@ const aliasError = ref('')
 const {
   status, server, refreshServer, restarting, restartServer, updating, updateProgress, updateServer, tree, archive, blocks, draft, model, modelTitle, fast, connected, loading, naming, confirm, question,
   busy, hasReplyText, shownId, shownCwd, sessionName, needsConnection, runningIds, askingIds, send, openSession, decide, answer, interrupt, refresh, updateSettings, renameSession, setArchived, setFolded,
+  canSetApprovalMode, approvalSubmitting, setApprovalMode, turnError, retry, pendingSteer, historyStart, loadingEarlier, loadEarlier,
 } = useAshira()
 
 // Hint only: a newer web release shows a download link in the sidebar.
@@ -50,6 +51,12 @@ function showModels() {
 
 function setFast(enabled: boolean) {
   void updateSettings((id) => api.fast(id, enabled))
+}
+
+/** 设置 → 通用 saved `approval:`; hiding the switch also moved idle sessions to the default. */
+function onApprovalSaved(value: ApprovalSettings) {
+  server.value = { ...server.value, approvalHidden: value.hidden }
+  void updateSettings(async () => {})
 }
 
 async function startSession(cwd: string) {
@@ -156,6 +163,10 @@ function saveRename() {
       :blocks="blocks"
       :draft="draft"
       :model="modelTitle || model"
+      :approval-mode="status?.approvalMode ?? null"
+      :approval-enabled="canSetApprovalMode"
+      :approval-hidden="server.approvalHidden"
+      :approval-submitting="approvalSubmitting"
       :busy="busy"
       :has-reply-text="hasReplyText"
       :send="send"
@@ -166,10 +177,18 @@ function saveRename() {
       :context-tokens="status?.context ?? 0"
       :context-window="status?.window ?? null"
       :question="question"
+      :turn-error="turnError"
+      :pending-steer="pendingSteer"
+      :history-start="historyStart"
+      :loading-earlier="loadingEarlier"
+      @retry="retry"
+      @dismiss-error="turnError = null"
+      @load-earlier="loadEarlier"
       @update:draft="draft = $event"
       @interrupt="interrupt"
       @answer="answer"
       @open-models="showModels"
+      @approval-mode="setApprovalMode"
       @open-usage="usageOpen = true"
       @open-sessions="drawer = 'sessions'"
       @expand-sessions="sessionsOpen = true"
@@ -195,6 +214,7 @@ function saveRename() {
       :update-progress="updateProgress"
       @restart="restartServer"
       @update="updateServer"
+      @approval="onApprovalSaved"
       @restore="(kind, key) => setArchived(kind, key, false)"
     />
     <UsageDialog v-model:open="usageOpen" :status="status" :blocks="blocks" />

@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../state/ashira_state.dart';
 import '../state/display_prefs.dart';
+import 'approval_settings.dart';
 import 'composer.dart';
 import 'dialogs.dart';
 import 'files.dart';
@@ -219,19 +220,28 @@ class _HomePageState extends State<HomePage> {
                       key: ValueKey(state.shownId),
                       blocks: state.blocks,
                       activity: state.activity,
+                      start: state.historyStart,
+                      pending: state.pendingSteer,
+                      loadingEarlier: state.loadingEarlier,
+                      onLoadEarlier: state.historyStart > 0 ? state.loadEarlier : null,
                       onOpenAgent: (id) => showSubagent(context, state.client, id, (path) => state.client.rawUri(state.shownId, path)),
                     ),
                   ),
           ),
           Composer(
             key: ValueKey('composer-${state.shownId}'),
-            enabled: hasSession && state.connected,
+            enabled: hasSession && state.connected && !state.approvalSubmitting,
             hasSession: hasSession,
             busy: state.busy,
             model: state.modelTitle,
             context: state.status?.context ?? 0,
             window: state.status?.window,
             error: state.error,
+            onRetry: state.errorRetry && !state.busy ? state.retry : null,
+            onDismissError: state.dismissError,
+            returnedDraft: state.returnedDraft,
+            onDraftTaken: () => state.returnedDraft = null,
+            approval: hasSession && !state.approvalHidden ? _ApprovalSelector(key: ValueKey(state.shownId), state: state) : null,
             onSend: state.send,
             onInterrupt: state.interrupt,
             onModels: () => showModelPicker(context, state),
@@ -299,6 +309,57 @@ class _HomePageState extends State<HomePage> {
           ),
         );
       },
+    );
+  }
+}
+
+class _ApprovalSelector extends StatelessWidget {
+  const _ApprovalSelector({super.key, required this.state});
+
+  final AshiraState state;
+
+  Future<bool> _confirmFull(BuildContext context) async {
+    final id = state.shownId;
+    return await showDialog<bool>(
+      context: context,
+      builder: (context) => ListenableBuilder(
+        listenable: state,
+        builder: (context, _) {
+          final scheme = Theme.of(context).colorScheme;
+          return SmallDialog(
+            title: '启用完整权限？',
+            description: '此会话将跳过工具审批，允许执行危险 Shell 命令和调用未授权的 MCP 工具。这不会增加 Ashira 的系统权限。',
+            actions: [
+              OutlinedButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('取消')),
+              FilledButton(
+                style: FilledButton.styleFrom(backgroundColor: scheme.error, foregroundColor: scheme.onError),
+                onPressed: state.canSetApprovalMode && state.shownId == id ? () => Navigator.of(context).pop(true) : null,
+                child: const Text('启用完整权限'),
+              ),
+            ],
+          );
+        },
+      ),
+    ) ?? false;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final mode = state.status?.approvalMode;
+    final enabled = state.canSetApprovalMode;
+    return MenuAnchor(
+      menuChildren: approvalMenu(context, mode, enabled ? (mode) => unawaited(state.setApprovalMode(mode, confirmFullAccess: () => _confirmFull(context))) : null),
+      builder: (context, controller, _) => Tooltip(
+        message: state.approvalSubmitting ? '正在切换审批模式' : '审批模式',
+        child: OutlinedButton(
+          onPressed: !enabled ? null : () => controller.isOpen ? controller.close() : controller.open(),
+          child: Row(mainAxisSize: MainAxisSize.min, children: [
+            Text(approvalOptions[mode]?.label ?? '审批模式'),
+            const SizedBox(width: 4),
+            const Icon(Icons.expand_more, size: 16),
+          ]),
+        ),
+      ),
     );
   }
 }

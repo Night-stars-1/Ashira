@@ -88,6 +88,13 @@ class AshiraClient {
   /// Saves config.yml `shell:` after the server test-runs it; empty goes back to finding it automatically.
   Future<ShellStatus> setShell(String shell) async => ShellStatus.fromJson(await _post('/v1/shell', {'shell': shell}));
 
+  /// config.yml `approval:`: the default mode and whether the chat hides its switch.
+  Future<ApprovalSettings> approval() async => ApprovalSettings.fromJson(await _get('/v1/approval'));
+
+  /// Saves `approval:`; hiding also moves idle sessions to the default.
+  Future<ApprovalSettings> setApproval({required String defaultMode, required bool hidden}) async =>
+      ApprovalSettings.fromJson(await _post('/v1/approval', {'default': defaultMode, 'hidden': hidden}));
+
   Future<SessionListing> sessions() async => SessionListing.fromJson(await _get('/v1/sessions'));
 
   Future<void> alias(String path, String alias) => _post('/v1/alias', {'path': path, 'alias': alias});
@@ -104,7 +111,11 @@ class AshiraClient {
   Future<String> newSession(String? cwd) async =>
       str(asMap(await _post('/v1/sessions', cwd == null || cwd.isEmpty ? const <String, dynamic>{} : {'cwd': cwd}))['sessionId']);
 
-  Future<SessionView> session(String id) async => SessionView.fromJson(await _get(_session(id)), imageUri);
+  /// `before` pages back: the `limit` blocks before that index; without it, the newest.
+  Future<SessionView> session(String id, {int? before, int? limit}) async => SessionView.fromJson(
+        await _get(_session(id), {if (before != null) 'before': '$before', if (limit != null) 'limit': '$limit'}),
+        imageUri,
+      );
 
   /// A picture stored in a history (a `/v1/…` path from the server) for `Image.network`;
   /// the token rides in the query.
@@ -113,15 +124,18 @@ class AshiraClient {
     return uri.replace(queryParameters: {...uri.queryParameters, if (token.isNotEmpty) 'token': token}).toString();
   }
 
-  /// Returns the accepted turn id.
-  Future<String?> message(String id, String text, List<({String mediaType, String data})> images, [List<TextFile> files = const []]) async {
-    final body = await _post('${_session(id)}/messages', {
+  /// The accepted turn id; `steered` when the reply was running and the message joined it.
+  Future<({String? turnId, bool steered})> message(String id, String text, List<({String mediaType, String data})> images, [List<TextFile> files = const []]) async {
+    final body = asMap(await _post('${_session(id)}/messages', {
       'text': text,
       'images': [for (final image in images) {'mediaType': image.mediaType, 'data': image.data}],
       'files': [for (final file in files) {'name': file.name, 'text': file.text}],
-    });
-    return optStr(asMap(body)['turnId']);
+    }));
+    return (turnId: optStr(body['turnId']), steered: body['steered'] == true);
   }
+
+  /// Asks the model again after a failed reply, from the history as it stands; the turn id.
+  Future<String?> retry(String id) async => optStr(asMap(await _post('${_session(id)}/retry', const <String, dynamic>{}))['turnId']);
 
   String _turn(String id, String turn) => '${_session(id)}/turns/${Uri.encodeComponent(turn)}';
 
@@ -138,6 +152,11 @@ class AshiraClient {
 
   Future<void> setFast(String id, bool enabled) => _post('${_session(id)}/fast', {'enabled': enabled});
 
+  Future<String> setApprovalMode(String id, String mode) async {
+    final result = asMap(await _post('${_session(id)}/approval', {'mode': mode}))['approvalMode'];
+    return switch (result) { 'manual' => 'manual', 'auto' => 'auto', 'full' => 'full', _ => throw ApiException('服务端未返回有效的审批模式') };
+  }
+
   Future<ModelCatalog> models() async => ModelCatalog.fromJson(await _get('/v1/models'));
 
   Future<FileListing> files(String id, String path) async => FileListing.fromJson(await _get('${_session(id)}/files', {'path': path}));
@@ -145,7 +164,11 @@ class AshiraClient {
   Future<void> createEntry(String id, String path, {required bool directory}) =>
       _post('${_session(id)}/files', {'path': path, 'kind': directory ? 'directory' : 'file'});
 
-  Future<String> readFile(String id, String path) async => str(asMap(await _get('${_session(id)}/file', {'path': path}))['text']);
+  Future<WorkspaceFile> readFile(String id, String path, {int offset = 0}) async {
+    final body = asMap(await _get('${_session(id)}/file', {'path': path, 'offset': '$offset'}));
+    final kind = switch (body['kind']) { 'large' => 'large', 'binary' => 'binary', _ => 'text' };
+    return WorkspaceFile(kind: kind, text: str(body['text']), nextOffset: metric(body['nextOffset'])?.toInt());
+  }
 
   Future<void> writeFile(String id, String path, String text) => _post('${_session(id)}/file', {'path': path, 'text': text});
 

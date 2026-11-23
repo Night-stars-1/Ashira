@@ -42,7 +42,7 @@ function taskText(text: string): string {
   <Dialog :open="id !== ''" @update:open="(open) => { if (!open) emit('close') }">
     <DialogContent class="flex h-[85vh] w-[min(1480px,calc(100%-2rem))] max-w-none flex-col gap-0 overflow-hidden p-0 sm:max-w-none">
       <DialogHeader class="border-b px-6 py-4">
-        <DialogTitle>子任务</DialogTitle>
+        <DialogTitle>子代理对话</DialogTitle>
       </DialogHeader>
       <p v-if="error" class="px-6 py-4 text-sm text-destructive">{{ error }}</p>
       <TranscriptSkeleton v-else-if="loading" />

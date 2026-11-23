@@ -113,6 +113,7 @@ class Status {
     this.modelName,
     this.busy = false,
     this.fast = false,
+    this.approvalMode = 'manual',
     this.context = 0,
     this.window,
     this.price,
@@ -121,6 +122,7 @@ class Status {
     this.update,
     this.restartPending = false,
     this.container = false,
+    this.approvalHidden = false,
   });
   factory Status.fromJson(Object? json) {
     final m = asMap(json);
@@ -131,6 +133,7 @@ class Status {
       modelName: optStr(m['modelName']),
       busy: m['busy'] == true,
       fast: m['fast'] == true,
+      approvalMode: switch (m['approvalMode']) { 'auto' => 'auto', 'full' => 'full', _ => 'manual' },
       context: int0(m['context']),
       window: metric(m['window'])?.toInt(),
       price: m['price'] == null ? null : Price.fromJson(m['price']),
@@ -139,11 +142,13 @@ class Status {
       update: optStr(m['update']),
       restartPending: m['restartPending'] == true,
       container: m['container'] == true,
+      approvalHidden: m['approvalHidden'] == true,
     );
   }
   final String cwd, sessionId;
   final String? model, modelName;
   final bool busy, fast;
+  final String approvalMode;
   final int context;
   final int? window;
   final Price? price;
@@ -155,14 +160,17 @@ class Status {
   final bool restartPending;
   /// Running from the Docker image: updated by pulling the image, never in place.
   final bool container;
+  /// 设置 → 通用 hid the chat's approval switch: sessions run in the default mode.
+  final bool approvalHidden;
 
-  Status copyWith({String? model, String? modelName, int? context, Statistics? statistics}) => Status(
+  Status copyWith({String? model, String? modelName, int? context, Statistics? statistics, String? approvalMode}) => Status(
         cwd: cwd,
         sessionId: sessionId,
         model: model ?? this.model,
         modelName: modelName ?? this.modelName,
         busy: busy,
         fast: fast,
+        approvalMode: approvalMode ?? this.approvalMode,
         context: context ?? this.context,
         window: window,
         price: price,
@@ -171,7 +179,30 @@ class Status {
         update: update,
         restartPending: restartPending,
         container: container,
+        approvalHidden: approvalHidden,
       );
+}
+
+/// config.yml `approval:`: the mode sessions start in, and whether the chat hides its switch.
+/// [forced]: the server runs with `--yes`, so every session has full access anyway.
+class ApprovalSettings {
+  const ApprovalSettings({required this.defaultMode, required this.hidden, required this.forced});
+  factory ApprovalSettings.fromJson(Object? json) {
+    final m = asMap(json);
+    return ApprovalSettings(
+      defaultMode: switch (m['default']) { 'auto' => 'auto', 'full' => 'full', _ => 'manual' },
+      hidden: m['hidden'] == true,
+      forced: m['forced'] == true,
+    );
+  }
+  final String defaultMode;
+  final bool hidden, forced;
+}
+
+class WorkspaceFile {
+  const WorkspaceFile({required this.kind, required this.text, required this.nextOffset});
+  final String kind, text;
+  final int? nextOffset;
 }
 
 class ConfirmRequest {
@@ -235,14 +266,17 @@ class QuestionRequest {
   final List<QuestionItem> questions;
 }
 
+/// `blocks` are history blocks `[start, start + blocks.length)` of `total`.
 class SessionView {
-  const SessionView({required this.status, required this.blocks, this.turnId, this.confirm, this.question});
+  const SessionView({required this.status, required this.blocks, this.start = 0, this.total = 0, this.turnId, this.confirm, this.question});
   /// `resolve` turns a history picture's server path into a URL to load it from.
   factory SessionView.fromJson(Object? json, String Function(String path) resolve) {
     final m = asMap(json);
     return SessionView(
       status: Status.fromJson(m),
       blocks: historyBlocks(m['messages'], resolve),
+      start: int0(m['start']),
+      total: int0(m['total']),
       turnId: optStr(m['turnId']),
       confirm: m['confirm'] == null ? null : ConfirmRequest.fromJson(m['confirm']),
       question: m['question'] == null ? null : QuestionRequest.fromJson(m['question']),
@@ -250,6 +284,7 @@ class SessionView {
   }
   final Status status;
   final List<Block> blocks;
+  final int start, total;
   final String? turnId;
   final ConfirmRequest? confirm;
   final QuestionRequest? question;

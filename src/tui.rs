@@ -30,7 +30,7 @@ use tokio::sync::{
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    agent::{self, Command, Decision, Event, Shared, tokens},
+    agent::{self, ApprovalMode, Command, Decision, Event, Shared, tokens},
     api::CANCELLED,
     config::{self, Level},
     composer::{Atom, Composer},
@@ -84,6 +84,7 @@ const COMMANDS: &[CommandInfo] = &[
     CommandInfo { name: "models", arg: "[模型]", description: "打开模型列表；带参数则直接切换，如 cpa/gpt-6.1-sol:high", icon: "\u{f1b2} " },
     CommandInfo { name: "thinking", arg: "[级别]", description: "打开思考级别选择器，或直接设置级别；default 恢复服务商默认", icon: "\u{f0eb} " },
     CommandInfo { name: "fast", arg: "[on|off|status]", description: "开启或关闭 OpenAI fast；GPT 请求发送 service_tier=fast", icon: "\u{f0e7} " },
+    CommandInfo { name: "approval", arg: "[manual|auto|full]", description: "查看或切换当前会话的审批模式；新会话恢复启动设置", icon: "\u{f023} " },
     CommandInfo { name: "plugins", arg: "", description: "列出已安装的插件", icon: "\u{f12e} " },
     CommandInfo { name: "compact", arg: "", description: "压缩对话，释放上下文", icon: "\u{f066} " },
     CommandInfo { name: "mcp", arg: "[子命令]", description: "MCP 管理帮助；可在菜单中选择子命令", icon: "\u{f1e6} " },
@@ -116,6 +117,9 @@ const SUBCOMMANDS: &[CommandInfo] = &[
     CommandInfo { name: "fast on", arg: "", description: "开启 OpenAI fast", icon: "" },
     CommandInfo { name: "fast off", arg: "", description: "关闭 OpenAI fast", icon: "" },
     CommandInfo { name: "fast status", arg: "", description: "查看 OpenAI fast 状态", icon: "" },
+    CommandInfo { name: "approval manual", arg: "", description: "危险命令及未授权的 MCP 工具需手动确认", icon: "" },
+    CommandInfo { name: "approval auto", arg: "", description: "自动拒绝危险命令及未授权的 MCP 工具", icon: "" },
+    CommandInfo { name: "approval full", arg: "", description: "跳过审批，不改变系统或工具角色权限", icon: "" },
 ];
 const SUGGEST_ROWS: usize = 10;
 
@@ -622,6 +626,10 @@ impl Ui {
             field("模型", model.0, model.1),
             field("目录", self.cwd.clone(), Style::new()),
             field("会话", session, DIM),
+            match self.shared.approval_mode() {
+                ApprovalMode::Full => field("审批", "full（--yes）".to_owned(), WARN),
+                mode => field("审批", mode.as_str().to_owned(), DIM),
+            },
             Line::styled(format!("╰{}╯", "─".repeat(w - 2)), border),
             Line::styled("  /models 切换模型 · /help 查看命令 · Esc 中断", DIM),
         ];
@@ -1032,6 +1040,7 @@ impl Ui {
                 self.confirms.retain(|c| c.id != id);
                 self.promote_confirm();
             }
+            Event::ApprovalMode(mode) => self.report_approval_mode(mode),
             Event::Question { id, questions, cancel, reply } => {
                 self.effort_picker = None;
                 self.close_report();
@@ -1113,7 +1122,7 @@ impl Ui {
                     self.display_user(&draft.display());
                 }
             }
-            Event::SteerReturned => {
+            Event::SteerReturned(_) => {
                 // The turn ended first: they go to the front of the queue, in order.
                 let returned = std::mem::take(&mut self.steering);
                 self.queued.splice(0..0, returned);
@@ -1951,6 +1960,29 @@ impl Ui {
         self.start(Command::Fast(enabled), "正在切换 fast", agent_tx);
     }
 
+    fn report_approval_mode(&mut self, mode: ApprovalMode) {
+        let (note, style) = match mode {
+            ApprovalMode::Manual => ("当前为手动审批（manual）：危险命令及未授权的 MCP 工具需确认。", DIM),
+            ApprovalMode::Auto => ("当前为自动审批（auto）：自动拒绝危险命令及未授权的 MCP 工具。", DIM),
+            ApprovalMode::Full => ("当前为完整权限（full）：跳过审批，不改变系统或工具角色权限。", WARN),
+        };
+        self.commit_note(note, style);
+    }
+
+    fn approval_command(&mut self, arg: &str) {
+        if arg.is_empty() {
+            self.report_approval_mode(self.shared.approval_mode());
+        } else if let Some(mode) = ApprovalMode::parse(arg) {
+            if self.busy.is_some() || !self.shared.try_set_approval_mode(mode) {
+                self.commit_note("请等待当前回合和后台任务结束后再切换审批模式。", WARN);
+            } else {
+                self.report_approval_mode(mode);
+            }
+        } else {
+            self.commit_note("用法：/approval [manual|auto|full]", WARN);
+        }
+    }
+
     fn switch_model(&mut self, selector: String, agent_tx: &UnboundedSender<(Command, CancellationToken)>) {
         self.pending_level = None;
         if selector == self.model {
@@ -2039,6 +2071,7 @@ impl Ui {
             "exit" | "quit" => self.quit = true,
             "thinking" | "think" => self.set_thinking(arg, agent_tx),
             "fast" => self.fast_command(arg, agent_tx),
+            "approval" => self.approval_command(arg),
             "models" | "model" if !arg.is_empty() => self.switch_model(arg.to_owned(), agent_tx),
             "models" | "model" => {
                 if let Some(warnings) = self.shared.reload_registry() {

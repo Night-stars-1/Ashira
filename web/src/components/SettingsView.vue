@@ -12,14 +12,15 @@ import UsageSettings from '@/components/UsageSettings.vue'
 import ConnectionForm from '@/components/ConnectionForm.vue'
 import AboutSettings from '@/components/AboutSettings.vue'
 import ShellSettings from '@/components/ShellSettings.vue'
+import ApprovalSettingsRows from '@/components/ApprovalSettings.vue'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Switch } from '@/components/ui/switch'
 import { wrapTerminal, wrapToolOutput } from '@/lib/display'
-import { api, type Archive, type McpForm, type McpServer, type MemoryEntry, type UpdateProgress } from '@/lib/api'
+import { api, type ApprovalSettings, type Archive, type McpForm, type McpServer, type MemoryEntry, type UpdateProgress } from '@/lib/api'
 
 const open = defineModel<boolean>('open', { required: true })
 const props = defineProps<{ archive: Archive; serverVersion: string; serverUpdate: string | null; hosted: boolean; restartPending: boolean; container: boolean; restarting: boolean; updating: boolean; updateProgress: UpdateProgress | null }>()
-const emit = defineEmits<{ restore: [kind: 'session' | 'folder', key: string]; restart: []; update: [] }>()
+const emit = defineEmits<{ restore: [kind: 'session' | 'folder', key: string]; restart: []; update: []; approval: [value: ApprovalSettings] }>()
 
 export type SettingsTab = 'models' | 'usage' | 'display' | 'plugins' | 'mcp' | 'memory' | 'archive' | 'connection' | 'about'
 type Tab = SettingsTab
@@ -238,6 +239,10 @@ watch(open, (value) => { if (value) void load() })
             <ConnectionForm v-else-if="tab === 'connection'" />
             <!-- Chrome-style groups: a heading over a filled card. -->
             <template v-else-if="tab === 'display'">
+              <h3 class="px-1 text-xs font-medium text-muted-foreground">审批</h3>
+              <div class="mb-3 divide-y divide-border/60 rounded-xl bg-muted/60">
+                <ApprovalSettingsRows :active="open && tab === 'display'" @saved="(value) => emit('approval', value)" />
+              </div>
               <h3 class="px-1 text-xs font-medium text-muted-foreground">显示</h3>
               <div class="rounded-xl bg-muted/60">
                 <label class="flex items-center gap-3 px-4 py-3.5">

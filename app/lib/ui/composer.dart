@@ -56,12 +56,25 @@ class Composer extends StatefulWidget {
     required this.onAnswer,
     this.question,
     this.error = '',
+    this.onRetry,
+    this.onDismissError,
+    this.returnedDraft,
+    this.onDraftTaken,
+    this.approval,
   });
 
   final bool enabled, busy;
   /// Picks the hint; [enabled] also drops while the session's stream reconnects.
   final bool hasSession;
   final String model, error;
+  /// [error] came from a failed turn: 重试 asks the model again. Null for other errors.
+  final VoidCallback? onRetry;
+  final VoidCallback? onDismissError;
+  /// Steered text the turn ended without reading; put back into the input, then [onDraftTaken].
+  final String? returnedDraft;
+  final VoidCallback? onDraftTaken;
+  /// The session's approval-mode picker, beside the model button like the web's.
+  final Widget? approval;
   /// Context tokens in use and the model's window, drawn as a ring by the send button.
   final int context;
   final int? window;
@@ -98,7 +111,18 @@ class _ComposerState extends State<Composer> {
     super.dispose();
   }
 
-  bool get _canSend => widget.enabled && !widget.busy && !_sending && (_text.text.trim().isNotEmpty || _images.isNotEmpty || _files.isNotEmpty);
+  // While the reply runs, sending is allowed: the message joins that turn.
+  bool get _canSend => widget.enabled && !_sending && (_text.text.trim().isNotEmpty || _images.isNotEmpty || _files.isNotEmpty);
+
+  @override
+  void didUpdateWidget(Composer old) {
+    super.didUpdateWidget(old);
+    final returned = widget.returnedDraft;
+    if (returned != null && returned != old.returnedDraft) {
+      _text.text = [returned, _text.text].where((part) => part.isNotEmpty).join('\n\n');
+      WidgetsBinding.instance.addPostFrameCallback((_) => widget.onDraftTaken?.call());
+    }
+  }
 
   Future<void> _send() async {
     if (!_canSend) return;
@@ -232,7 +256,7 @@ class _ComposerState extends State<Composer> {
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 768),
             child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-              if (widget.error.isNotEmpty) Padding(padding: const EdgeInsets.fromLTRB(4, 0, 4, 8), child: Text(widget.error, style: TextStyle(color: scheme.error, fontSize: 13))),
+              if (widget.error.isNotEmpty) _ErrorCard(message: widget.error, onRetry: widget.onRetry, onDismiss: widget.onDismissError),
               DecoratedBox(
                 decoration: BoxDecoration(
                   color: scheme.card,
@@ -280,7 +304,7 @@ class _ComposerState extends State<Composer> {
                         child: TextField(
                         controller: _text,
                         focusNode: _focus,
-                        enabled: widget.enabled && !widget.busy && !_sending,
+                        enabled: widget.enabled && !_sending,
                         minLines: 2,
                         maxLines: 8,
                         keyboardType: TextInputType.multiline,
@@ -297,7 +321,7 @@ class _ComposerState extends State<Composer> {
                           contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
                           // Like the web: only a missing session changes the hint; the brief reconnect
                           // while switching sessions keeps it steady.
-                          hintText: widget.hasSession ? (desktop ? '描述任务，Enter 发送，Shift+Enter 换行' : '描述任务') : '请先选择或新建会话',
+                          hintText: !widget.hasSession ? '请先选择或新建会话' : widget.busy ? '补充说明，模型会在下一步读到' : desktop ? '描述任务，Enter 发送，Shift+Enter 换行' : '描述任务',
                         ),
                         ),
                       ),
@@ -305,42 +329,49 @@ class _ComposerState extends State<Composer> {
                     const SizedBox(height: 6),
                     Row(children: [
                       if (desktop)
-                        IconButton(tooltip: '添加图片（单张不超过 1.5 MB）或文本文件', icon: const Icon(Icons.attach_file), onPressed: widget.enabled && !widget.busy ? _pickFiles : null)
+                        IconButton(tooltip: '添加图片（单张不超过 1.5 MB）或文本文件', icon: const Icon(Icons.attach_file), onPressed: widget.enabled ? _pickFiles : null)
                       else ...[
-                        IconButton(tooltip: '添加图片（单张不超过 1.5 MB）', icon: const Icon(Icons.add_photo_alternate_outlined), onPressed: widget.enabled && !widget.busy && _images.length < _maxImages ? _pickImages : null),
-                        IconButton(tooltip: '添加文本文件', icon: const Icon(Icons.attach_file), onPressed: widget.enabled && !widget.busy ? _pickFiles : null),
+                        IconButton(tooltip: '添加图片（单张不超过 1.5 MB）', icon: const Icon(Icons.add_photo_alternate_outlined), onPressed: widget.enabled && _images.length < _maxImages ? _pickImages : null),
+                        IconButton(tooltip: '添加文本文件', icon: const Icon(Icons.attach_file), onPressed: widget.enabled ? _pickFiles : null),
                       ],
                       const SizedBox(width: 4),
                       // Takes the leftover width so the send button sits at the right edge.
                       Expanded(
-                        child: Align(
-                          alignment: Alignment.centerLeft,
-                          child: ConstrainedBox(
-                            constraints: const BoxConstraints(maxWidth: 288),
-                            child: OutlinedButton(
-                              onPressed: widget.enabled && !widget.busy ? widget.onModels : null,
-                              child: Row(mainAxisSize: MainAxisSize.min, children: [
-                                Flexible(child: Text(widget.model.isEmpty ? '选择模型' : widget.model, maxLines: 1, overflow: TextOverflow.ellipsis)),
-                                const SizedBox(width: 4),
-                                const Icon(Icons.expand_more, size: 16),
-                              ]),
+                        child: Row(children: [
+                          Flexible(
+                            child: ConstrainedBox(
+                              constraints: const BoxConstraints(maxWidth: 288),
+                              child: OutlinedButton(
+                                onPressed: widget.enabled && !widget.busy ? widget.onModels : null,
+                                child: Row(mainAxisSize: MainAxisSize.min, children: [
+                                  Flexible(child: Text(widget.model.isEmpty ? '选择模型' : widget.model, maxLines: 1, overflow: TextOverflow.ellipsis)),
+                                  const SizedBox(width: 4),
+                                  const Icon(Icons.expand_more, size: 16),
+                                ]),
+                              ),
                             ),
                           ),
-                        ),
+                          if (widget.approval case final approval?) ...[const SizedBox(width: 6), approval],
+                        ]),
                       ),
                       if (widget.hasSession && widget.context > 0) ...[
                         const SizedBox(width: 4),
                         ContextRing(context: widget.context, window: widget.window),
                       ],
                       const SizedBox(width: 8),
-                      if (widget.busy)
+                      if (widget.busy) ...[
                         FilledButton.icon(
                           style: FilledButton.styleFrom(backgroundColor: scheme.error, foregroundColor: scheme.onError),
                           onPressed: widget.onInterrupt,
                           icon: const Icon(Icons.stop_rounded),
                           label: const Text('停止'),
-                        )
-                      else
+                        ),
+                        // Adds to the running reply rather than starting a new turn.
+                        if (_text.text.trim().isNotEmpty || _images.isNotEmpty || _files.isNotEmpty) ...[
+                          const SizedBox(width: 6),
+                          FilledButton.icon(onPressed: _canSend ? _send : null, icon: const Icon(Icons.send_rounded, size: 18), label: const Text('补充')),
+                        ],
+                      ] else
                         FilledButton.icon(onPressed: _canSend ? _send : null, icon: const Icon(Icons.arrow_upward_rounded), label: const Text('发送')),
                     ]),
                   ]),
@@ -350,6 +381,62 @@ class _ComposerState extends State<Composer> {
           ),
         ),
       ),
+    );
+  }
+}
+
+/// The last failure above the input: alert icon, the message (three lines, 展开 for the
+/// rest, selectable), 重试 when it was a failed turn, and × to put it away.
+class _ErrorCard extends StatefulWidget {
+  const _ErrorCard({required this.message, this.onRetry, this.onDismiss});
+  final String message;
+  final VoidCallback? onRetry, onDismiss;
+  @override
+  State<_ErrorCard> createState() => _ErrorCardState();
+}
+
+class _ErrorCardState extends State<_ErrorCard> {
+  bool _open = false;
+
+  @override
+  void didUpdateWidget(_ErrorCard old) {
+    super.didUpdateWidget(old);
+    if (old.message != widget.message) _open = false;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final muted = TextStyle(fontSize: 13, height: 1.45, color: scheme.mutedForeground);
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.fromLTRB(12, 10, 4, 10),
+      decoration: BoxDecoration(
+        color: scheme.error.withValues(alpha: .1),
+        border: Border.all(color: scheme.error.withValues(alpha: .4)),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Padding(padding: const EdgeInsets.only(top: 2), child: Icon(Icons.error_outline, size: 16, color: scheme.error)),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(widget.onRetry != null ? '回复失败' : '出错了', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500, color: scheme.error)),
+            const SizedBox(height: 2),
+            _open ? SelectableText(widget.message, style: muted) : Text(widget.message, maxLines: 3, overflow: TextOverflow.ellipsis, style: muted),
+            if (widget.message.length > 160)
+              GestureDetector(
+                onTap: () => setState(() => _open = !_open),
+                child: Padding(padding: const EdgeInsets.only(top: 4), child: Text(_open ? '收起' : '展开', style: TextStyle(fontSize: 12, color: scheme.mutedForeground, decoration: TextDecoration.underline))),
+              ),
+          ]),
+        ),
+        if (widget.onRetry != null) ...[
+          const SizedBox(width: 8),
+          OutlinedButton.icon(onPressed: widget.onRetry, icon: const Icon(Icons.refresh, size: 16), label: const Text('重试')),
+        ],
+        IconButton(tooltip: '关闭错误提示', iconSize: 16, visualDensity: VisualDensity.compact, icon: Icon(Icons.close, color: scheme.mutedForeground), onPressed: widget.onDismiss),
+      ]),
     );
   }
 }

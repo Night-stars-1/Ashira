@@ -98,6 +98,19 @@ export type ReplyMetrics = {
   durationMs: number | null
 }
 
+export type ApprovalMode = 'manual' | 'auto' | 'full'
+/** config.yml `approval:`: the mode sessions start in, and whether the chat hides its switch. `forced`: `--yes`. */
+export type ApprovalSettings = { default: ApprovalMode; hidden: boolean; forced: boolean }
+
+function approvalMode(value: unknown): ApprovalMode | undefined {
+  return value === 'manual' || value === 'auto' || value === 'full' ? value : undefined
+}
+
+function approvalSettings(body: unknown): ApprovalSettings {
+  const value = record(body)
+  return { default: approvalMode(value.default) ?? 'manual', hidden: value.hidden === true, forced: value.forced === true }
+}
+
 export type Status = UsageStatistics & {
   ok: boolean
   /** The server's ashira version, and a newer release tag it can update to (null when current). */
@@ -115,6 +128,9 @@ export type Status = UsageStatistics & {
   modelName: string | null
   busy: boolean
   fast: boolean
+  approvalMode: ApprovalMode
+  /** 设置 → 通用 hid the chat's approval switch: sessions run in the default mode. */
+  approvalHidden: boolean
   context: number
   window: number | null
 }
@@ -167,7 +183,8 @@ export type QuestionRequest = { id: number; questions: QuestionItem[] }
 /** Per question id: text, chosen options, or null when unanswered. */
 export type QuestionAnswers = Record<string, string | string[] | null>
 
-export type SessionView = Status & { messages: unknown; turnId: string | null; confirm: ConfirmRequest | null; question: QuestionRequest | null }
+/** `messages` are history blocks `[start, start + messages.length)` of `total`. */
+export type SessionView = Status & { messages: unknown; start: number; total: number; turnId: string | null; confirm: ConfirmRequest | null; question: QuestionRequest | null }
 
 function sessionPath(id: string) {
   if (!id) throw new Error('请先选择会话')
@@ -182,6 +199,8 @@ export type AgentEvent = {
   sessionId?: string
   turnId?: string
   message?: unknown
+  /** `steered` / `steer_returned`: user blocks that joined the running turn, or came back unread. */
+  messages?: unknown
   text?: string
   name?: string
   intent?: string
@@ -209,6 +228,7 @@ export type AgentEvent = {
   agent?: string | null
   /** `subagent`: the finished job's kind, `task`, `scout` or `shell` (a background command). */
   role?: string
+  approvalMode?: ApprovalMode
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -289,6 +309,8 @@ function status(body: unknown): Status {
     modelName: typeof value.modelName === 'string' ? value.modelName : null,
     busy: value.busy === true,
     fast: value.fast === true,
+    approvalMode: approvalMode(value.approvalMode) ?? 'manual',
+    approvalHidden: value.approvalHidden === true,
     context: number(value.context),
     ...statistics(value),
     window: metric(value.window),
@@ -371,6 +393,7 @@ export function parseEvent(raw: string): AgentEvent | null {
     sessionId: text(value.sessionId) || undefined,
     turnId: text(value.turnId) || undefined,
     message: value.message,
+    messages: value.messages,
     text: typeof value.text === 'string' ? value.text : undefined,
     name: typeof value.name === 'string' ? value.name : undefined,
     summary: typeof value.summary === 'string' ? value.summary : undefined,
@@ -394,6 +417,7 @@ export function parseEvent(raw: string): AgentEvent | null {
     question: body.type === 'question' ? questionRequest(value) ?? undefined : undefined,
     agent: typeof value.agent === 'string' ? value.agent : typeof value.id === 'string' ? value.id : null,
     role: typeof value.role === 'string' ? value.role : undefined,
+    approvalMode: approvalMode(value.approvalMode),
   }
 }
 
@@ -432,19 +456,29 @@ export const api = {
   archive: (kind: 'session' | 'folder', key: string, archived: boolean) => request('/v1/archive', { method: 'POST', body: JSON.stringify({ kind, key, archived }) }),
   fold: (path: string, folded: boolean) => request('/v1/fold', { method: 'POST', body: JSON.stringify({ path, folded }) }),
   newSession: async (cwd?: string) => text(record(await request('/v1/sessions', { method: 'POST', body: JSON.stringify(cwd ? { cwd } : {}) })).sessionId),
-  session: async (id: string): Promise<SessionView> => {
-    const body = record(await request(sessionPath(id)))
+  /** `before` pages back: the `limit` blocks before that index; without it, the newest. */
+  session: async (id: string, page: { before?: number; limit?: number } = {}): Promise<SessionView> => {
+    const query = new URLSearchParams()
+    if (page.before !== undefined) query.set('before', String(page.before))
+    if (page.limit !== undefined) query.set('limit', String(page.limit))
+    const body = record(await request(`${sessionPath(id)}${query.size ? `?${query}` : ''}`))
     const confirm = body.confirm ? record(body.confirm) : null
     return {
-      ...status(body), messages: body.messages, turnId: text(body.turnId) || null,
+      ...status(body), messages: body.messages, start: number(body.start), total: number(body.total), turnId: text(body.turnId) || null,
       confirm: confirm && typeof confirm.id === 'number' ? {
         id: confirm.id, name: text(confirm.name), command: text(confirm.command), reason: text(confirm.reason), always: text(confirm.always),
       } : null,
       question: body.question ? questionRequest(record(body.question)) : null,
     }
   },
+  /** `steered`: the reply was running, so the message joined it instead of starting a turn. */
   message: async (id: string, text: string, images: { mediaType: string; data: string }[] = [], files: { name: string; text: string }[] = []) => {
     const body = record(await request(`${sessionPath(id)}/messages`, { method: 'POST', body: JSON.stringify({ text, images, files }) }))
+    return { turnId: typeof body.turnId === 'string' ? body.turnId : null, steered: body.steered === true }
+  },
+  /** Asks the model again after a failed reply, from the history as it stands. */
+  retry: async (id: string) => {
+    const body = record(await request(`${sessionPath(id)}/retry`, { method: 'POST', body: '{}' }))
     return typeof body.turnId === 'string' ? body.turnId : null
   },
   interrupt: (id: string, turn: string) => request(`${turnPath(id, turn)}/interrupt`, { method: 'POST', body: '{}' }),
@@ -463,11 +497,17 @@ export const api = {
     return { current: typeof body.current === 'string' ? body.current : null, levels, models }
   },
   fast: (id: string, enabled: boolean) => request(`${sessionPath(id)}/fast`, { method: 'POST', body: JSON.stringify({ enabled }) }),
+  setApprovalMode: async (id: string, mode: ApprovalMode): Promise<ApprovalMode> => {
+    const body = record(await request(`${sessionPath(id)}/approval`, { method: 'POST', body: JSON.stringify({ mode }) }))
+    const confirmed = approvalMode(body.approvalMode)
+    if (!confirmed) throw new Error('服务端未返回有效的审批模式')
+    return confirmed
+  },
   files: async (id: string, path = '') => files(await request(`${sessionPath(id)}/files?path=${encodeURIComponent(path)}`)),
   createEntry: (id: string, path: string, kind: 'file' | 'directory') => request(`${sessionPath(id)}/files`, { method: 'POST', body: JSON.stringify({ path, kind }) }),
-  readFile: async (id: string, path: string) => {
-    const body = record(await request(`${sessionPath(id)}/file?path=${encodeURIComponent(path)}`))
-    return { path: text(body.path) || path, text: text(body.text) }
+  readFile: async (id: string, path: string, offset = 0): Promise<{ path: string; kind: 'text' | 'large' | 'binary'; text: string; nextOffset: number | null }> => {
+    const body = record(await request(`${sessionPath(id)}/file?${new URLSearchParams({ path, offset: String(offset) })}`))
+    return { path: text(body.path) || path, kind: body.kind === 'large' || body.kind === 'binary' ? body.kind : 'text', text: text(body.text), nextOffset: metric(body.nextOffset) }
   },
   writeFile: (id: string, path: string, text: string) => request(`${sessionPath(id)}/file`, { method: 'POST', body: JSON.stringify({ path, text }) }),
   browse: async (path = '') => browseListing(await request(`/v1/browse?path=${encodeURIComponent(path)}`)),
@@ -513,6 +553,9 @@ export const api = {
   shell: async (): Promise<ShellStatus> => shellStatus(await request('/v1/shell')),
   /** Saves config.yml `shell:` after a test run; empty goes back to finding it automatically. */
   setShell: async (shell: string): Promise<ShellStatus> => shellStatus(await request('/v1/shell', { method: 'POST', body: JSON.stringify({ shell }) })),
+  approval: async (): Promise<ApprovalSettings> => approvalSettings(await request('/v1/approval')),
+  setApproval: async (value: Pick<ApprovalSettings, 'default' | 'hidden'>): Promise<ApprovalSettings> =>
+    approvalSettings(await request('/v1/approval', { method: 'POST', body: JSON.stringify(value) })),
   /** The server re-launches its program (the build `ashira update` installed). */
   restart: async () => { await request('/v1/restart', { method: 'POST' }) },
   usage: async (): Promise<UsageReport> => {

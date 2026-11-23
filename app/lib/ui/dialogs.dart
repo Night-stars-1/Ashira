@@ -418,7 +418,7 @@ class _ProjectPickerState extends State<_ProjectPicker> {
 /// `images` loads workspace pictures for the parent session (the panel is a new route,
 /// outside the transcript's [WorkspaceImages]).
 Future<void> showSubagent(BuildContext context, AshiraClient client, String id, Uri Function(String path) images) =>
-    showPanel(context, title: '子任务', builder: (_) => WorkspaceImages(uri: images, child: _Subagent(client, id)), width: 960);
+    showPanel(context, title: '子代理对话', builder: (_) => WorkspaceImages(uri: images, child: _Subagent(client, id)), width: 960);
 
 class _Subagent extends StatelessWidget {
   const _Subagent(this.client, this.id);

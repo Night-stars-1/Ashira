@@ -12,11 +12,18 @@ import 'workspace_image.dart';
 
 /// Scrollable chat log. Follows new content while the user is at the bottom.
 class Transcript extends StatefulWidget {
-  const Transcript({super.key, required this.blocks, this.activity = '', this.onOpenAgent, this.emptyText});
+  const Transcript({super.key, required this.blocks, this.activity = '', this.onOpenAgent, this.emptyText, this.start = 0, this.pending = const [], this.loadingEarlier = false, this.onLoadEarlier});
   final List<Block> blocks;
   final String activity;
   final void Function(String id)? onOpenAgent;
   final String? emptyText;
+  /// The history index of `blocks[0]`, so row keys stay put when earlier pages load.
+  final int start;
+  /// Messages sent while the reply runs, shown dimmed until the model reads them.
+  final List<String> pending;
+  final bool loadingEarlier;
+  /// Loads the page before [start] when the reader nears the top; null when there is none.
+  final Future<bool> Function()? onLoadEarlier;
 
   @override
   State<Transcript> createState() => _TranscriptState();
@@ -37,7 +44,30 @@ class _TranscriptState extends State<Transcript> {
   @override
   void didUpdateWidget(Transcript oldWidget) {
     super.didUpdateWidget(oldWidget);
+    // An earlier page went in above: keep the same distance from the bottom, so the rows
+    // the reader was looking at stay where they were.
+    final fromBottom = _fromBottom;
+    if (widget.start < oldWidget.start && fromBottom != null) {
+      _fromBottom = null;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || !_scroll.hasClients) return;
+        _pinning = true;
+        _scroll.jumpTo((_scroll.position.maxScrollExtent - fromBottom).clamp(0, _scroll.position.maxScrollExtent));
+        _pinning = false;
+      });
+      return;
+    }
     if (_follow) _pin();
+  }
+
+  /// Distance from the bottom when an earlier page was asked for.
+  double? _fromBottom;
+
+  void _maybeLoadEarlier(ScrollMetrics position) {
+    final load = widget.onLoadEarlier;
+    if (load == null || widget.loadingEarlier || position.pixels > 300) return;
+    _fromBottom = position.maxScrollExtent - position.pixels;
+    load();
   }
 
   /// Only a drag, wheel or scrollbar move by the reader decides following: content growing
@@ -51,6 +81,7 @@ class _TranscriptState extends State<Transcript> {
         || notification is UserScrollNotification;
     if (atBottom && !_follow) setState(() => _follow = true);
     if (!atBottom && _follow && user) setState(() => _follow = false);
+    if (user) _maybeLoadEarlier(position);
     return false;
   }
 
@@ -84,8 +115,9 @@ class _TranscriptState extends State<Transcript> {
 
   @override
   Widget build(BuildContext context) {
-    final rows = _rows(widget.blocks);
-    final count = rows.length + (widget.activity.isEmpty ? 0 : 1);
+    final rows = _rows(widget.blocks, widget.start);
+    final lead = widget.loadingEarlier ? 1 : 0;
+    final count = lead + rows.length + widget.pending.length + (widget.activity.isEmpty ? 0 : 1);
     if (count == 0) {
       return Center(child: Text(widget.emptyText ?? '没有对话', style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant)));
     }
@@ -102,12 +134,17 @@ class _TranscriptState extends State<Transcript> {
               controller: _scroll,
               padding: EdgeInsets.symmetric(horizontal: wide ? 24 : 12, vertical: wide ? 24 : 16),
               itemCount: count,
-              itemBuilder: (context, index) {
-                final child = index < rows.length
+              itemBuilder: (context, at) {
+                final index = at - lead;
+                final child = index < 0
+                    ? const _LoadingEarlier()
+                    : index < rows.length
                     ? switch (rows[index]) {
                         final _Turn turn => _TurnView(turn, key: ValueKey(turn.key)),
                         final block => _BlockView(block: block as Block, onOpenAgent: widget.onOpenAgent),
                       }
+                    : index < rows.length + widget.pending.length
+                    ? _PendingMessage(widget.pending[index - rows.length])
                     : _Activity(widget.activity);
                 return Center(
                   child: ConstrainedBox(constraints: const BoxConstraints(maxWidth: 768), child: Padding(padding: const EdgeInsets.only(bottom: 16), child: child)),
@@ -138,6 +175,48 @@ class _TranscriptState extends State<Transcript> {
   }
 }
 
+class _LoadingEarlier extends StatelessWidget {
+  const _LoadingEarlier();
+  @override
+  Widget build(BuildContext context) {
+    final muted = Theme.of(context).colorScheme.mutedForeground;
+    return Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+      SizedBox.square(dimension: 12, child: CircularProgressIndicator(strokeWidth: 1.5, color: muted)),
+      const SizedBox(width: 8),
+      Text('加载更早的消息…', style: TextStyle(fontSize: 12, color: muted)),
+    ]);
+  }
+}
+
+/// A message sent while the reply runs, dimmed until the model reads it.
+class _PendingMessage extends StatelessWidget {
+  const _PendingMessage(this.text);
+  final String text;
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Opacity(
+      opacity: .6,
+      child: Align(
+        alignment: Alignment.centerRight,
+        child: FractionallySizedBox(
+          widthFactor: 0.85,
+          alignment: Alignment.centerRight,
+          child: Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              decoration: BoxDecoration(color: scheme.primary, borderRadius: BorderRadius.circular(16)),
+              child: Text(text, style: TextStyle(fontSize: 14, color: scheme.onPrimary, height: 1.5)),
+            ),
+            const SizedBox(height: 4),
+            Text('等待模型读取', style: TextStyle(fontSize: 12, color: scheme.mutedForeground)),
+          ]),
+        ),
+      ),
+    );
+  }
+}
+
 /// One reply between two user messages: every model request's parts, split into the
 /// work (thinking, tools and the text between them) and the answer after the last tool.
 class _Turn {
@@ -160,7 +239,8 @@ class _Turn {
 }
 
 /// Blocks with consecutive assistant blocks (one per model request) merged into turns.
-List<Object> _rows(List<Block> blocks) {
+/// `start` is the history index of `blocks[0]`: turn keys stay the same as pages load.
+List<Object> _rows(List<Block> blocks, int start) {
   final rows = <Object>[];
   int? key;
   var parts = <ReplyPart>[];
@@ -180,7 +260,7 @@ List<Object> _rows(List<Block> blocks) {
       rows.add(block);
       continue;
     }
-    key ??= index;
+    key ??= start + index;
     parts.addAll(block.parts);
     live = live || block.live;
     final ms = block.metrics?.durationMs;
@@ -325,7 +405,10 @@ class _BlockView extends StatelessWidget {
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
               child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
                 Padding(padding: const EdgeInsets.only(right: 8, top: 2), child: Icon(Icons.terminal, size: 16, color: color)),
-                Expanded(child: Text(text, style: TextStyle(fontSize: 14, color: color, height: 1.5))),
+                Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text('后台命令', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: color)),
+                  Text(text, style: TextStyle(fontSize: 14, color: color, height: 1.5)),
+                ])),
               ]),
             ),
             if (output != null) ...[const Divider(), _RawOutput(output)],
@@ -335,8 +418,11 @@ class _BlockView extends StatelessWidget {
         final color = error ? scheme.error : scheme.mutedForeground;
         final body = Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
           if (agent != null) Padding(padding: const EdgeInsets.only(right: 8, top: 2), child: Icon(Icons.smart_toy_outlined, size: 16, color: color)),
-          Expanded(child: Text(text, style: TextStyle(fontSize: 14, color: color, height: 1.5))),
-          if (agent != null) Text('查看', style: TextStyle(fontSize: 14, color: color, decoration: TextDecoration.underline, decorationColor: color)),
+          Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            if (agent != null) Text('子代理', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: color)),
+            Text(text, style: TextStyle(fontSize: 14, color: color, height: 1.5)),
+          ])),
+          if (agent != null) Text('查看对话', style: TextStyle(fontSize: 14, color: color, decoration: TextDecoration.underline, decorationColor: color)),
         ]);
         return Material(
           color: Colors.transparent,

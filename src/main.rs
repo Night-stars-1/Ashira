@@ -79,7 +79,8 @@ OPTIONS:
                            (default: the resumed session's model, then modelRoles.default)
         --models [FILTER]  List models (configured + discovered), grouped by provider
         --refresh-models   Re-run model discovery and the models.dev download, then list
-    -y, --yes              Run dangerous commands without asking
+    -y, --yes              Start sessions in full approval mode (skip shell and MCP confirmations;
+                           the default is manual, and /approval switches the current TUI session)
         --serve            Serve the HTTP API instead of the TUI (default 127.0.0.1:8787)
         --listen <ADDR>    API listen address, implies --serve
         --web <DIR>        Also serve the web client from DIR on the API port (implies --serve);
