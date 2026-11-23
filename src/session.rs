@@ -289,7 +289,9 @@ fn load_records(path: &Path, replay: bool, registry: &Registry) -> Result<Loaded
                 usage = Usage::default();
             }
             Some("usage") => {
-                pending = None;
+                // v0.2.15 wrote a reply's `usage` before the reply itself; the request record
+                // still waits for it. Only the legacy pairing below ends on `usage`.
+                if !stats_boundary { pending = None; }
                 let g = |k: &str| rec[k].as_u64().unwrap_or(0);
                 usage = Usage { input: g("input"), output: g("output"), cache_read: g("cache_read"), cache_write: g("cache_write") };
                 // Before request records, each model response wrote one `usage`, under the session's model.
@@ -827,6 +829,30 @@ mod tests {
         session.fast(false);
         assert!(!load(&session.path).unwrap().fast);
         drop((plain, session));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn each_reply_keeps_its_request_metrics() {
+        let dir = env::temp_dir().join(format!("ashira-metrics-{}-{}", std::process::id(), SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
+        fs::create_dir_all(&dir).unwrap();
+        let stats = |id: &str, output: u64| RequestStats { id: id.into(), model: "p/m".into(), kind: crate::stats::Kind::Chat, usage: Some(Usage { input: 10, output, cache_read: 0, cache_write: 0 }), cost: None, duration_ms: 1000, child: false };
+        let reply = |text: &str| json!({"role": "assistant", "content": [{"type": "text", "text": text}]});
+        let usage = Usage { input: 10, output: 5, cache_read: 0, cache_write: 0 };
+        let mut session = Session { path: dir.join("s.jsonl"), writer: Arc::new(Mutex::new(Writer { file: None, meta: None, needs_stats_boundary: true })) };
+        session.message(&json!({"role": "user", "content": [{"type": "text", "text": "hi"}]}));
+        // The order the agent writes: request, reply, then the context usage.
+        session.request_stats(&stats("a", 5));
+        session.reply(&reply("one"), "a");
+        session.usage(&usage);
+        // v0.2.15 wrote the usage between the request and its reply.
+        session.request_stats(&stats("b", 7));
+        session.usage(&usage);
+        session.reply(&reply("two"), "b");
+        let loaded = read_http(&session.path, &Registry::empty()).unwrap();
+        let output = |index: usize| loaded.reply_stats.get(&index).and_then(|stats| stats.usage).map(|usage| usage.output);
+        assert_eq!((output(1), output(2)), (Some(5), Some(7)));
+        drop(session);
         fs::remove_dir_all(dir).unwrap();
     }
 }

@@ -1047,14 +1047,9 @@ impl Agent {
             } else {
                 None
             };
-            if resp.usage_reported {
-                // The provider snapshot already includes this assistant response.
-                self.usage = resp.usage;
-                self.pending = 0;
-                if let Some(s) = &mut self.session { s.usage(&resp.usage); }
-                if !sub { sh.emit(Event::Usage(resp.usage)); }
-            }
             if let Some(reminder) = retry {
+                // Keep the context figure current; the dropped reply itself is not logged.
+                if resp.usage_reported { self.usage = resp.usage; self.pending = 0; if !sub { sh.emit(Event::Usage(resp.usage)); } }
                 if !sub { sh.emit(Event::Notice(if resp.truncated { "回复超出输出长度上限，已丢弃并提醒模型分步完成".into() } else { "模型返回了空回复，已提醒它继续".into() })); }
                 self.push(api::user_text(&reminder));
                 continue;
@@ -1063,6 +1058,15 @@ impl Agent {
                 let message = json!({ "role": "assistant", "content": resp.content });
                 if let Some(session) = &mut self.session { session.reply(&message, &record.id); }
                 self.push_history(message);
+            }
+            // After the reply: on load a `usage` record ends the request record waiting for
+            // its reply, so writing it first would leave every reply without its metrics.
+            if resp.usage_reported {
+                // The provider snapshot already includes this assistant response.
+                self.usage = resp.usage;
+                self.pending = 0;
+                if let Some(s) = &mut self.session { s.usage(&resp.usage); }
+                if !sub { sh.emit(Event::Usage(resp.usage)); }
             }
             self.publish_context();
             if empty && uses.is_empty() {
