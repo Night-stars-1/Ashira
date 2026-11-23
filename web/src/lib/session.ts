@@ -291,7 +291,8 @@ export function useAshira() {
       if (!coordination(event.name)) assistant().parts.push({ type: 'tool', name: event.name || 'tool', summary: event.summary || event.intent || '', output: '', error: false, done: false })
     } else if (event.type === 'tool_end') {
       if (coordination(event.name)) {
-        if (event.isError) blocks.value.push({ kind: 'note', text: event.output || '子任务失败', error: true })
+        // A stop the user asked for interrupts `wait`; that is not a failure.
+        if (event.isError && event.output !== 'cancelled') blocks.value.push({ kind: 'note', text: event.output || '子任务失败', error: true })
       } else {
         const tools = assistant().parts.filter((part): part is Extract<ReplyPart, { type: 'tool' }> => part.type === 'tool')
         const tool = [...tools].reverse().find((item) => item.name === (event.name || item.name) && !item.done) ?? tools.at(-1)
@@ -312,6 +313,9 @@ export function useAshira() {
     else if (event.type === 'peer_message') blocks.value.push({ kind: 'note', text: `${event.from || '代理'}：${event.body || ''}`, error: false })
     else if (event.type === 'done') {
       turnId.value = null
+      // Unread steers came back in `steer_returned` just before; any copy left is stale
+      // (its POST answered after the model had already read it).
+      pendingSteer.value = []
       confirm.value = null
       question.value = null
       const current = blocks.value.at(-1)

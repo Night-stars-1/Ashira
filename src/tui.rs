@@ -970,7 +970,8 @@ impl Ui {
             Event::ToolEnd { call, output, is_error, file, image } => {
                 if call.agent.is_some() { return Ok(()); }
                 if call.is_coordination() {
-                    if is_error {
+                    // A stop the user asked for interrupts `wait`; that is not a failure.
+                    if is_error && output != crate::api::CANCELLED {
                         let parsed = serde_json::from_str::<serde_json::Value>(&output);
                         let detail = match &parsed {
                             Ok(value) => value.get("error").and_then(|v| v.as_str()).unwrap_or("coordination request failed"),

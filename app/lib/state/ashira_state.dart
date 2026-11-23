@@ -491,7 +491,8 @@ class AshiraState extends ChangeNotifier {
         }
       case 'tool_end':
         if (_coordination.contains(event.name)) {
-          if (event.isError) blocks.add(NoteBlock(event.field('output') ?? '子任务失败', error: true));
+          // A stop the user asked for interrupts `wait`; that is not a failure.
+          if (event.isError && event.field('output') != 'cancelled') blocks.add(NoteBlock(event.field('output') ?? '子任务失败', error: true));
         } else {
           final tools = _assistant().parts.whereType<ToolPart>().toList();
           final tool = tools.reversed.where((item) => item.name == (event.name ?? item.name) && !item.done).firstOrNull ?? tools.lastOrNull;
@@ -525,6 +526,9 @@ class AshiraState extends ChangeNotifier {
         blocks.add(NoteBlock('${event.field('from') ?? '代理'}：${event.field('body') ?? ''}'));
       case 'done':
         turnId = null;
+        // Unread steers came back in `steer_returned` just before; any copy left is stale
+        // (its POST answered after the model had already read it).
+        pendingSteer = [];
         confirm = null;
         question = null;
         running = {...running}..remove(shownId);
