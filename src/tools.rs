@@ -157,10 +157,13 @@ pub fn definitions(role: Option<crate::subagents::Role>, mcp: &[Value], plugins:
             }));
         }
         tools.extend([json!({
-            "name": "task", "description": "Start independent background subagents and immediately return job receipts. Each child has its own context; include necessary context and instructions. Use wait to await any completion. Results are delivered automatically at a safe boundary; do not finish prematurely while useful jobs are outstanding.",
+            "name": "task", "description": "Start background sub-agents and immediately return job receipts; results arrive automatically, so keep working and use wait only when blocked on them. Each child starts with a blank context and cannot see this conversation. Start independent children in one call. Give each child its own files; two children must never edit the same file. Children should not run builds or tests; verify once after they finish. Do not finish while useful jobs are outstanding.",
             "input_schema": {"type": "object", "properties": {
-                "context": {"type": "string"}, "tasks": {"type": "array", "minItems": 1, "maxItems": 32, "items": {"type": "object", "properties": {
-                    "name": {"type": "string"}, "task": {"type": "string"}, "agent": {"type": "string", "enum": ["task", "scout"]},
+                "context": {"type": "string", "description": "Background every child needs (goal, shared interfaces, constraints), written once instead of repeated in each task."},
+                "tasks": {"type": "array", "minItems": 1, "maxItems": 32, "items": {"type": "object", "properties": {
+                    "name": {"type": "string", "description": "Short unique name for this child."},
+                    "task": {"type": "string", "description": "A self-contained assignment: the files the child owns and what it must not touch, the change or question with any APIs and decisions already made, and the observable result that means done."},
+                    "agent": {"type": "string", "enum": ["task", "scout"], "description": "task (default): full tools, investigates and edits. scout: read-only, for mapping code you do not know yet."},
                     "model": {"type": "string", "description": "Optional explicit override as provider/model-id[:thinking-level]. Omit unless the user requested a specific child model. Omission uses modelRoles.task when configured, otherwise the current session model and thinking level. Never guess model IDs or use placeholders such as default; do not switch child models after a failure without the user's request."}
                 }, "required": ["name", "task"]}}
             }, "required": ["tasks"]}
