@@ -20,11 +20,21 @@ const LOOP_EXEMPT: [&str; 3] = ["wait", "task_status", "todo"];
 const JUDGE_CHARS: usize = 2000;
 
 /// One `# name` section of `prompts/recovery.md`.
-fn section(name: &str) -> &'static str {
-    let heading = format!("# {name}\n");
-    let start = PROMPTS.find(&heading).map(|at| at + heading.len()).expect("recovery prompt section");
-    let rest = &PROMPTS[start..];
-    rest[..rest.find("\n# ").unwrap_or(rest.len())].trim()
+fn section(name: &str) -> String { section_of(PROMPTS, name) }
+
+/// Release checkouts on Windows turn the file's line ends into CRLF (`core.autocrlf`),
+/// so headings are matched line by line rather than as `# name\n`.
+fn section_of(text: &str, name: &str) -> String {
+    let mut out: Option<String> = None;
+    for line in text.lines() {
+        if let Some(heading) = line.strip_prefix("# ") {
+            if out.is_some() { break; }
+            if heading.trim() == name { out = Some(String::new()); }
+            continue;
+        }
+        if let Some(text) = &mut out { text.push_str(line); text.push('\n'); }
+    }
+    out.map(|text| text.trim().to_owned()).unwrap_or_default()
 }
 
 /// The reminder for `kind` ("empty", "length" or "stop") on retry `attempt`.
@@ -125,7 +135,7 @@ pub async fn stopped_early(
     };
     let input = json!({"request": tail(request), "message": tail(message)}).to_string();
     let started = std::time::Instant::now();
-    let response = client.stream(section("judge"), &client.wire_tools(json!([])), &[api::user_text(&input)], None, cancel, |_| {}).await;
+    let response = client.stream(&section("judge"), &client.wire_tools(json!([])), &[api::user_text(&input)], None, cancel, |_| {}).await;
     on_request(&response, started);
     let Ok(response) = response else { return false };
     let answer: String = response.content.iter().filter(|block| block["type"] == "text").filter_map(|block| block["text"].as_str()).collect();
@@ -169,5 +179,14 @@ mod tests {
         assert!(text.contains("Attempt 2/3") && text.contains("output token limit") && !text.contains("# stop"));
         assert!(reminder("stop", 1).starts_with("<system-reminder>"));
         assert!(section("judge").ends_with("yes or no."));
+    }
+
+    #[test]
+    fn sections_parse_with_windows_line_ends() {
+        let crlf = PROMPTS.replace('\n', "\r\n");
+        for name in ["empty", "length", "stop", "loop", "judge"] {
+            assert_eq!(section_of(&crlf, name).replace("\r\n", "\n"), section(name), "{name}");
+            assert!(!section(name).is_empty(), "{name}");
+        }
     }
 }

@@ -1,2 +1,4 @@
 # Piped into `sh` on Linux/macOS: CRLF would break it.
 *.sh text eol=lf
+# Compiled into the program with include_str!: the text must not depend on the checkout.
+src/prompts/*.md text eol=lf
