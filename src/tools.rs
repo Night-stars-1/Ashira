@@ -493,20 +493,12 @@ impl Running {
 
     pub async fn run_until_with(&mut self, deadline: tokio::time::Instant, cancel: &CancellationToken, mut on_output: impl FnMut(&[u8])) -> Option<Output> {
         let mut chunk = [0u8; 8192];
-        loop {
             tokio::select! {
-                read = self.stdout.read(&mut chunk) => match read {
-                    Ok(0) | Err(_) => break,
                     Ok(n) => { self.output.extend_from_slice(&chunk[..n]); on_output(&chunk[..n]); }
                 },
                 _ = tokio::time::sleep_until(deadline) => return None,
                 _ = cancel.cancelled() => return None,
             }
-        }
-        let status = tokio::select! {
-            status = self.child.wait() => status,
-            _ = tokio::time::sleep_until(deadline) => return None,
-            _ = cancel.cancelled() => return None,
         };
         let mut text = self.text();
         Some(match status {
