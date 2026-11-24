@@ -413,6 +413,8 @@ impl Drop for Tree {
 const FOREGROUND: Duration = Duration::from_secs(60);
 /// A background command is killed after this long.
 pub const BACKGROUND_LIMIT: Duration = Duration::from_secs(60 * 60);
+/// After the command exits, how long its last output may take to come through the pipe.
+const DRAIN: Duration = Duration::from_millis(500);
 
 /// A started command: its process tree and the output collected so far.
 pub struct Running {
@@ -491,15 +493,34 @@ impl Running {
         self.run_until_with(deadline, cancel, |_| {}).await
     }
 
+    /// The command has finished when its shell exits, not when its output closes: a
+    /// daemon it started (`gradlew` starts one) inherits the pipe and keeps it open for
+    /// hours. After the exit, output still in the pipe is read for a moment, then left.
     pub async fn run_until_with(&mut self, deadline: tokio::time::Instant, cancel: &CancellationToken, mut on_output: impl FnMut(&[u8])) -> Option<Output> {
         let mut chunk = [0u8; 8192];
+        let mut open = true;
+        let status = loop {
             tokio::select! {
+                read = self.stdout.read(&mut chunk), if open => match read {
+                    Ok(0) | Err(_) => open = false,
                     Ok(n) => { self.output.extend_from_slice(&chunk[..n]); on_output(&chunk[..n]); }
                 },
+                status = self.child.wait() => break status,
                 _ = tokio::time::sleep_until(deadline) => return None,
                 _ = cancel.cancelled() => return None,
             }
         };
+        // What the command printed just before exiting can still be in the pipe.
+        let drain = tokio::time::Instant::now() + DRAIN;
+        while open {
+            tokio::select! {
+                read = self.stdout.read(&mut chunk) => match read {
+                    Ok(0) | Err(_) => open = false,
+                    Ok(n) => { self.output.extend_from_slice(&chunk[..n]); on_output(&chunk[..n]); }
+                },
+                _ = tokio::time::sleep_until(drain) => break,
+            }
+        }
         let mut text = self.text();
         Some(match status {
             Ok(status) if status.success() => Output::ok(or_empty(text)),
