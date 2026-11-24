@@ -398,6 +398,22 @@ impl Tree {
             libc::kill(-self.pgid, libc::SIGKILL);
         }
     }
+
+    /// CPU time every process in the tree has used so far, ended ones included; `None`
+    /// where the platform does not report it per tree.
+    pub fn cpu_time(&self) -> Option<Duration> {
+        #[cfg(windows)]
+        unsafe {
+            use windows_sys::Win32::System::JobObjects::{JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, JobObjectBasicAccountingInformation, QueryInformationJobObject};
+            let mut info: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION = std::mem::zeroed();
+            let size = std::mem::size_of::<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>() as u32;
+            if QueryInformationJobObject(self.job, JobObjectBasicAccountingInformation, (&raw mut info).cast(), size, std::ptr::null_mut()) == 0 { return None; }
+            // 100-nanosecond units.
+            Some(Duration::from_nanos((info.TotalUserTime + info.TotalKernelTime).max(0) as u64 * 100))
+        }
+        #[cfg(unix)]
+        { None }
+    }
 }
 
 #[cfg(windows)]
@@ -538,6 +554,11 @@ impl Running {
 
     pub fn text(&self) -> String {
         decode_output(&self.output)
+    }
+
+    /// CPU time the command's processes have used; see [`Tree::cpu_time`].
+    pub fn cpu_time(&self) -> Option<Duration> {
+        self.tree.cpu_time()
     }
 }
 

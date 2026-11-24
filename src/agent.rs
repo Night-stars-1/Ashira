@@ -83,6 +83,11 @@ impl ChildLog {
     fn flush(&mut self) -> Result<(), String> { use std::io::Write; if let Err(e) = self.transcript.flush().and_then(|_| self.history.flush()) { self.error.get_or_insert_with(|| e.to_string()); } self.error.clone().map_or(Ok(()), |e| Err(format!("child log persistence failed: {e}"))) }
 }
 const COMPACT_PROMPT: &str = include_str!("prompts/compact.md");
+/// How often a background command is checked for being stuck.
+const STALL_CHECK: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+/// Below this much CPU across a command's processes per check, with no new output,
+/// nothing is working on it (an idle Gradle daemon uses well under a second in that time).
+const STALL_CPU: std::time::Duration = std::time::Duration::from_secs(2);
 /// The base every agent shares; `{cwd}`, `{os}`, `{arch}`, `{shell}` and `{date}` are filled in.
 const SYSTEM_PROMPT: &str = include_str!("prompts/system.md");
 /// The root agent only: working rhythm, the todo list and delegation.
@@ -1350,9 +1355,26 @@ impl Agent {
             let mut file = std::fs::File::create(&log).ok();
             if let Some(file) = &mut file { let _ = std::io::Write::write_all(file, running.text().as_bytes()); }
             let deadline = tokio::time::Instant::now() + tools::BACKGROUND_LIMIT;
-            let finished = running.run_until_with(deadline, &lease.cancel, |chunk| {
-                if let Some(file) = &mut file { let _ = std::io::Write::write_all(file, chunk); }
-            }).await;
+            // Look in on the command every `STALL_CHECK`: no new output and (almost) no CPU
+            // across its whole process tree since the last look means nothing is working on
+            // it, so the main agent hears once that it looks stuck and can decide.
+            let mut seen = (running.text().len(), running.cpu_time());
+            let mut warned = false;
+            let finished = loop {
+                let check = (tokio::time::Instant::now() + STALL_CHECK).min(deadline);
+                let at_check = running.run_until_with(check, &lease.cancel, |chunk| {
+                    if let Some(file) = &mut file { let _ = std::io::Write::write_all(file, chunk); }
+                }).await;
+                if at_check.is_some() || lease.cancel.is_cancelled() || tokio::time::Instant::now() >= deadline { break at_check; }
+                let now = (running.text().len(), running.cpu_time());
+                let idle = now.0 == seen.0 && match (seen.1, now.1) { (Some(before), Some(after)) => after.saturating_sub(before) < STALL_CPU, _ => false };
+                if idle && !warned {
+                    let body = format!("Background command {} has printed nothing new and its processes have used almost no CPU for {} minutes; it may be stuck. Check its output with read on its transcript or task_status, and use task_cancel if it is not making progress.", lease.identity.id, STALL_CHECK.as_secs() / 60);
+                    let _ = manager.send_message(&lease.endpoint, "parent", &body);
+                }
+                warned = idle;
+                seen = now;
+            };
             // A failed command is still a finished job: its output, with the exit code, is the
             // report. Cancelled and timed-out ones keep what they printed and say why they ended.
             let result = match finished {
