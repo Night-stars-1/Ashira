@@ -4,8 +4,8 @@ import { computed, ref } from 'vue'
 import { ArrowDown, ArrowUp } from '@lucide/vue'
 import { CurveType } from '@unovis/ts'
 import { VisArea, VisAxis, VisLine, VisScatter, VisXYContainer } from '@unovis/vue'
+import ReplyRangeBrush from '@/components/ReplyRangeBrush.vue'
 import { Button } from '@/components/ui/button'
-import { Slider } from '@/components/ui/slider'
 import { type ChartConfig, ChartContainer, ChartCrosshair, ChartTooltip, ChartTooltipContent, componentToString } from '@/components/ui/chart'
 import type { Block } from '@/components/Transcript.vue'
 import type { ReplyMetrics } from '@/lib/api'
@@ -30,11 +30,11 @@ const range = computed<[number, number]>(() => {
   const [from, to] = picked.value
   return [Math.min(from, count), Math.min(to, count)]
 })
-function pickRange(value: number[] | undefined) {
-  if (!value || value.length !== 2) return
-  const [from, to] = value as [number, number]
-  // Dragged back onto the newest reply: follow new replies again.
-  picked.value = to >= replies.value.length && to - from + 1 === Math.min(defaultSpan, replies.value.length) ? null : [from, to]
+/** The range under the chart moved. */
+function pickRange([from, to]: [number, number]) {
+  const count = replies.value.length
+  // Moved back onto the newest replies: follow new ones again.
+  picked.value = to >= count && to - from + 1 === Math.min(defaultSpan, count) ? null : [from, to]
 }
 const page = computed(() => replies.value.slice(range.value[0] - 1, range.value[1]))
 const tokens = new Intl.NumberFormat('zh-CN')
@@ -97,6 +97,8 @@ function format(amount: number | null, key: Metric, compact = false) {
 
 type Point = { number: number; value: number | null }
 const data = computed<Point[]>(() => page.value.map((row) => ({ number: row.number, value: value(row.metrics, metric.value) })))
+/** Every reply, for the range picker under the chart. */
+const overview = computed(() => replies.value.map((row) => value(row.metrics, metric.value)))
 const hasData = computed(() => data.value.some((point) => point.value !== null))
 const label = computed(() => choices.find((choice) => choice.key === metric.value)!.label)
 const config = computed<ChartConfig>(() => ({ value: { label: label.value, color: 'var(--color-sky-500)' } }))
@@ -144,19 +146,11 @@ const tooltipTemplate = computed(() => {
           </VisXYContainer>
         </ChartContainer>
         <p v-else class="px-2 py-6 text-center text-xs text-muted-foreground">这组回复没有记录此项数据。</p>
-        <!-- Which replies the chart and the table below show; both ends drag. -->
-        <div v-if="replies.length > 1" class="mt-3 flex items-center gap-3 px-1">
-          <Slider
-            :model-value="range"
-            :min="1"
-            :max="replies.length"
-            :step="1"
-            :min-steps-between-thumbs="0"
-            class="flex-1"
-            aria-label="显示的回复区间"
-            @update:model-value="pickRange"
-          />
-          <span class="shrink-0 text-xs text-muted-foreground tabular-nums">#{{ range[0] }} – #{{ range[1] }}</span>
+        <!-- Every reply in miniature; the box picks which ones the chart above and the table
+             below show. -->
+        <div v-if="replies.length > 1" class="mt-2 px-1">
+          <ReplyRangeBrush :values="overview" :from="range[0]" :to="range[1]" @change="pickRange" />
+          <p class="mt-1 text-right text-[11px] text-muted-foreground tabular-nums">共 {{ replies.length }} 条</p>
         </div>
       </div>
       <details class="rounded-lg border">

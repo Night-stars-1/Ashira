@@ -159,26 +159,21 @@ class _ReplyTrendState extends State<_ReplyTrend> {
                   ? _TrendChart(points: points, metric: _metric, label: label)
                   : Center(child: Text('这组回复没有记录此项数据。', style: small)),
             ),
-            // Which replies the chart and the table below show; both ends drag.
-            if (count > 1)
-              Row(children: [
-                Expanded(
-                  child: RangeSlider(
-                    min: 1,
-                    max: count.toDouble(),
-                    divisions: count - 1,
-                    values: RangeValues(from.toDouble(), to.toDouble()),
-                    labels: RangeLabels('#$from', '#$to'),
-                    semanticFormatterCallback: (value) => '回复 #${value.round()}',
-                    onChanged: (values) => setState(() {
-                      final next = (values.start.round(), values.end.round());
-                      // Dragged back onto the newest replies: follow new ones again.
-                      _picked = next.$2 >= count && next.$2 - next.$1 + 1 == (count < _defaultSpan ? count : _defaultSpan) ? null : next;
-                    }),
-                  ),
-                ),
-                Text('#$from – #$to', style: small.copyWith(fontFeatures: const [FontFeature.tabularFigures()])),
-              ]),
+            // Every reply in miniature; the box picks which ones the chart above and the table
+            // below show.
+            if (count > 1) ...[
+              const SizedBox(height: 8),
+              _RangeBrush(
+                values: [for (final reply in replies) _value(reply.metrics, _metric)],
+                from: from,
+                to: to,
+                onChanged: (next) => setState(() {
+                  // Moved back onto the newest replies: follow new ones again.
+                  _picked = next.$2 >= count && next.$2 - next.$1 + 1 == (count < _defaultSpan ? count : _defaultSpan) ? null : next;
+                }),
+              ),
+              Align(alignment: Alignment.centerRight, child: Text('共 $count 条', style: small.copyWith(fontSize: 11))),
+            ],
           ]),
         ),
         const SizedBox(height: 8),
@@ -225,6 +220,171 @@ class _ReplyTrendState extends State<_ReplyTrend> {
       ],
     ]);
   }
+}
+
+/// The overview under the trend chart: every reply as a small area, with a box over the
+/// replies shown above. Dragging inside the box moves it; dragging near an edge resizes it.
+class _RangeBrush extends StatefulWidget {
+  const _RangeBrush({required this.values, required this.from, required this.to, required this.onChanged});
+  final List<double?> values;
+  /// Reply numbers, 1-based and inclusive.
+  final int from, to;
+  final ValueChanged<(int, int)> onChanged;
+
+  @override
+  State<_RangeBrush> createState() => _RangeBrushState();
+}
+
+enum _Grip { start, end, move }
+
+class _RangeBrushState extends State<_RangeBrush> {
+  static const _bar = 6.0, _track = 24.0, _handleW = 8.0, _handleH = 16.0;
+  /// Half a handle of room at each end, so a handle on the first or last reply stays whole.
+  static const _pad = _handleW / 2 + 1;
+  _Grip? _grip;
+  /// Where the drag began, in replies, and the range then; a move keeps its length.
+  double _startAt = 0;
+  (int, int) _startRange = (1, 1);
+
+  int get _count => widget.values.length;
+  double _xOf(double reply, double width) => _pad + (reply - 1) / (_count - 1) * (width - _pad * 2);
+  double _replyAt(double x, double width) => 1 + (x - _pad) / (width - _pad * 2) * (_count - 1);
+
+  void _start(Offset at, double width) {
+    final left = _xOf(widget.from.toDouble(), width), right = _xOf(widget.to.toDouble(), width);
+    _grip = (at.dx - left).abs() <= _handleW ? _Grip.start
+        : (at.dx - right).abs() <= _handleW ? _Grip.end
+        : at.dx > left && at.dx < right ? _Grip.move
+        : null;
+    // A press outside the box centres it there, keeping its length.
+    if (_grip == null) {
+      final span = widget.to - widget.from;
+      final centre = _replyAt(at.dx, width).round();
+      final from = (centre - span ~/ 2).clamp(1, _count - span);
+      widget.onChanged((from, from + span));
+      _grip = _Grip.move;
+      _startRange = (from, from + span);
+    } else {
+      _startRange = (widget.from, widget.to);
+    }
+    _startAt = _replyAt(at.dx, width);
+  }
+
+  void _update(Offset at, double width) {
+    final grip = _grip;
+    if (grip == null) return;
+    final reply = _replyAt(at.dx.clamp(0, width), width).round();
+    final (from, to) = _startRange;
+    switch (grip) {
+      case _Grip.start:
+        widget.onChanged((reply.clamp(1, to), to));
+      case _Grip.end:
+        widget.onChanged((from, reply.clamp(from, _count)));
+      case _Grip.move:
+        final shift = (_replyAt(at.dx, width) - _startAt).round();
+        final next = (from + shift).clamp(1, _count - (to - from));
+        widget.onChanged((next, next + to - from));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return LayoutBuilder(builder: (context, constraints) {
+      final width = constraints.maxWidth;
+      final cursor = _grip == _Grip.move ? SystemMouseCursors.grabbing : SystemMouseCursors.resizeLeftRight;
+      return Semantics(
+        label: '回复区间 #${widget.from} 到 #${widget.to}',
+        child: MouseRegion(
+          cursor: cursor,
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onHorizontalDragStart: (details) => _start(details.localPosition, width),
+            onHorizontalDragUpdate: (details) => _update(details.localPosition, width),
+            onHorizontalDragEnd: (_) => setState(() => _grip = null),
+            onTapUp: (details) { _start(details.localPosition, width); setState(() => _grip = null); },
+            child: CustomPaint(
+              size: Size(width, _bar + _track),
+              painter: _BrushPainter(
+                values: widget.values,
+                from: _xOf(widget.from.toDouble(), width),
+                to: _xOf(widget.to.toDouble(), width),
+                fromLabel: '#${widget.from}',
+                toLabel: '#${widget.to}',
+                line: inputColor,
+                track: scheme.muted,
+                handle: scheme.surface,
+                text: scheme.mutedForeground,
+                bar: _bar,
+                handleSize: const Size(_handleW, _handleH),
+              ),
+            ),
+          ),
+        ),
+      );
+    });
+  }
+}
+
+class _BrushPainter extends CustomPainter {
+  _BrushPainter({required this.values, required this.from, required this.to, required this.fromLabel, required this.toLabel, required this.line, required this.track, required this.handle, required this.text, required this.bar, required this.handleSize});
+  final List<double?> values;
+  final double from, to, bar;
+  final String fromLabel, toLabel;
+  final Color line, track, handle, text;
+  final Size handleSize;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final body = Rect.fromLTRB(0, bar, size.width, size.height);
+    canvas.drawRRect(RRect.fromRectAndRadius(body, const Radius.circular(2)), Paint()..color = track.withValues(alpha: .6));
+    // Every reply as a faint area, left to right across the same span the box uses.
+    final top = values.whereType<double>().fold(0.0, (a, b) => b > a ? b : a);
+    final pad = handleSize.width / 2 + 1;
+    if (values.length > 1 && top > 0) {
+      final path = Path(), area = Path();
+      double? first, last;
+      for (final (index, value) in values.indexed) {
+        if (value == null) continue;
+        final point = Offset(pad + index / (values.length - 1) * (size.width - pad * 2), size.height - 2 - value / top * (body.height - 6));
+        if (first == null) { path.moveTo(point.dx, point.dy); area..moveTo(point.dx, size.height)..lineTo(point.dx, point.dy); first = point.dx; }
+        else { path.lineTo(point.dx, point.dy); area.lineTo(point.dx, point.dy); }
+        last = point.dx;
+      }
+      if (first != null && last != null) {
+        area..lineTo(last, size.height)..close();
+        canvas.drawPath(area, Paint()..color = line.withValues(alpha: .1));
+        canvas.drawPath(path, Paint()..color = line.withValues(alpha: .5)..style = PaintingStyle.stroke..strokeWidth = 1);
+      }
+    }
+    // The box, the bar above it that drags it, and a grip mark in the middle of the bar.
+    canvas.drawRect(Rect.fromLTRB(from, bar, to, size.height), Paint()..color = line.withValues(alpha: .15));
+    canvas.drawRect(Rect.fromLTRB(from, bar + .5, to, size.height - .5), Paint()..color = line.withValues(alpha: .4)..style = PaintingStyle.stroke..strokeWidth = 1);
+    canvas.drawRRect(RRect.fromRectAndRadius(Rect.fromLTRB(from, 0, to, bar), const Radius.circular(2)), Paint()..color = line.withValues(alpha: .45));
+    final mid = (from + to) / 2;
+    for (final offset in [-3.0, 0.0, 3.0]) {
+      canvas.drawRect(Rect.fromLTWH(mid + offset - .5, 1.5, 1, 3), Paint()..color = handle);
+    }
+    // A small rounded handle on each edge.
+    for (final x in [from, to]) {
+      final rect = RRect.fromRectAndRadius(Rect.fromCenter(center: Offset(x, bar + body.height / 2), width: handleSize.width, height: handleSize.height), const Radius.circular(3));
+      canvas.drawRRect(rect, Paint()..color = handle);
+      canvas.drawRRect(rect, Paint()..color = line.withValues(alpha: .7)..style = PaintingStyle.stroke..strokeWidth = 1);
+    }
+    // Reply numbers beside the handles; inside the box where the edge has no room.
+    final gap = handleSize.width / 2 + 4;
+    void label(String value, double x, {required bool before}) {
+      final painter = TextPainter(text: TextSpan(text: value, style: TextStyle(fontSize: 11, color: text, fontFeatures: const [FontFeature.tabularFigures()])), textDirection: TextDirection.ltr)..layout();
+      final outside = before ? x - gap - painter.width >= 0 : x + gap + painter.width <= size.width;
+      final left = before == outside ? x - gap - painter.width : x + gap;
+      painter.paint(canvas, Offset(left, bar + (body.height - painter.height) / 2));
+    }
+    label(fromLabel, from, before: true);
+    label(toLabel, to, before: false);
+  }
+
+  @override
+  bool shouldRepaint(_BrushPainter old) => old.values != values || old.from != from || old.to != to || old.fromLabel != fromLabel || old.toLabel != toLabel || old.line != line || old.track != track || old.handle != handle || old.text != text;
 }
 
 class _TrendChart extends StatelessWidget {
