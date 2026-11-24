@@ -52,6 +52,11 @@ const labels = computed(() => {
 type Grip = 'start' | 'end' | 'move'
 const dragging = ref<Grip | null>(null)
 const hover = ref<Grip | 'outside'>('outside')
+/** The reply numbers beside the handles show only while the pointer is over the bar, a
+ *  drag runs, or the keyboard has it, so they never cover the overview at rest. */
+const pointerIn = ref(false)
+const focused = ref(false)
+const showLabels = computed(() => pointerIn.value || focused.value || dragging.value !== null)
 let startAt = 0
 let startRange: [number, number] = [1, 1]
 
@@ -140,7 +145,10 @@ const cursor = computed(() => {
     @pointermove="move"
     @pointerup="up"
     @pointercancel="up"
-    @pointerleave="hover = 'outside'"
+    @pointerenter="pointerIn = true"
+    @pointerleave="pointerIn = false; hover = 'outside'"
+    @focus="focused = true"
+    @blur="focused = false"
     @keydown="key"
   >
     <svg v-if="width > 0" :width="width" :height="HEIGHT" class="block overflow-visible" aria-hidden="true">
@@ -162,7 +170,7 @@ const cursor = computed(() => {
         stroke-width="1"
       />
       <text
-        v-for="label in labels"
+        v-for="label in showLabels ? labels : []"
         :key="label.text + label.anchor"
         :x="label.x"
         :y="BAR + TRACK / 2 + 4"

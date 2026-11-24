@@ -150,7 +150,6 @@ const tooltipTemplate = computed(() => {
              below show. -->
         <div v-if="replies.length > 1" class="mt-2 px-1">
           <ReplyRangeBrush :values="overview" :from="range[0]" :to="range[1]" @change="pickRange" />
-          <p class="mt-1 text-right text-[11px] text-muted-foreground tabular-nums">共 {{ replies.length }} 条</p>
         </div>
       </div>
       <details class="rounded-lg border">

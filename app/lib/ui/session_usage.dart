@@ -163,16 +163,19 @@ class _ReplyTrendState extends State<_ReplyTrend> {
             // below show.
             if (count > 1) ...[
               const SizedBox(height: 8),
-              _RangeBrush(
-                values: [for (final reply in replies) _value(reply.metrics, _metric)],
-                from: from,
-                to: to,
-                onChanged: (next) => setState(() {
-                  // Moved back onto the newest replies: follow new ones again.
-                  _picked = next.$2 >= count && next.$2 - next.$1 + 1 == (count < _defaultSpan ? count : _defaultSpan) ? null : next;
-                }),
+              // The card pads 4 left and 16 right for the chart's axes; this evens the bar's sides.
+              Padding(
+                padding: const EdgeInsets.only(right: 12),
+                child: _RangeBrush(
+                  values: [for (final reply in replies) _value(reply.metrics, _metric)],
+                  from: from,
+                  to: to,
+                  onChanged: (next) => setState(() {
+                    // Moved back onto the newest replies: follow new ones again.
+                    _picked = next.$2 >= count && next.$2 - next.$1 + 1 == (count < _defaultSpan ? count : _defaultSpan) ? null : next;
+                  }),
+                ),
               ),
-              Align(alignment: Alignment.centerRight, child: Text('共 $count 条', style: small.copyWith(fontSize: 11))),
             ],
           ]),
         ),
@@ -245,6 +248,9 @@ class _RangeBrushState extends State<_RangeBrush> {
   /// Where the drag began, in replies, and the range then; a move keeps its length.
   double _startAt = 0;
   (int, int) _startRange = (1, 1);
+  /// The reply numbers beside the handles show only while the pointer is over the bar or a
+  /// drag runs, so they never cover the overview at rest.
+  bool _hovering = false;
 
   int get _count => widget.values.length;
   double _xOf(double reply, double width) => _pad + (reply - 1) / (_count - 1) * (width - _pad * 2);
@@ -293,13 +299,16 @@ class _RangeBrushState extends State<_RangeBrush> {
     return LayoutBuilder(builder: (context, constraints) {
       final width = constraints.maxWidth;
       final cursor = _grip == _Grip.move ? SystemMouseCursors.grabbing : SystemMouseCursors.resizeLeftRight;
+      final labels = _hovering || _grip != null;
       return Semantics(
         label: '回复区间 #${widget.from} 到 #${widget.to}',
         child: MouseRegion(
           cursor: cursor,
+          onEnter: (_) => setState(() => _hovering = true),
+          onExit: (_) => setState(() => _hovering = false),
           child: GestureDetector(
             behavior: HitTestBehavior.opaque,
-            onHorizontalDragStart: (details) => _start(details.localPosition, width),
+            onHorizontalDragStart: (details) => setState(() => _start(details.localPosition, width)),
             onHorizontalDragUpdate: (details) => _update(details.localPosition, width),
             onHorizontalDragEnd: (_) => setState(() => _grip = null),
             onTapUp: (details) { _start(details.localPosition, width); setState(() => _grip = null); },
@@ -309,8 +318,8 @@ class _RangeBrushState extends State<_RangeBrush> {
                 values: widget.values,
                 from: _xOf(widget.from.toDouble(), width),
                 to: _xOf(widget.to.toDouble(), width),
-                fromLabel: '#${widget.from}',
-                toLabel: '#${widget.to}',
+                fromLabel: labels ? '#${widget.from}' : '',
+                toLabel: labels ? '#${widget.to}' : '',
                 line: inputColor,
                 track: scheme.muted,
                 handle: scheme.surface,
