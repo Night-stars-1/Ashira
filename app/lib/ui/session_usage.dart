@@ -163,9 +163,10 @@ class _ReplyTrendState extends State<_ReplyTrend> {
             // below show.
             if (count > 1) ...[
               const SizedBox(height: 8),
-              // The card pads 4 left and 16 right for the chart's axes; this evens the bar's sides.
+              // The card pads 4 left and 16 right for the chart's axes; 12 more on the left
+              // brings the bar to 16 on both sides.
               Padding(
-                padding: const EdgeInsets.only(right: 12),
+                padding: const EdgeInsets.only(left: 12),
                 child: _RangeBrush(
                   values: [for (final reply in replies) _value(reply.metrics, _metric)],
                   from: from,
