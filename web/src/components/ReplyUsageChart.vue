@@ -5,6 +5,7 @@ import { ArrowDown, ArrowUp } from '@lucide/vue'
 import { CurveType } from '@unovis/ts'
 import { VisArea, VisAxis, VisLine, VisScatter, VisXYContainer } from '@unovis/vue'
 import { Button } from '@/components/ui/button'
+import { Slider } from '@/components/ui/slider'
 import { type ChartConfig, ChartContainer, ChartCrosshair, ChartTooltip, ChartTooltipContent, componentToString } from '@/components/ui/chart'
 import type { Block } from '@/components/Transcript.vue'
 import type { ReplyMetrics } from '@/lib/api'
@@ -16,13 +17,26 @@ const choices = [
 ] as const
 type Metric = typeof choices[number]['key']
 const metric = ref<Metric>('total')
-const pageSize = 30
-const pageOffset = ref(0)
+/** Replies the chart shows by default: the latest ones, until the range is moved. */
+const defaultSpan = 30
 const replies = computed(() => props.blocks
   .filter((block): block is Extract<Block, { kind: 'assistant' }> => block.kind === 'assistant' && !block.live)
   .map((block, index) => ({ number: index + 1, metrics: block.metrics, text: block.parts.flatMap((part) => part.type === 'text' ? [part.text] : []).join('\n') })))
-const end = computed(() => Math.max(0, replies.value.length - pageOffset.value * pageSize))
-const page = computed(() => replies.value.slice(Math.max(0, end.value - pageSize), end.value))
+/** The chosen reply numbers, inclusive. Null follows the latest replies as new ones arrive. */
+const picked = ref<[number, number] | null>(null)
+const range = computed<[number, number]>(() => {
+  const count = replies.value.length
+  if (!picked.value) return [Math.max(1, count - defaultSpan + 1), Math.max(1, count)]
+  const [from, to] = picked.value
+  return [Math.min(from, count), Math.min(to, count)]
+})
+function pickRange(value: number[] | undefined) {
+  if (!value || value.length !== 2) return
+  const [from, to] = value as [number, number]
+  // Dragged back onto the newest reply: follow new replies again.
+  picked.value = to >= replies.value.length && to - from + 1 === Math.min(defaultSpan, replies.value.length) ? null : [from, to]
+}
+const page = computed(() => replies.value.slice(range.value[0] - 1, range.value[1]))
 const tokens = new Intl.NumberFormat('zh-CN')
 const short = new Intl.NumberFormat('zh-CN', { notation: 'compact', maximumFractionDigits: 1 })
 const dollars = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumSignificantDigits: 5 })
@@ -130,10 +144,20 @@ const tooltipTemplate = computed(() => {
           </VisXYContainer>
         </ChartContainer>
         <p v-else class="px-2 py-6 text-center text-xs text-muted-foreground">这组回复没有记录此项数据。</p>
-      </div>
-      <div v-if="replies.length > pageSize" class="flex flex-wrap items-center justify-end gap-1">
-        <Button size="sm" variant="ghost" :disabled="end <= pageSize" @click="pageOffset++">较早</Button>
-        <Button size="sm" variant="ghost" :disabled="pageOffset === 0" @click="pageOffset--">较新</Button>
+        <!-- Which replies the chart and the table below show; both ends drag. -->
+        <div v-if="replies.length > 1" class="mt-3 flex items-center gap-3 px-1">
+          <Slider
+            :model-value="range"
+            :min="1"
+            :max="replies.length"
+            :step="1"
+            :min-steps-between-thumbs="0"
+            class="flex-1"
+            aria-label="显示的回复区间"
+            @update:model-value="pickRange"
+          />
+          <span class="shrink-0 text-xs text-muted-foreground tabular-nums">#{{ range[0] }} – #{{ range[1] }}</span>
+        </div>
       </div>
       <details class="rounded-lg border">
         <summary class="cursor-pointer px-3 py-2 text-xs font-medium">逐回复明细</summary>

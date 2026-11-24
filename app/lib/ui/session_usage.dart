@@ -59,7 +59,8 @@ class _SessionUsage extends StatelessWidget {
 }
 
 const _metrics = [('total', '总 Token'), ('output', '输出'), ('hit', '缓存命中'), ('rate', 'TPS'), ('cost', '费用')];
-const _pageSize = 30;
+/// Replies the chart shows by default: the latest ones, until the range is moved.
+const _defaultSpan = 30;
 
 /// One value per finished reply for a metric; null where the reply has no data.
 double? _value(ReplyMetrics? reply, String metric) {
@@ -105,7 +106,7 @@ String _format(double? amount, String metric, {bool short = false}) {
   };
 }
 
-/// Per-reply trend with a metric switch, 30 replies a page, and the detail table.
+/// Per-reply trend with a metric switch, a range of replies to show, and the detail table.
 class _ReplyTrend extends StatefulWidget {
   const _ReplyTrend({super.key, required this.blocks});
   final List<Block> blocks;
@@ -115,7 +116,8 @@ class _ReplyTrend extends StatefulWidget {
 
 class _ReplyTrendState extends State<_ReplyTrend> {
   String _metric = 'total';
-  int _pageOffset = 0;
+  /// The chosen reply numbers, inclusive. Null follows the latest replies as new ones arrive.
+  (int, int)? _picked;
   bool _details = false;
 
   @override
@@ -125,8 +127,14 @@ class _ReplyTrendState extends State<_ReplyTrend> {
     final replies = [
       for (final (index, block) in widget.blocks.whereType<AssistantBlock>().where((block) => !block.live).indexed) (number: index + 1, metrics: block.metrics),
     ];
-    final end = (replies.length - _pageOffset * _pageSize).clamp(0, replies.length);
-    final page = replies.sublist((end - _pageSize).clamp(0, end), end);
+    final count = replies.length;
+    // `last` keeps the bounds valid while there are no replies yet (nothing is drawn then).
+    final last = count < 1 ? 1 : count;
+    final (from, to) = switch (_picked) {
+      null => ((last - _defaultSpan + 1).clamp(1, last), last),
+      (final from, final to) => (from.clamp(1, last), to.clamp(1, last)),
+    };
+    final page = replies.isEmpty ? replies : replies.sublist(from - 1, to);
     final points = [for (final reply in page) (number: reply.number, value: _value(reply.metrics, _metric))];
     final hasData = points.any((point) => point.value != null);
     final label = _metrics.firstWhere((metric) => metric.$1 == _metric).$2;
@@ -142,21 +150,37 @@ class _ReplyTrendState extends State<_ReplyTrend> {
         Text('暂无已完成的回复。', style: small)
       else ...[
         Container(
-          height: 196,
           padding: const EdgeInsets.fromLTRB(4, 12, 16, 4),
           decoration: BoxDecoration(border: Border.all(color: scheme.border), borderRadius: BorderRadius.circular(radius)),
-          child: hasData
-              ? _TrendChart(points: points, metric: _metric, label: label)
-              : Center(child: Text('这组回复没有记录此项数据。', style: small)),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+            SizedBox(
+              height: 180,
+              child: hasData
+                  ? _TrendChart(points: points, metric: _metric, label: label)
+                  : Center(child: Text('这组回复没有记录此项数据。', style: small)),
+            ),
+            // Which replies the chart and the table below show; both ends drag.
+            if (count > 1)
+              Row(children: [
+                Expanded(
+                  child: RangeSlider(
+                    min: 1,
+                    max: count.toDouble(),
+                    divisions: count - 1,
+                    values: RangeValues(from.toDouble(), to.toDouble()),
+                    labels: RangeLabels('#$from', '#$to'),
+                    semanticFormatterCallback: (value) => '回复 #${value.round()}',
+                    onChanged: (values) => setState(() {
+                      final next = (values.start.round(), values.end.round());
+                      // Dragged back onto the newest replies: follow new ones again.
+                      _picked = next.$2 >= count && next.$2 - next.$1 + 1 == (count < _defaultSpan ? count : _defaultSpan) ? null : next;
+                    }),
+                  ),
+                ),
+                Text('#$from – #$to', style: small.copyWith(fontFeatures: const [FontFeature.tabularFigures()])),
+              ]),
+          ]),
         ),
-        if (replies.length > _pageSize)
-          Align(
-            alignment: Alignment.centerRight,
-            child: Wrap(spacing: 4, children: [
-              TextButton(onPressed: end <= _pageSize ? null : () => setState(() => _pageOffset++), child: const Text('较早')),
-              TextButton(onPressed: _pageOffset == 0 ? null : () => setState(() => _pageOffset--), child: const Text('较新')),
-            ]),
-          ),
         const SizedBox(height: 8),
         Container(
           decoration: BoxDecoration(border: Border.all(color: scheme.border), borderRadius: BorderRadius.circular(radius)),
