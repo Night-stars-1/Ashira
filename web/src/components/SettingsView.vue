@@ -321,7 +321,7 @@ watch(open, (value) => { if (value) void load() })
                 <label class="flex items-center gap-3 px-4 py-3.5">
                   <span class="min-w-0 flex-1">
                     <span class="block text-sm">主动记忆</span>
-                    <span class="block text-xs text-muted-foreground">回复的 AI 在对话中发现长期偏好或你的情况时直接记下，不用你说「记住」</span>
+                    <span class="block text-xs text-muted-foreground">回复的 AI 在对话中发现长期偏好或你的情况时直接记下</span>
                   </span>
                   <Switch :model-value="memoryFlags?.proactive ?? false" :disabled="!memoryFlags || memoryFlagsSaving" @update:model-value="(on) => setMemory({ proactive: on })" />
                 </label>

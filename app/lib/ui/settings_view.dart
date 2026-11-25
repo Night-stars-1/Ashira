@@ -329,7 +329,7 @@ class _SettingsState extends State<_Settings> {
           SettingsCard(children: [
             toggleRow('自动记忆', '每轮回复结束后，从你的话里整理长期偏好和事实', _memoryFlags?.auto ?? false,
                 _memoryFlags == null || _memoryFlagsSaving ? null : (on) => _setMemory(auto: on)),
-            toggleRow('主动记忆', '回复的 AI 在对话中发现长期偏好或你的情况时直接记下，不用你说「记住」', _memoryFlags?.proactive ?? false,
+            toggleRow('主动记忆', '回复的 AI 在对话中发现长期偏好或你的情况时直接记下', _memoryFlags?.proactive ?? false,
                 _memoryFlags == null || _memoryFlagsSaving ? null : (on) => _setMemory(proactive: on)),
           ]),
           const SizedBox(height: 12),
