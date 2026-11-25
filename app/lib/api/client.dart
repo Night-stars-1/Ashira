@@ -88,12 +88,12 @@ class AshiraClient {
   /// Saves config.yml `shell:` after the server test-runs it; empty goes back to finding it automatically.
   Future<ShellStatus> setShell(String shell) async => ShellStatus.fromJson(await _post('/v1/shell', {'shell': shell}));
 
-  /// config.yml `approval:`: the default mode and whether the chat hides its switch.
+  /// config.yml `approval:` and `proactiveQuestions`.
   Future<ApprovalSettings> approval() async => ApprovalSettings.fromJson(await _get('/v1/approval'));
 
-  /// Saves `approval:`; hiding also moves idle sessions to the default.
-  Future<ApprovalSettings> setApproval({required String defaultMode, required bool hidden}) async =>
-      ApprovalSettings.fromJson(await _post('/v1/approval', {'default': defaultMode, 'hidden': hidden}));
+  /// Saves `approval:` and `proactiveQuestions`; hiding also moves idle sessions to the default.
+  Future<ApprovalSettings> setApproval({required String defaultMode, required bool hidden, required bool questions}) async =>
+      ApprovalSettings.fromJson(await _post('/v1/approval', {'default': defaultMode, 'hidden': hidden, 'questions': questions}));
 
   Future<SessionListing> sessions() async => SessionListing.fromJson(await _get('/v1/sessions'));
 

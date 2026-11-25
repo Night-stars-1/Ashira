@@ -67,7 +67,7 @@ class _ApprovalSettingsCardState extends State<ApprovalSettingsCard> {
     }
   }
 
-  Future<void> _save({String? defaultMode, bool? hidden}) async {
+  Future<void> _save({String? defaultMode, bool? hidden, bool? questions}) async {
     final current = _settings;
     if (current == null || _saving) return;
     setState(() {
@@ -75,7 +75,7 @@ class _ApprovalSettingsCardState extends State<ApprovalSettingsCard> {
       _error = '';
     });
     try {
-      final saved = await _client.setApproval(defaultMode: defaultMode ?? current.defaultMode, hidden: hidden ?? current.hidden);
+      final saved = await _client.setApproval(defaultMode: defaultMode ?? current.defaultMode, hidden: hidden ?? current.hidden, questions: questions ?? current.questions);
       if (!mounted) return;
       setState(() => _settings = saved);
       widget.state.approvalSaved(saved);
@@ -121,6 +121,12 @@ class _ApprovalSettingsCardState extends State<ApprovalSettingsCard> {
           Toggle(label: '在输入框显示审批按钮', value: settings == null || !settings.hidden, onChanged: ready ? (shown) => _save(hidden: !shown) : null),
         ]),
         if (settings?.forced ?? false) Padding(padding: const EdgeInsets.only(top: 8), child: Text('服务端以 --yes 启动，所有会话固定为完整权限，默认模式在去掉 --yes 后生效', style: small)),
+      ]),
+      Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        Row(children: [
+          label('主动提问', '开始前遇到格式、方案、范围等会影响结果的选择先问你；关闭后模型自己选常规方案，只在无法决定时才问'),
+          Toggle(label: '主动提问', value: settings == null || settings.questions, onChanged: ready ? (on) => _save(questions: on) : null),
+        ]),
         if (_error.isNotEmpty) Padding(padding: const EdgeInsets.only(top: 8), child: Text(_error, style: TextStyle(fontSize: 13, color: scheme.error))),
       ]),
     ]);

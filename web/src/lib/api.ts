@@ -99,8 +99,9 @@ export type ReplyMetrics = {
 }
 
 export type ApprovalMode = 'manual' | 'auto' | 'full'
-/** config.yml `approval:`: the mode sessions start in, and whether the chat hides its switch. `forced`: `--yes`. */
-export type ApprovalSettings = { default: ApprovalMode; hidden: boolean; forced: boolean }
+/** config.yml `approval:` and `proactiveQuestions`: the mode sessions start in, whether the chat hides
+ *  its switch, and whether the model asks about open choices before it works. `forced`: `--yes`. */
+export type ApprovalSettings = { default: ApprovalMode; hidden: boolean; forced: boolean; questions: boolean }
 
 function approvalMode(value: unknown): ApprovalMode | undefined {
   return value === 'manual' || value === 'auto' || value === 'full' ? value : undefined
@@ -108,7 +109,7 @@ function approvalMode(value: unknown): ApprovalMode | undefined {
 
 function approvalSettings(body: unknown): ApprovalSettings {
   const value = record(body)
-  return { default: approvalMode(value.default) ?? 'manual', hidden: value.hidden === true, forced: value.forced === true }
+  return { default: approvalMode(value.default) ?? 'manual', hidden: value.hidden === true, forced: value.forced === true, questions: value.questions !== false }
 }
 
 export type Status = UsageStatistics & {
@@ -554,7 +555,7 @@ export const api = {
   /** Saves config.yml `shell:` after a test run; empty goes back to finding it automatically. */
   setShell: async (shell: string): Promise<ShellStatus> => shellStatus(await request('/v1/shell', { method: 'POST', body: JSON.stringify({ shell }) })),
   approval: async (): Promise<ApprovalSettings> => approvalSettings(await request('/v1/approval')),
-  setApproval: async (value: Pick<ApprovalSettings, 'default' | 'hidden'>): Promise<ApprovalSettings> =>
+  setApproval: async (value: Pick<ApprovalSettings, 'default' | 'hidden' | 'questions'>): Promise<ApprovalSettings> =>
     approvalSettings(await request('/v1/approval', { method: 'POST', body: JSON.stringify(value) })),
   /** The server re-launches its program (the build `ashira update` installed). */
   restart: async () => { await request('/v1/restart', { method: 'POST' }) },

@@ -15,7 +15,7 @@ use std::{
     sync::RwLock,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
-use std::{io::{self, Write}, sync::atomic::{AtomicU64, Ordering}};
+use std::{io::{self, Write}, sync::atomic::{AtomicU64, AtomicU8, Ordering}};
 
 use futures_util::future::join_all;
 use indexmap::IndexMap;
@@ -534,6 +534,33 @@ pub fn set_approval_settings(value: ApprovalSettings) -> Result<(), String> {
         root.insert("approval".into(), next);
         Ok(true)
     })
+}
+
+/// config.yml `proactiveQuestions`, read once and kept in step with [set_proactive_questions].
+/// 0: not read yet, 1: off, 2: on.
+static PROACTIVE_QUESTIONS: AtomicU8 = AtomicU8::new(0);
+
+/// Whether the model asks about open choices before it starts work (设置 → 通用 → 主动提问).
+/// Missing or unreadable means on.
+pub fn proactive_questions() -> bool {
+    match PROACTIVE_QUESTIONS.load(Ordering::Acquire) {
+        0 => {
+            let on = read_settings(&settings_path()).ok().and_then(|s| s.get("proactiveQuestions").and_then(Value::as_bool)).unwrap_or(true);
+            PROACTIVE_QUESTIONS.store(if on { 2 } else { 1 }, Ordering::Release);
+            on
+        }
+        value => value == 2,
+    }
+}
+
+pub fn set_proactive_questions(on: bool) -> Result<(), String> {
+    edit_settings(&settings_path(), |root| {
+        if root.get("proactiveQuestions").and_then(Value::as_bool) == Some(on) { return Ok(false); }
+        root.insert("proactiveQuestions".into(), Value::Bool(on));
+        Ok(true)
+    })?;
+    PROACTIVE_QUESTIONS.store(if on { 2 } else { 1 }, Ordering::Release);
+    Ok(())
 }
 
 /// Changes config.yml under its lock, keeping every other key; `edit` returns whether it

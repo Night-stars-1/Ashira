@@ -418,6 +418,8 @@ async fn dispatch(hub: &Arc<Hub>, method: &str, path: &str, query: &str, body: &
             let default = json_body.get("default").and_then(Value::as_str).and_then(ApprovalMode::parse).ok_or("无效的审批模式")?;
             let hidden = json_body.get("hidden").and_then(Value::as_bool).ok_or("hidden is required")?;
             crate::config::set_approval_settings(crate::config::ApprovalSettings { default, hidden })?;
+            // 主动提问: the next request of every session takes it (prompt and tool text).
+            if let Some(questions) = json_body.get("questions").and_then(Value::as_bool) { crate::config::set_proactive_questions(questions)?; }
             // Hidden: nothing on the pages can switch a session any more, so idle ones take the
             // default now; one mid-turn keeps its mode until the turn ends and it is reopened.
             if hidden && !hub.shared.approve_all() { hub.apply_approval(default); }
@@ -617,10 +619,11 @@ fn shell_status() -> Value {
     })
 }
 
-/// config.yml `approval:` for 设置 → 通用; `forced` is `--yes`, which overrides the default.
+/// config.yml `approval:` and `proactiveQuestions` for 设置 → 通用; `forced` is `--yes`,
+/// which overrides the default mode.
 fn approval_status(hub: &Hub) -> Value {
     let settings = crate::config::approval_settings();
-    json!({"default": settings.default.as_str(), "hidden": settings.hidden, "forced": hub.shared.approve_all()})
+    json!({"default": settings.default.as_str(), "hidden": settings.hidden, "forced": hub.shared.approve_all(), "questions": crate::config::proactive_questions()})
 }
 
 async fn status(hub: &Hub) -> Value {

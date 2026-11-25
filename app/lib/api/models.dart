@@ -183,20 +183,22 @@ class Status {
       );
 }
 
-/// config.yml `approval:`: the mode sessions start in, and whether the chat hides its switch.
+/// config.yml `approval:` and `proactiveQuestions`: the mode sessions start in, whether the
+/// chat hides its switch, and whether the model asks about open choices before it works.
 /// [forced]: the server runs with `--yes`, so every session has full access anyway.
 class ApprovalSettings {
-  const ApprovalSettings({required this.defaultMode, required this.hidden, required this.forced});
+  const ApprovalSettings({required this.defaultMode, required this.hidden, required this.forced, required this.questions});
   factory ApprovalSettings.fromJson(Object? json) {
     final m = asMap(json);
     return ApprovalSettings(
       defaultMode: switch (m['default']) { 'auto' => 'auto', 'full' => 'full', _ => 'manual' },
       hidden: m['hidden'] == true,
       forced: m['forced'] == true,
+      questions: m['questions'] != false,
     );
   }
   final String defaultMode;
-  final bool hidden, forced;
+  final bool hidden, forced, questions;
 }
 
 class WorkspaceFile {

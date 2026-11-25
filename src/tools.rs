@@ -42,8 +42,9 @@ impl Output {
 /// the cached prompt prefix stays stable.
 /// `interactive` adds `ask_user`, which only the root agent of an attached
 /// session may call; `-p` runs and subagents never see it. `image` adds
-/// `generate_image` (a `modelRoles.image` model is configured).
-pub fn definitions(role: Option<crate::subagents::Role>, mcp: &[Value], plugins: &[Value], interactive: bool, image: bool) -> Value {
+/// `generate_image` (a `modelRoles.image` model is configured). `proactive`
+/// (设置 → 通用 → 主动提问) has `ask_user` asked before work, not only when stuck.
+pub fn definitions(role: Option<crate::subagents::Role>, mcp: &[Value], plugins: &[Value], interactive: bool, image: bool, proactive: bool) -> Value {
     let mut tools = vec![
         json!({
             "name": "bash",
@@ -141,7 +142,11 @@ pub fn definitions(role: Option<crate::subagents::Role>, mcp: &[Value], plugins:
         if interactive {
             tools.push(json!({
                 "name": "ask_user",
-                "description": "Ask the user one or more questions and wait for the answers. Call it before creating or changing anything when the request leaves open a choice that changes the result and that tools cannot settle: the format, library or approach (a config file: JSON, YAML, TOML or .env), the scope (which files, which \"old\" logs), names and defaults the user will live with, or a destructive or hard-to-undo step. Look with tools first, then ask once with every open choice in one call, rather than guessing and redoing the work later. Do not use it to confirm routine steps, to ask permission for actions you were already asked to do, or for information available in the repository or through other tools. Question types: `single` (pick one option), `multi` (pick any number of options), `text` (free text). Set `default` to the answer you recommend; the user sees it preselected or prefilled. For choice questions the user may also type an answer that is not an option, and any question may be left unanswered or the whole group skipped.",
+                "description": format!("Ask the user one or more questions and wait for the answers. {} Do not use it to confirm routine steps, to ask permission for actions you were already asked to do, or for information available in the repository or through other tools. Question types: `single` (pick one option), `multi` (pick any number of options), `text` (free text). Set `default` to the answer you recommend; the user sees it preselected or prefilled. For choice questions the user may also type an answer that is not an option, and any question may be left unanswered or the whole group skipped.", if proactive {
+                    "Call it before creating or changing anything when the request leaves open a choice that changes the result and that tools cannot settle: the format, library or approach (a config file: JSON, YAML, TOML or .env), the scope (which files, which \"old\" logs), names and defaults the user will live with, or a destructive or hard-to-undo step. Look with tools first, then ask once with every open choice in one call, rather than guessing and redoing the work later."
+                } else {
+                    "Use only when you cannot proceed safely without the user's decision: ambiguous requirements, a choice between materially different approaches, or missing information you cannot find with tools. Group related questions into one call instead of asking repeatedly."
+                }),
                 "input_schema": {"type": "object", "properties": {
                     "questions": {"type": "array", "minItems": 1, "items": {"type": "object", "properties": {
                         "id": {"type": "string", "description": "Short unique key for this question; defaults to its position."},
