@@ -97,6 +97,10 @@ const MAIN_PROMPT: &str = include_str!("prompts/main.md");
 const ASK_PROACTIVE: &str = "- Before you create or change anything, check the request for open choices that change the result and that tools cannot settle: the format, library or approach (a config file: JSON, YAML, TOML or .env; a CLI: its language and dependencies), the scope (which files, which \"old\" logs), names and defaults the user will live with, and destructive or hard-to-undo steps. If there are any, your first action is one `ask_user` call (when available) with all of them, each with your recommended `default`; wait for the answer, then work without further check-ins. Do not ask about what tools can find out (look first), about routine steps, or for permission to do what was asked. When nothing open matters, choose the conventional option, proceed, and say what you chose.";
 /// Decide yourself unless there is no safe choice.
 const ASK_RARELY: &str = "- Ask the user (`ask_user`, when available) only for a decision tools cannot settle: ambiguous requirements, materially different approaches, or a destructive step. Otherwise choose the conventional, safe option, proceed, and say what you chose.";
+/// The system prompt's `{memory}`, after 设置 → 记忆 → 主动记忆: save durable facts unasked.
+const MEMORY_PROACTIVE: &str = "Use `memory` for explicit requests to remember, correct or forget something, and also on your own, without being asked: when the user states a durable preference or fact about themselves or their environment that will matter in other projects (how they like replies, the languages, tools and OS they use), save it right away, once, reusing an existing key. Do not save project details, task state, or your own suggestions.";
+/// Only when asked.
+const MEMORY_ON_REQUEST: &str = "Use `memory` only for explicit requests to remember, correct or forget something.";
 const SUBAGENT_PROMPT: &str = include_str!("prompts/subagent.md");
 const SCOUT_PROMPT: &str = include_str!("prompts/scout.md");
 const AGENTS_PROMPT: &str = include_str!("prompts/agents.md");
@@ -220,7 +224,7 @@ pub struct Model {
 struct ToolCache {
     generation: u64,
     image: bool,
-    proactive: bool,
+    behavior: tools::Behavior,
     parent: Arc<Value>,
     task: Arc<Value>,
     scout: Arc<Value>,
@@ -228,7 +232,7 @@ struct ToolCache {
 
 impl Model {
     fn new(client: Client) -> Arc<Model> {
-        Arc::new(Model { client, tools: Mutex::new(ToolCache { generation: u64::MAX, image: false, proactive: false, parent: Arc::default(), task: Arc::default(), scout: Arc::default() }) })
+        Arc::new(Model { client, tools: Mutex::new(ToolCache { generation: u64::MAX, image: false, behavior: tools::Behavior::default(), parent: Arc::default(), task: Arc::default(), scout: Arc::default() }) })
     }
 
     /// `image_model`: this chat's provider has an image model (its `imageModel` or
@@ -237,18 +241,18 @@ impl Model {
     fn tools(&self, mcp: &Mcp, plugins: &crate::plugin::Plugins, role: Option<Role>, interactive: bool, image_model: bool) -> Arc<Value> {
         let image = image_model || self.client.on_responses();
         let generation = mcp.generation();
-        let proactive = crate::config::proactive_questions();
+        let behavior = tools::Behavior::current();
         let mut t = self.tools.lock().expect("tools lock");
-        if t.generation != generation || t.image != image || t.proactive != proactive {
+        if t.generation != generation || t.image != image || t.behavior != behavior {
             let defs = mcp.definitions();
             let plugin_defs = plugins.tool_definitions();
             *t = ToolCache {
                 generation,
                 image,
-                proactive,
-                parent: Arc::new(self.client.wire_tools(tools::definitions(None, &defs, &plugin_defs, interactive, image, proactive))),
-                task: Arc::new(self.client.wire_tools(tools::definitions(Some(Role::Task), &defs, &[], interactive, image, proactive))),
-                scout: Arc::new(self.client.wire_tools(tools::definitions(Some(Role::Scout), &defs, &[], interactive, image, proactive))),
+                behavior,
+                parent: Arc::new(self.client.wire_tools(tools::definitions(None, &defs, &plugin_defs, interactive, image, behavior))),
+                task: Arc::new(self.client.wire_tools(tools::definitions(Some(Role::Task), &defs, &[], interactive, image, behavior))),
+                scout: Arc::new(self.client.wire_tools(tools::definitions(Some(Role::Scout), &defs, &[], interactive, image, behavior))),
             };
         }
         // A shell job runs no model, so it never asks for tools; treat it like a task to stay total.
@@ -261,7 +265,7 @@ struct SystemCache {
     base: Arc<str>,
     mcp: Arc<str>,
     memory: Arc<str>,
-    proactive: bool,
+    behavior: tools::Behavior,
     text: Arc<str>,
 }
 
@@ -660,15 +664,16 @@ impl Shared {
         let mcp: Arc<str> = if role == Some(Role::Scout) { Arc::from("") } else { self.mcp.instructions() };
         let mut cached = self.full_system.lock().expect("system lock");
         let slot = &mut cached[match role { None => 0, Some(Role::Task | Role::Shell) => 1, Some(Role::Scout) => 2 }];
-        let proactive = crate::config::proactive_questions();
+        let behavior = tools::Behavior::current();
         if let Some(c) = slot
-            && c.base == base && c.mcp == mcp && c.memory == memory && c.proactive == proactive
+            && c.base == base && c.mcp == mcp && c.memory == memory && c.behavior == behavior
         {
             return Ok(c.text.clone());
         }
-        let main = MAIN_PROMPT.replace("{ask}", if proactive { ASK_PROACTIVE } else { ASK_RARELY });
-        let mut text = String::with_capacity(base.len() + memory.len() + mcp.len() + main.len() + AGENTS_PROMPT.len() + 8);
-        text.push_str(&base);
+        let main = MAIN_PROMPT.replace("{ask}", if behavior.ask { ASK_PROACTIVE } else { ASK_RARELY });
+        let mut text = String::with_capacity(base.len() + memory.len() + mcp.len() + main.len() + AGENTS_PROMPT.len() + 512);
+        // The first `{memory}` is system.md's; project instructions appended after it stay as written.
+        text.push_str(&base.replacen("{memory}", if behavior.remember { MEMORY_PROACTIVE } else { MEMORY_ON_REQUEST }, 1));
         let role_prompt = match role { None => main.as_str(), Some(Role::Scout) => SCOUT_PROMPT, Some(Role::Task | Role::Shell) => "" };
         for section in [role_prompt, AGENTS_PROMPT] {
             if !section.is_empty() {
@@ -683,7 +688,7 @@ impl Shared {
             }
         }
         let text: Arc<str> = Arc::from(text);
-        *slot = Some(SystemCache { base, mcp, memory, proactive, text: text.clone() });
+        *slot = Some(SystemCache { base, mcp, memory, behavior, text: text.clone() });
         Ok(text)
     }
 }

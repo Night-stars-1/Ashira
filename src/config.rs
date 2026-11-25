@@ -551,6 +551,23 @@ pub fn set_proactive_questions(on: bool) -> Result<(), String> {
     })
 }
 
+/// Whether the replying model saves durable facts to memory without being asked (设置 → 记忆 →
+/// 主动记忆, config.yml `memory.proactive`). Read at every request; missing or unreadable means off.
+pub fn memory_proactive() -> bool {
+    read_settings(&settings_path()).ok().and_then(|s| s.get("memory").and_then(|m| m.get("proactive")).and_then(Value::as_bool)).unwrap_or(false)
+}
+
+pub fn set_memory_proactive(on: bool) -> Result<(), String> {
+    let path = settings_path();
+    edit_settings(&path, |root| {
+        settings_memory_auto(root, &path)?;
+        if root.get("memory").and_then(|m| m.get("proactive")).and_then(Value::as_bool) == Some(on) { return Ok(false); }
+        let memory = root.entry("memory").or_insert_with(|| Value::Object(Map::new()));
+        memory.as_object_mut().expect("memory mapping validated").insert("proactive".into(), Value::Bool(on));
+        Ok(true)
+    })
+}
+
 /// Changes config.yml under its lock, keeping every other key; `edit` returns whether it
 /// changed anything, and an unchanged file is not rewritten.
 fn edit_settings(path: &Path, edit: impl FnOnce(&mut Map<String, Value>) -> Result<bool, String>) -> Result<(), String> {

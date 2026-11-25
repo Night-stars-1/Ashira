@@ -383,9 +383,12 @@ async fn dispatch(hub: &Arc<Hub>, method: &str, path: &str, query: &str, body: &
         }
         ("GET", "/v1/memory") => Ok(Response::Json { status: 200, body: memory(hub).await? }),
         ("POST", "/v1/memory") => {
-            // 设置 → 记忆 → 自动记忆: config.yml `memory.auto`, read again at every turn.
-            let auto = json_body.get("auto").and_then(Value::as_bool).ok_or("auto is required")?;
-            crate::config::set_memory_auto(auto).await?;
+            // 设置 → 记忆: config.yml `memory.auto` and `memory.proactive`, each optional and
+            // read again at the next turn.
+            let flag = |key: &str| json_body.get(key).and_then(Value::as_bool);
+            if flag("auto").is_none() && flag("proactive").is_none() { return Err("auto or proactive is required".into()); }
+            if let Some(auto) = flag("auto") { crate::config::set_memory_auto(auto).await?; }
+            if let Some(proactive) = flag("proactive") { crate::config::set_memory_proactive(proactive)?; }
             Ok(Response::Json { status: 200, body: memory(hub).await? })
         }
         ("POST", "/v1/restart") => {
@@ -725,12 +728,14 @@ fn mcp_entry(body: &Value) -> Result<(String, Value, bool), String> {
     Ok((name, Value::Object(entry), project))
 }
 
-/// 设置 → 记忆: the saved entries, and whether they are consolidated after every turn.
+/// 设置 → 记忆: the saved entries; `auto`, whether they are consolidated after every turn;
+/// `proactive`, whether the replying model saves durable facts unasked.
 async fn memory(hub: &Hub) -> Result<Value, String> {
     let snapshot = hub.shared.memory.snapshot().await?;
     Ok(json!({
         "path": hub.shared.memory.path().display().to_string(),
         "auto": crate::config::memory_auto_enabled().await?,
+        "proactive": crate::config::memory_proactive(),
         "entries": snapshot.entries.iter().map(|(key, value)| json!({"key": key, "value": value})).collect::<Vec<_>>(),
     }))
 }

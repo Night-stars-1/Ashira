@@ -114,7 +114,7 @@ function memoryReport(body: unknown): MemoryReport {
     const row = record(item)
     return [{ key: text(row.key), value: text(row.value) }]
   }) : []
-  return { path: text(value.path), auto: value.auto === true, entries }
+  return { path: text(value.path), auto: value.auto === true, proactive: value.proactive === true, entries }
 }
 
 function approvalSettings(body: unknown): ApprovalSettings {
@@ -158,8 +158,9 @@ export type BrowseListing = { path: string; parent: string | null; entries: Brow
 export type McpTool = { name: string; description: string }
 export type McpServer = { name: string; status: string; kind: string; source: string; target: string; tools: McpTool[] }
 export type MemoryEntry = { key: string; value: string }
-/** 设置 → 记忆: the saved entries, and whether they are consolidated after every turn (`memory.auto`). */
-export type MemoryReport = { path: string; auto: boolean; entries: MemoryEntry[] }
+/** 设置 → 记忆: the saved entries; `auto` (`memory.auto`), consolidated after every turn; `proactive`
+ *  (`memory.proactive`), the replying model saves durable facts unasked. */
+export type MemoryReport = { path: string; auto: boolean; proactive: boolean; entries: MemoryEntry[] }
 export type McpForm = { name: string; type: 'stdio' | 'http' | 'sse'; command: string; args: string; url: string; headers: string }
 export type ModelItem = { selector: string; provider: string; id: string; name: string | null; context: number; input: number | null; output: number | null; efforts: string[]; fast: boolean }
 /** A server update's step, and while a file downloads, bytes so far and its size when known. */
@@ -581,8 +582,8 @@ export const api = {
     return { sessions: number(body.sessions), buckets }
   },
   memory: async () => memoryReport(await request('/v1/memory')),
-  /** config.yml `memory.auto`: consolidate memory after every completed turn. */
-  setMemoryAuto: async (auto: boolean) => memoryReport(await request('/v1/memory', { method: 'POST', body: JSON.stringify({ auto }) })),
+  /** config.yml `memory.auto` (consolidate after every turn) and `memory.proactive` (the replying model saves unasked). */
+  setMemory: async (change: Partial<Pick<MemoryReport, 'auto' | 'proactive'>>) => memoryReport(await request('/v1/memory', { method: 'POST', body: JSON.stringify(change) })),
   modelConfig: async (): Promise<ModelConfig> => {
     const body = record(await request('/v1/model-config'))
     const providers = Array.isArray(body.providers) ? body.providers.flatMap((item): ProviderConfig[] => {

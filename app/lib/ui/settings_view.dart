@@ -43,9 +43,9 @@ class _SettingsState extends State<_Settings> {
   bool _mcpFailed = false;
   List<MemoryEntry> _memories = [];
   String _memoryNote = '';
-  /// config.yml `memory.auto`; null until read.
-  bool? _memoryAuto;
-  bool _memoryAutoSaving = false;
+  /// config.yml `memory.auto` and `memory.proactive`; null until read.
+  ({bool auto, bool proactive})? _memoryFlags;
+  bool _memoryFlagsSaving = false;
   String _mcpError = '';
   bool _loading = true;
 
@@ -77,34 +77,34 @@ class _SettingsState extends State<_Settings> {
       }),
       client.memory().then((report) {
         _memories = report.entries;
-        _memoryAuto = report.auto;
+        _memoryFlags = (auto: report.auto, proactive: report.proactive);
         _memoryNote = '';
       }).catchError((Object error) {
         _memories = [];
-        _memoryAuto = null;
+        _memoryFlags = null;
         _memoryNote = errorText(error, '读取失败');
       }),
     ]);
     if (mounted) setState(() => _loading = false);
   }
 
-  Future<void> _setMemoryAuto(bool auto) async {
-    if (_memoryAutoSaving) return;
+  Future<void> _setMemory({bool? auto, bool? proactive}) async {
+    if (_memoryFlagsSaving) return;
     setState(() {
-      _memoryAutoSaving = true;
+      _memoryFlagsSaving = true;
       _memoryNote = '';
     });
     try {
-      final report = await _client.setMemoryAuto(auto);
+      final report = await _client.setMemory(auto: auto, proactive: proactive);
       if (!mounted) return;
       setState(() {
-        _memoryAuto = report.auto;
+        _memoryFlags = (auto: report.auto, proactive: report.proactive);
         _memories = report.entries;
       });
     } catch (error) {
       if (mounted) setState(() => _memoryNote = errorText(error, '保存失败'));
     } finally {
-      if (mounted) setState(() => _memoryAutoSaving = false);
+      if (mounted) setState(() => _memoryFlagsSaving = false);
     }
   }
 
@@ -327,14 +327,20 @@ class _SettingsState extends State<_Settings> {
         ],
       'memory' => [
           SettingsCard(children: [
-            toggleRow('自动记忆', '每轮回复结束后，从你的话里整理长期偏好和事实；会多一次模型调用', _memoryAuto ?? false,
-                _memoryAuto == null || _memoryAutoSaving ? null : _setMemoryAuto),
+            toggleRow('自动记忆', '每轮回复结束后，从你的话里整理长期偏好和事实；会多一次模型调用', _memoryFlags?.auto ?? false,
+                _memoryFlags == null || _memoryFlagsSaving ? null : (on) => _setMemory(auto: on)),
+            toggleRow('主动记忆', '回复的 AI 在对话中发现长期偏好或你的情况时直接记下，不用你说「记住」；不多花调用', _memoryFlags?.proactive ?? false,
+                _memoryFlags == null || _memoryFlagsSaving ? null : (on) => _setMemory(proactive: on)),
           ]),
           const SizedBox(height: 12),
           if (_memoryNote.isNotEmpty)
             note(_memoryNote, error: true)
           else if (_memories.isEmpty)
-            EmptyState(title: '没有记忆', description: _memoryAuto == true ? '对话结束后整理出的偏好，以及你让 Ashira 记住的内容，会出现在这里。' : '让 Ashira 记住的内容会出现在这里；打开自动记忆后，它也会自己整理。'),
+            EmptyState(
+                title: '没有记忆',
+                description: (_memoryFlags?.auto ?? false) || (_memoryFlags?.proactive ?? false)
+                    ? '对话中整理出的偏好，以及你让 Ashira 记住的内容，会出现在这里。'
+                    : '让 Ashira 记住的内容会出现在这里；打开自动记忆或主动记忆后，它也会自己记。'),
           for (final entry in _memories)
             card(Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               Text(entry.key, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500)),

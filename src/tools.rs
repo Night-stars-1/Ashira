@@ -38,13 +38,29 @@ impl Output {
     }
 }
 
+/// Settings that change what the model is told to do on its own; read from config.yml at
+/// every request, so the pages' switches and hand edits apply at once.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Behavior {
+    /// 设置 → 通用 → 主动提问: `ask_user` before work when an open choice matters.
+    pub ask: bool,
+    /// 设置 → 记忆 → 主动记忆: `memory` without being asked, for durable facts.
+    pub remember: bool,
+}
+
+impl Behavior {
+    pub fn current() -> Self {
+        Behavior { ask: crate::config::proactive_questions(), remember: crate::config::memory_proactive() }
+    }
+}
+
 /// Built-in tools in a fixed order, then MCP tools (already sorted by name), so
 /// the cached prompt prefix stays stable.
 /// `interactive` adds `ask_user`, which only the root agent of an attached
 /// session may call; `-p` runs and subagents never see it. `image` adds
-/// `generate_image` (a `modelRoles.image` model is configured). `proactive`
-/// (设置 → 通用 → 主动提问) has `ask_user` asked before work, not only when stuck.
-pub fn definitions(role: Option<crate::subagents::Role>, mcp: &[Value], plugins: &[Value], interactive: bool, image: bool, proactive: bool) -> Value {
+/// `generate_image` (a `modelRoles.image` model is configured). `behavior`
+/// picks when `ask_user` and `memory` are meant to be used.
+pub fn definitions(role: Option<crate::subagents::Role>, mcp: &[Value], plugins: &[Value], interactive: bool, image: bool, behavior: Behavior) -> Value {
     let mut tools = vec![
         json!({
             "name": "bash",
@@ -100,7 +116,11 @@ pub fn definitions(role: Option<crate::subagents::Role>, mcp: &[Value], plugins:
         }),
         json!({
             "name": "memory",
-            "description": "Manage global memory shared across projects and sessions. list reads saved entries; set adds or replaces a key; delete forgets one key. Use set/delete for explicit requests to remember, correct or forget information; automatic consolidation is handled separately after completed turns. Write new keys and values in Simplified Chinese (a short noun phrase as the key, one short sentence as the value; proper names as written), and reuse an existing key as it is. Never store credentials, secrets, sensitive personal information or temporary task state. Saved memory is loaded on every model request; project rules remain separate.",
+            "description": format!("Manage global memory shared across projects and sessions. list reads saved entries; set adds or replaces a key; delete forgets one key. {} Write new keys and values in Simplified Chinese (a short noun phrase as the key, one short sentence as the value; proper names as written), and reuse an existing key as it is. Never store credentials, secrets, sensitive personal information or temporary task state. Saved memory is loaded on every model request; project rules remain separate.", if behavior.remember {
+                "Use set/delete for explicit requests to remember, correct or forget information, and set on your own when the user states a durable preference or fact about themselves or their environment that will matter in other projects (how they like replies, the languages, tools and OS they use); not for project details, task state or your own suggestions."
+            } else {
+                "Use set/delete for explicit requests to remember, correct or forget information; automatic consolidation is handled separately after completed turns."
+            }),
             "input_schema": {
                 "type": "object",
                 "properties": {
@@ -142,7 +162,7 @@ pub fn definitions(role: Option<crate::subagents::Role>, mcp: &[Value], plugins:
         if interactive {
             tools.push(json!({
                 "name": "ask_user",
-                "description": format!("Ask the user one or more questions and wait for the answers. {} Do not use it to confirm routine steps, to ask permission for actions you were already asked to do, or for information available in the repository or through other tools. Question types: `single` (pick one option), `multi` (pick any number of options), `text` (free text). Set `default` to the answer you recommend; the user sees it preselected or prefilled. For choice questions the user may also type an answer that is not an option, and any question may be left unanswered or the whole group skipped.", if proactive {
+                "description": format!("Ask the user one or more questions and wait for the answers. {} Do not use it to confirm routine steps, to ask permission for actions you were already asked to do, or for information available in the repository or through other tools. Question types: `single` (pick one option), `multi` (pick any number of options), `text` (free text). Set `default` to the answer you recommend; the user sees it preselected or prefilled. For choice questions the user may also type an answer that is not an option, and any question may be left unanswered or the whole group skipped.", if behavior.ask {
                     "Call it before creating or changing anything when the request leaves open a choice that changes the result and that tools cannot settle: the format, library or approach (a config file: JSON, YAML, TOML or .env), the scope (which files, which \"old\" logs), names and defaults the user will live with, or a destructive or hard-to-undo step. Look with tools first, then ask once with every open choice in one call, rather than guessing and redoing the work later."
                 } else {
                     "Use only when you cannot proceed safely without the user's decision: ambiguous requirements, a choice between materially different approaches, or missing information you cannot find with tools. Group related questions into one call instead of asking repeatedly."

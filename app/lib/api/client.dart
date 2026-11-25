@@ -199,17 +199,20 @@ class AshiraClient {
 
   Future<McpForm> mcpConfig(String name) async => McpForm.fromJson(await _get('/v1/mcp/config', {'name': name}));
 
-  /// 设置 → 记忆: the saved entries, and whether they are consolidated after every turn.
+  /// 设置 → 记忆: the saved entries and the two memory switches.
   Future<MemoryReport> memory() async => _memoryReport(await _get('/v1/memory'));
 
-  /// config.yml `memory.auto`: consolidate memory after every completed turn.
-  Future<MemoryReport> setMemoryAuto(bool auto) async => _memoryReport(await _post('/v1/memory', {'auto': auto}));
+  /// config.yml `memory.auto` (consolidate after every turn) and `memory.proactive` (the
+  /// replying model saves durable facts unasked); a null one stays as it is.
+  Future<MemoryReport> setMemory({bool? auto, bool? proactive}) async =>
+      _memoryReport(await _post('/v1/memory', {'auto': ?auto, 'proactive': ?proactive}));
 
   static MemoryReport _memoryReport(Object? json) {
     final body = asMap(json);
     return (
       path: str(body['path']),
       auto: body['auto'] == true,
+      proactive: body['proactive'] == true,
       entries: [for (final raw in asList(body['entries'])) MemoryEntry(key: str(asMap(raw)['key']), value: str(asMap(raw)['value']))],
     );
   }

@@ -622,9 +622,9 @@ class MemoryEntry {
   final String key, value;
 }
 
-/// 设置 → 记忆: the saved entries, and whether they are consolidated after every turn
-/// (config.yml `memory.auto`).
-typedef MemoryReport = ({String path, bool auto, List<MemoryEntry> entries});
+/// 设置 → 记忆: the saved entries; [auto] (config.yml `memory.auto`), consolidated after every
+/// turn; [proactive] (`memory.proactive`), the replying model saves durable facts unasked.
+typedef MemoryReport = ({String path, bool auto, bool proactive, List<MemoryEntry> entries});
 
 class SubagentView {
   const SubagentView({required this.blocks, required this.report});
