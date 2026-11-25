@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The App icon's silver wing and wave, as the status bar's one-colour silhouette. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="128"
+    android:viewportHeight="128"
+    android:tint="#FFFFFFFF">
+    <group android:translateY="4">
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:pathData="M36,67C44,56 48,36 62,25Q67,21 73,26L86,37Q92,42 101,35C98,44 91,48 84,46L74,41C75,51 80,63 91,70C71,69 55,59 36,67Z" />
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:pathData="M17,81C31,69 46,67 62,71C80,76 94,80 111,65C103,84 91,94 75,94C56,94 38,80 17,81Z" />
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:pathData="M98,48l5,7l-5,7l-5,-7Z" />
+    </group>
+</vector>

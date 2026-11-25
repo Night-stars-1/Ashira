@@ -5,6 +5,8 @@ import 'package:flutter/foundation.dart';
 import '../api/client.dart';
 import '../api/models.dart';
 import 'app_update.dart';
+import 'display_prefs.dart';
+import 'reply_alerts.dart';
 import 'settings.dart';
 
 const _coordination = {'task', 'wait', 'task_status', 'task_cancel'};
@@ -14,7 +16,15 @@ const _coordination = {'task', 'wait', 'task_status', 'task_cancel'};
 /// `_view` invalidates async work when the shown session changes; `_revision`
 /// detects SSE frames that arrived while a history fetch was in flight.
 class AshiraState extends ChangeNotifier {
-  AshiraState(this.settings) : client = AshiraClient(baseUrl: settings.baseUrl, token: settings.token);
+  AshiraState(this.settings) : client = AshiraClient(baseUrl: settings.baseUrl, token: settings.token) {
+    _alerts = ReplyAlerts(onOpen: (id) {
+      if (id != shownId) unawaited(openSession(id: id));
+    });
+    // 自定义超级岛 switched: the running replies' notification takes it at once.
+    displayPrefs.addListener(_syncAlerts);
+  }
+
+  late final ReplyAlerts _alerts;
 
   final ConnectionSettings settings;
   final AshiraClient client;
@@ -117,7 +127,9 @@ class AshiraState extends ChangeNotifier {
       _server(service);
       if (mine != _view) return;
       final ids = [for (final root in tree) ...root.allSessions.map((item) => item.id)];
-      final previous = await ConnectionSettings.lastSession();
+      // A tapped notification opened the App: its session, else the last one shown.
+      final tapped = await ReplyAlerts.launchSession();
+      final previous = ids.contains(tapped) ? tapped : await ConnectionSettings.lastSession();
       final selected = ids.contains(previous) ? previous : (ids.isEmpty ? null : ids.first);
       if (selected != null) {
         await openSession(id: selected);
@@ -212,6 +224,18 @@ class AshiraState extends ChangeNotifier {
     asking = {...listing.asking.where((id) => id != shownId), if (question != null && shownId.isNotEmpty) shownId};
     archivedSessions = listing.archivedSessions;
     archivedFolders = listing.archivedFolders;
+    _syncAlerts();
+  }
+
+  void _syncAlerts() => _alerts.sync(running: running, asking: asking, shown: shownId, title: _title);
+
+  String _title(String id) {
+    for (final root in tree) {
+      for (final item in root.allSessions) {
+        if (item.id == id) return item.prompt.isEmpty ? '空会话' : item.prompt;
+      }
+    }
+    return 'Ashira';
   }
 
   /// The server announces every list change (`sessions_changed`), including other
@@ -291,6 +315,8 @@ class AshiraState extends ChangeNotifier {
       _apply(view);
       loading = false;
       unawaited(ConnectionSettings.rememberSession(selected));
+      _alerts.seen(selected);
+      _syncAlerts();
       _connect(selected, mine);
       if (create) await refresh();
       _changed();
@@ -319,6 +345,12 @@ class AshiraState extends ChangeNotifier {
     turnId = view.turnId;
     confirm = view.confirm;
     question = view.question;
+    // A question or an end missed while the event stream reconnected shows here first.
+    if (shownId.isNotEmpty) {
+      running = {...running.where((id) => id != shownId), if (turnId != null) shownId};
+      asking = {...asking.where((id) => id != shownId), if (turnId != null && question != null) shownId};
+      _syncAlerts();
+    }
   }
 
   Future<void> _syncHistory() async {
@@ -457,6 +489,7 @@ class AshiraState extends ChangeNotifier {
       question = null;
       _clearError();
       running = {...running, shownId};
+      _syncAlerts();
       _changed();
       return;
     }
@@ -512,10 +545,14 @@ class AshiraState extends ChangeNotifier {
       case 'question':
         question = QuestionRequest.fromJson(event.raw);
         asking = {...asking, shownId};
+        final asked = question?.questions.map((item) => item.question).join('\n') ?? '';
+        _alerts.asked(shownId, sessionName, asked);
+        _syncAlerts();
       case 'question_cancelled':
         if (question?.id == (event.raw['id'] as num?)?.toInt()) {
           question = null;
           asking = {...asking}..remove(shownId);
+          _syncAlerts();
         }
       case 'subagent':
         final failure = event.field('error');
@@ -541,6 +578,9 @@ class AshiraState extends ChangeNotifier {
           error = failure ?? '回合失败';
           errorRetry = true;
         }
+        final answer = current is AssistantBlock ? current.text : '';
+        _alerts.finished(shownId, sessionName, error: event.raw['ok'] == false ? failure ?? '回合失败' : null, answer: answer);
+        _syncAlerts();
         final mine = _view;
         _syncHistory().catchError((Object reason) {
           if (mine == _view && error.isEmpty) _fail(reason, '无法加载会话');
@@ -635,6 +675,7 @@ class AshiraState extends ChangeNotifier {
     if (pending == null || turn == null || shownId.isEmpty) return;
     question = null;
     asking = {...asking}..remove(shownId);
+    _syncAlerts();
     _changed();
     await _run(() => client.answer(shownId, turn, pending.id, answers));
   }
@@ -730,6 +771,8 @@ class AshiraState extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
+    displayPrefs.removeListener(_syncAlerts);
+    _alerts.dispose();
     _notify?.cancel();
     _listTimer?.cancel();
     _closeEvents();

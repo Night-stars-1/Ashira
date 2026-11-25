@@ -4,6 +4,7 @@ import '../api/client.dart';
 import '../api/models.dart';
 import '../state/ashira_state.dart';
 import '../state/display_prefs.dart';
+import '../state/reply_alerts.dart';
 import 'about_settings.dart';
 import 'approval_settings.dart';
 import 'dialogs.dart';
@@ -329,6 +330,17 @@ class _SettingsState extends State<_Settings> {
               ShellSettings(client: _client, state: widget.state),
             ]),
           ),
+          if (ReplyAlerts.supported) ...[
+            const SizedBox(height: 16),
+            sectionTitle('通知'),
+            ListenableBuilder(
+              listenable: displayPrefs,
+              builder: (context, _) => SettingsCard(children: [
+                toggleRow('自定义超级岛样式', '小米澎湃 OS：回复中的岛显示大岛、小岛样式，提问和完成时自动展开。需要小米授权，未授权时系统仍显示默认样式',
+                    displayPrefs.customIsland, displayPrefs.setCustomIsland),
+              ]),
+            ),
+          ],
         ],
       'about' => [AboutSettings(state: widget.state)],
       _ => [

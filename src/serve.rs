@@ -128,8 +128,9 @@ pub async fn start(shared: Arc<Shared>, listener: TcpListener, token: String, we
 /// Turns one runtime's agent events into frames for the shared event stream.
 async fn pump(hub: Arc<Hub>, runtime: Arc<Runtime>, mut events: tokio::sync::mpsc::UnboundedReceiver<Event>) {
     while let Some(event) = events.recv().await {
-        // A turn starting or ending changes which sessions the list marks as running.
-        let listed = matches!(event, Event::WebStarted | Event::BackgroundTurnStarted { .. } | Event::Done(_));
+        // A turn starting or ending, or asking the user, changes which sessions the list
+        // marks as running or waiting for an answer.
+        let listed = matches!(event, Event::WebStarted | Event::BackgroundTurnStarted { .. } | Event::Done(_) | Event::Question { .. } | Event::QuestionCancelled(_));
         {
             let mut routing = runtime.routing.lock().expect("routing");
             if let Some(frame) = encode(&runtime.shared, &mut routing, event) { let _ = hub.events.send(frame); }
@@ -1352,6 +1353,7 @@ impl Hub {
             let question = op.question.take().expect("matching question");
             let result = question.reply.send(answers).map_err(|_| "question already finished".to_owned());
             let _ = self.events.send(op.frame(json!({"type": "question_cancelled", "id": id})));
+            self.sessions_changed();
             return result;
         }
         if action != "confirm" { return Err("unknown route".into()); }

@@ -1,6 +1,8 @@
 package dev.ashira.ashira_app
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
@@ -13,9 +15,44 @@ import java.io.File
 class MainActivity : FlutterActivity() {
     /// The `allowInstall` call waiting for the user to come back from the permission page.
     private var pendingAllow: MethodChannel.Result? = null
+    /// Replies: the live update and alerts (see [ReplyNotifications]); tells Dart which
+    /// session a tapped notification is about.
+    private var replies: MethodChannel? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        replies = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "dev.ashira/replies").apply {
+            setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "update" -> {
+                        ReplyNotifications.update(this@MainActivity, call.argument<List<Map<String, Any?>>>("sessions") ?: emptyList(), call.argument<Boolean>("customIsland") ?: false)
+                        result.success(null)
+                    }
+                    "alert" -> {
+                        ReplyNotifications.alert(this@MainActivity, call.argument("id")!!, call.argument("title")!!, call.argument("text")!!, call.argument("detail") ?: "",
+                            done = call.argument<Boolean>("done") ?: true, chip = call.argument("chip") ?: "已完成", custom = call.argument<Boolean>("customIsland") ?: false)
+                        result.success(null)
+                    }
+                    "cancel" -> {
+                        ReplyNotifications.cancel(this@MainActivity, call.argument("id")!!)
+                        result.success(null)
+                    }
+                    // Android 13+ asks once; later the switch is in the App's settings.
+                    "permission" -> {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), NOTIFICATIONS)
+                        }
+                        result.success(null)
+                    }
+                    // The session the notification that opened the App is about, once.
+                    "launchSession" -> {
+                        result.success(intent?.getStringExtra(ReplyNotifications.SESSION))
+                        intent?.removeExtra(ReplyNotifications.SESSION)
+                    }
+                    else -> result.notImplemented()
+                }
+            }
+        }
         // In-app update: hands a downloaded APK to the system installer.
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "dev.ashira/update").setMethodCallHandler { call, result ->
             when (call.method) {
@@ -59,7 +96,20 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    /// A notification tapped while the App is open (`singleTop`): show that session.
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        intent.getStringExtra(ReplyNotifications.SESSION)?.let { replies?.invokeMethod("open", it) }
+    }
+
+    override fun onDestroy() {
+        // The App is gone (swiped away): nothing would end the live update any more.
+        if (isFinishing) ReplyNotifications.stop(this)
+        super.onDestroy()
+    }
+
     private companion object {
         const val ALLOW_INSTALL = 4021
+        const val NOTIFICATIONS = 4022
     }
 }
