@@ -63,6 +63,13 @@ object ReplyNotifications {
         refresh(context.applicationContext)
     }
 
+    /// Posts the live notification again as it is: with the custom style on, for HyperOS's
+    /// island to take what changed while the App was in front.
+    fun repost(context: Context) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || !custom || !active) return
+        refresh(context.applicationContext)
+    }
+
     /// Ends it all now (the App is closing): ended replies still on the island go to the shade.
     fun stop(context: Context) {
         handler.removeCallbacksAndMessages(null)
@@ -148,12 +155,14 @@ object ReplyNotifications {
         context.getSystemService(NotificationManager::class.java).cancel(LIVE_ID)
     }
 
-    /// Whether the live update shows as the status bar chip (the island) right now.
+    /// Whether the island shows the replies right now: the system chip (the live update was
+    /// promoted), or with the custom style the HyperOS island window itself.
     private fun islandShown(context: Context): Boolean =
-        Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA &&
-            context.getSystemService(NotificationManager::class.java).activeNotifications.any {
-                it.id == LIVE_ID && it.tag == null && (it.notification.flags and Notification.FLAG_PROMOTED_ONGOING) != 0
-            }
+        context.getSystemService(NotificationManager::class.java).activeNotifications.any {
+            it.id == LIVE_ID && it.tag == null && (
+                (Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA && (it.notification.flags and Notification.FLAG_PROMOTED_ONGOING) != 0) ||
+                    it.notification.extras.containsKey("miui.focus.param"))
+        }
 
     /// A pop-up alert, or with [RESULT_CHANNEL] a silent entry in the shade.
     private fun notify(context: Context, id: String, channel: String, title: String, text: String, detail: String) {
@@ -176,9 +185,11 @@ object ReplyNotifications {
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setCategory(Notification.CATEGORY_PROGRESS)
-            // Android 16: ask for the promotion to a Live Update (`setRequestPromotedOngoing`);
-            // HyperOS shows it as its island.
-            .addExtras(Bundle().apply { putBoolean("android.requestPromotedOngoing", true) })
+        // Android 16: ask for the promotion to a Live Update (`setRequestPromotedOngoing`),
+        // shown as the status bar chip (HyperOS: its default island). Not with the custom
+        // style: HyperOS draws that in its own island window, and not for a notification the
+        // chip already shows.
+        if (!custom) builder.addExtras(Bundle().apply { putBoolean("android.requestPromotedOngoing", true) })
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) builder.setForegroundServiceBehavior(Notification.FOREGROUND_SERVICE_IMMEDIATE)
         if (finished != null) {
             builder.setContentTitle(finished.title)
@@ -208,7 +219,7 @@ object ReplyNotifications {
             .setContentIntent(open(context, first["id"] as String))
         // The chip's text, in place of the elapsed time, while an answer is wanted.
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA && asking.isNotEmpty()) builder.setShortCriticalText("待回答")
-        if (custom) builder.addExtras(island(context, title, text, if (asking.isEmpty()) "回复中" else "待回答", since.takeIf { asking.isEmpty() }, expand = asking.isNotEmpty()))
+        if (custom) builder.addExtras(island(context, title, text, if (asking.isEmpty()) "回复中" else "待回答", since, expand = asking.isNotEmpty()))
         return builder.build()
     }
 
@@ -227,6 +238,9 @@ object ReplyNotifications {
             .put("protocol", 1)
             .put("business", "ai_reply")
             .put("updatable", true)
+            // The live notification comes back with each reply after the last one ended; the
+            // default `close` keeps an island once cancelled from showing again.
+            .put("reopen", "reopen")
             .put("islandFirstFloat", expand)
             .put("enableFloat", expand)
             .put("ticker", state)

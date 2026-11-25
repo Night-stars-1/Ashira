@@ -102,6 +102,13 @@ class MainActivity : FlutterActivity() {
         intent.getStringExtra(ReplyNotifications.SESSION)?.let { replies?.invokeMethod("open", it) }
     }
 
+    /// HyperOS leaves out of its island what changes while the App is in front, and does
+    /// not look again when it goes: the live notification is posted anew then.
+    override fun onStop() {
+        super.onStop()
+        ReplyNotifications.repost(this)
+    }
+
     override fun onDestroy() {
         // The App is gone (swiped away): nothing would end the live update any more.
         if (isFinishing) ReplyNotifications.stop(this)
