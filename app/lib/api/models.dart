@@ -622,6 +622,10 @@ class MemoryEntry {
   final String key, value;
 }
 
+/// 设置 → 记忆: the saved entries, and whether they are consolidated after every turn
+/// (config.yml `memory.auto`).
+typedef MemoryReport = ({String path, bool auto, List<MemoryEntry> entries});
+
 class SubagentView {
   const SubagentView({required this.blocks, required this.report});
   final List<Block> blocks;

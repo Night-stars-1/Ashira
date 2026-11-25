@@ -54,6 +54,24 @@ const servers = ref<McpServer[]>([])
 const mcpNote = ref('')
 const memories = ref<MemoryEntry[]>([])
 const memoryNote = ref('')
+/** config.yml `memory.auto`; null until read. */
+const memoryAuto = ref<boolean | null>(null)
+const memoryAutoSaving = ref(false)
+
+async function setMemoryAuto(auto: boolean) {
+  if (memoryAutoSaving.value) return
+  memoryAutoSaving.value = true
+  memoryNote.value = ''
+  try {
+    const report = await api.setMemoryAuto(auto)
+    memoryAuto.value = report.auto
+    memories.value = report.entries
+  } catch (reason) {
+    memoryNote.value = reason instanceof Error ? reason.message : '保存失败'
+  } finally {
+    memoryAutoSaving.value = false
+  }
+}
 const detail = ref<McpServer | null>(null)
 
 function failure(status: string): string {
@@ -157,9 +175,11 @@ async function load() {
   }
   if (typeof memoryReport === 'string') {
     memories.value = []
+    memoryAuto.value = null
     memoryNote.value = memoryReport
   } else {
     memories.value = memoryReport.entries
+    memoryAuto.value = memoryReport.auto
     memoryNote.value = ''
   }
 }
@@ -290,8 +310,17 @@ watch(open, (value) => { if (value) void load() })
               </template>
             </template>
             <template v-else>
+              <div class="rounded-xl bg-muted/60">
+                <label class="flex items-center gap-3 px-4 py-3.5">
+                  <span class="min-w-0 flex-1">
+                    <span class="block text-sm">自动记忆</span>
+                    <span class="block text-xs text-muted-foreground">每轮回复结束后，从你的话里整理长期偏好和事实；会多一次模型调用</span>
+                  </span>
+                  <Switch :model-value="memoryAuto ?? false" :disabled="memoryAuto === null || memoryAutoSaving" @update:model-value="setMemoryAuto" />
+                </label>
+              </div>
               <p v-if="memoryNote" class="text-sm text-destructive">{{ memoryNote }}</p>
-              <Empty v-else-if="memories.length === 0" title="没有记忆" description="对话里让 Ashira 记住的内容会出现在这里。" />
+              <Empty v-else-if="memories.length === 0" title="没有记忆" :description="memoryAuto ? '对话结束后整理出的偏好，以及你让 Ashira 记住的内容，会出现在这里。' : '让 Ashira 记住的内容会出现在这里；打开自动记忆后，它也会自己整理。'" />
               <div v-for="entry in memories" :key="entry.key" class="rounded-lg border px-3 py-2">
                 <p class="text-sm font-medium">{{ entry.key }}</p>
                 <p class="mt-1 whitespace-pre-wrap text-sm text-muted-foreground">{{ entry.value }}</p>

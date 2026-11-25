@@ -107,6 +107,16 @@ function approvalMode(value: unknown): ApprovalMode | undefined {
   return value === 'manual' || value === 'auto' || value === 'full' ? value : undefined
 }
 
+function memoryReport(body: unknown): MemoryReport {
+  const value = record(body)
+  const entries = Array.isArray(value.entries) ? value.entries.flatMap((item): MemoryEntry[] => {
+    if (!item || typeof item !== 'object') return []
+    const row = record(item)
+    return [{ key: text(row.key), value: text(row.value) }]
+  }) : []
+  return { path: text(value.path), auto: value.auto === true, entries }
+}
+
 function approvalSettings(body: unknown): ApprovalSettings {
   const value = record(body)
   return { default: approvalMode(value.default) ?? 'manual', hidden: value.hidden === true, forced: value.forced === true, questions: value.questions !== false }
@@ -148,6 +158,8 @@ export type BrowseListing = { path: string; parent: string | null; entries: Brow
 export type McpTool = { name: string; description: string }
 export type McpServer = { name: string; status: string; kind: string; source: string; target: string; tools: McpTool[] }
 export type MemoryEntry = { key: string; value: string }
+/** 设置 → 记忆: the saved entries, and whether they are consolidated after every turn (`memory.auto`). */
+export type MemoryReport = { path: string; auto: boolean; entries: MemoryEntry[] }
 export type McpForm = { name: string; type: 'stdio' | 'http' | 'sse'; command: string; args: string; url: string; headers: string }
 export type ModelItem = { selector: string; provider: string; id: string; name: string | null; context: number; input: number | null; output: number | null; efforts: string[]; fast: boolean }
 /** A server update's step, and while a file downloads, bytes so far and its size when known. */
@@ -568,15 +580,9 @@ export const api = {
     }) : []
     return { sessions: number(body.sessions), buckets }
   },
-  memory: async () => {
-    const body = record(await request('/v1/memory'))
-    const entries = Array.isArray(body.entries) ? body.entries.flatMap((item): MemoryEntry[] => {
-      if (!item || typeof item !== 'object') return []
-      const row = record(item)
-      return [{ key: text(row.key), value: text(row.value) }]
-    }) : []
-    return { path: text(body.path), entries }
-  },
+  memory: async () => memoryReport(await request('/v1/memory')),
+  /** config.yml `memory.auto`: consolidate memory after every completed turn. */
+  setMemoryAuto: async (auto: boolean) => memoryReport(await request('/v1/memory', { method: 'POST', body: JSON.stringify({ auto }) })),
   modelConfig: async (): Promise<ModelConfig> => {
     const body = record(await request('/v1/model-config'))
     const providers = Array.isArray(body.providers) ? body.providers.flatMap((item): ProviderConfig[] => {

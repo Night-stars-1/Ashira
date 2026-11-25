@@ -43,6 +43,9 @@ class _SettingsState extends State<_Settings> {
   bool _mcpFailed = false;
   List<MemoryEntry> _memories = [];
   String _memoryNote = '';
+  /// config.yml `memory.auto`; null until read.
+  bool? _memoryAuto;
+  bool _memoryAutoSaving = false;
   String _mcpError = '';
   bool _loading = true;
 
@@ -74,13 +77,35 @@ class _SettingsState extends State<_Settings> {
       }),
       client.memory().then((report) {
         _memories = report.entries;
+        _memoryAuto = report.auto;
         _memoryNote = '';
       }).catchError((Object error) {
         _memories = [];
+        _memoryAuto = null;
         _memoryNote = errorText(error, '读取失败');
       }),
     ]);
     if (mounted) setState(() => _loading = false);
+  }
+
+  Future<void> _setMemoryAuto(bool auto) async {
+    if (_memoryAutoSaving) return;
+    setState(() {
+      _memoryAutoSaving = true;
+      _memoryNote = '';
+    });
+    try {
+      final report = await _client.setMemoryAuto(auto);
+      if (!mounted) return;
+      setState(() {
+        _memoryAuto = report.auto;
+        _memories = report.entries;
+      });
+    } catch (error) {
+      if (mounted) setState(() => _memoryNote = errorText(error, '保存失败'));
+    } finally {
+      if (mounted) setState(() => _memoryAutoSaving = false);
+    }
   }
 
   static String _statusLabel(String status) => switch (status) {
@@ -198,7 +223,7 @@ class _SettingsState extends State<_Settings> {
           padding: const EdgeInsets.only(left: 4, bottom: 6),
           child: Text(text, style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: scheme.mutedForeground)),
         );
-    Widget toggleRow(String title, String description, bool value, ValueChanged<bool> onChanged) => Row(children: [
+    Widget toggleRow(String title, String description, bool value, ValueChanged<bool>? onChanged) => Row(children: [
           Expanded(
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               Text(title, style: const TextStyle(fontSize: 14)),
@@ -301,7 +326,15 @@ class _SettingsState extends State<_Settings> {
             ),
         ],
       'memory' => [
-          if (_memoryNote.isNotEmpty) note(_memoryNote, error: true) else if (_memories.isEmpty) const EmptyState(title: '没有记忆', description: '对话里让 Ashira 记住的内容会出现在这里。'),
+          SettingsCard(children: [
+            toggleRow('自动记忆', '每轮回复结束后，从你的话里整理长期偏好和事实；会多一次模型调用', _memoryAuto ?? false,
+                _memoryAuto == null || _memoryAutoSaving ? null : _setMemoryAuto),
+          ]),
+          const SizedBox(height: 12),
+          if (_memoryNote.isNotEmpty)
+            note(_memoryNote, error: true)
+          else if (_memories.isEmpty)
+            EmptyState(title: '没有记忆', description: _memoryAuto == true ? '对话结束后整理出的偏好，以及你让 Ashira 记住的内容，会出现在这里。' : '让 Ashira 记住的内容会出现在这里；打开自动记忆后，它也会自己整理。'),
           for (final entry in _memories)
             card(Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               Text(entry.key, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500)),

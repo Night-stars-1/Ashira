@@ -382,6 +382,12 @@ async fn dispatch(hub: &Arc<Hub>, method: &str, path: &str, query: &str, body: &
             Ok(Response::Json { status: 200, body: crate::mcp::config::entry(&hub.shared.cwd(), &name)? })
         }
         ("GET", "/v1/memory") => Ok(Response::Json { status: 200, body: memory(hub).await? }),
+        ("POST", "/v1/memory") => {
+            // 设置 → 记忆 → 自动记忆: config.yml `memory.auto`, read again at every turn.
+            let auto = json_body.get("auto").and_then(Value::as_bool).ok_or("auto is required")?;
+            crate::config::set_memory_auto(auto).await?;
+            Ok(Response::Json { status: 200, body: memory(hub).await? })
+        }
         ("POST", "/v1/restart") => {
             // Turns in progress would be cut off mid-answer.
             if hub.busy() { return Err("还有会话正在回复，结束后再重启".into()); }
@@ -719,10 +725,12 @@ fn mcp_entry(body: &Value) -> Result<(String, Value, bool), String> {
     Ok((name, Value::Object(entry), project))
 }
 
+/// 设置 → 记忆: the saved entries, and whether they are consolidated after every turn.
 async fn memory(hub: &Hub) -> Result<Value, String> {
     let snapshot = hub.shared.memory.snapshot().await?;
     Ok(json!({
         "path": hub.shared.memory.path().display().to_string(),
+        "auto": crate::config::memory_auto_enabled().await?,
         "entries": snapshot.entries.iter().map(|(key, value)| json!({"key": key, "value": value})).collect::<Vec<_>>(),
     }))
 }

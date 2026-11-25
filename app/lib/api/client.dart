@@ -199,10 +199,17 @@ class AshiraClient {
 
   Future<McpForm> mcpConfig(String name) async => McpForm.fromJson(await _get('/v1/mcp/config', {'name': name}));
 
-  Future<({String path, List<MemoryEntry> entries})> memory() async {
-    final body = asMap(await _get('/v1/memory'));
+  /// 设置 → 记忆: the saved entries, and whether they are consolidated after every turn.
+  Future<MemoryReport> memory() async => _memoryReport(await _get('/v1/memory'));
+
+  /// config.yml `memory.auto`: consolidate memory after every completed turn.
+  Future<MemoryReport> setMemoryAuto(bool auto) async => _memoryReport(await _post('/v1/memory', {'auto': auto}));
+
+  static MemoryReport _memoryReport(Object? json) {
+    final body = asMap(json);
     return (
       path: str(body['path']),
+      auto: body['auto'] == true,
       entries: [for (final raw in asList(body['entries'])) MemoryEntry(key: str(asMap(raw)['key']), value: str(asMap(raw)['value']))],
     );
   }
