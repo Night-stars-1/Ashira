@@ -314,14 +314,14 @@ watch(open, (value) => { if (value) void load() })
                 <label class="flex items-center gap-3 px-4 py-3.5">
                   <span class="min-w-0 flex-1">
                     <span class="block text-sm">自动记忆</span>
-                    <span class="block text-xs text-muted-foreground">每轮回复结束后，从你的话里整理长期偏好和事实；会多一次模型调用</span>
+                    <span class="block text-xs text-muted-foreground">每轮回复结束后，从你的话里整理长期偏好和事实</span>
                   </span>
                   <Switch :model-value="memoryFlags?.auto ?? false" :disabled="!memoryFlags || memoryFlagsSaving" @update:model-value="(on) => setMemory({ auto: on })" />
                 </label>
                 <label class="flex items-center gap-3 px-4 py-3.5">
                   <span class="min-w-0 flex-1">
                     <span class="block text-sm">主动记忆</span>
-                    <span class="block text-xs text-muted-foreground">回复的 AI 在对话中发现长期偏好或你的情况时直接记下，不用你说「记住」；不多花调用</span>
+                    <span class="block text-xs text-muted-foreground">回复的 AI 在对话中发现长期偏好或你的情况时直接记下，不用你说「记住」</span>
                   </span>
                   <Switch :model-value="memoryFlags?.proactive ?? false" :disabled="!memoryFlags || memoryFlagsSaving" @update:model-value="(on) => setMemory({ proactive: on })" />
                 </label>

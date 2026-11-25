@@ -124,7 +124,7 @@ class _ApprovalSettingsCardState extends State<ApprovalSettingsCard> {
       ]),
       Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
         Row(children: [
-          label('主动提问', '开始前遇到格式、方案、范围等会影响结果的选择先问你；关闭后模型自己选常规方案，只在无法决定时才问'),
+          label('主动提问', '开始前遇到格式、方案、范围等会影响结果的选择先问你'),
           Toggle(label: '主动提问', value: settings == null || settings.questions, onChanged: ready ? (on) => _save(questions: on) : null),
         ]),
         if (_error.isNotEmpty) Padding(padding: const EdgeInsets.only(top: 8), child: Text(_error, style: TextStyle(fontSize: 13, color: scheme.error))),

@@ -67,7 +67,7 @@ async function save(change: { default?: ApprovalMode; hidden?: boolean; question
   <label class="flex items-center gap-3 px-4 py-3.5">
     <span class="min-w-0 flex-1">
       <span class="block text-sm">主动提问</span>
-      <span class="block text-xs text-muted-foreground">开始前遇到格式、方案、范围等会影响结果的选择先问你；关闭后模型自己选常规方案，只在无法决定时才问</span>
+      <span class="block text-xs text-muted-foreground">开始前遇到格式、方案、范围等会影响结果的选择先问你</span>
     </span>
     <Switch :model-value="settings ? settings.questions : true" :disabled="!settings || saving" @update:model-value="(on) => save({ questions: on })" />
   </label>
