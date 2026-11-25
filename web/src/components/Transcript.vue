@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, nextTick, reactive, ref, watch } from 'vue'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Button } from '@/components/ui/button'
 import { ArrowDown, Bot, ChevronDown, ChevronRight, ChevronUp, LoaderCircle, SquareTerminal } from '@lucide/vue'
@@ -109,6 +109,15 @@ const rows = computed<Row[]>(() => {
 const toggledWork = reactive(new Map<number, boolean>())
 function workOpen(key: number, reply: Turn) {
   return toggledWork.get(key) ?? reply.live
+}
+/** Folding from the stuck header would leave the reader far below the reply; bring its
+ *  header back into view instead. */
+function toggleWork(key: number, reply: Turn, event: MouseEvent) {
+  const header = event.currentTarget as HTMLElement
+  const card = header.parentElement!
+  const stuck = header.getBoundingClientRect().top - card.getBoundingClientRect().top > 1
+  toggledWork.set(key, !workOpen(key, reply))
+  if (stuck) void nextTick(() => card.scrollIntoView({ block: 'nearest' }))
 }
 function duration(ms: number) {
   const seconds = Math.round(ms / 1000)
@@ -253,19 +262,22 @@ watch(content, (body, _previous, onCleanup) => {
           {{ row.block.text }}
         </div>
         <div v-else-if="'reply' in row" class="flex flex-col gap-2">
-          <div v-if="row.reply.work.length" class="overflow-hidden rounded-lg border text-sm">
+          <!-- `overflow-clip`, not `hidden`: it rounds the corners without becoming a scroll
+               container, so the open header sticks to the top of the transcript. -->
+          <div v-if="row.reply.work.length" class="overflow-clip rounded-lg border text-sm">
             <button
               type="button"
               class="flex w-full items-center gap-1.5 px-3 py-2 text-left text-muted-foreground hover:text-foreground focus-visible:text-foreground focus-visible:outline-none"
+              :class="workOpen(row.key, row.reply) && 'sticky top-0 z-10 border-b bg-background'"
               :aria-expanded="workOpen(row.key, row.reply)"
-              @click="toggledWork.set(row.key, !workOpen(row.key, row.reply))"
+              @click="toggleWork(row.key, row.reply, $event)"
             >
               <ChevronRight aria-hidden="true" class="size-3.5 shrink-0 transition-transform motion-reduce:transition-none" :class="workOpen(row.key, row.reply) && 'rotate-90'" />
               <LoaderCircle v-if="row.reply.live" aria-hidden="true" class="size-3.5 shrink-0 motion-safe:animate-spin" />
               <span class="font-medium">{{ row.reply.live ? '正在思考' : '思考过程' }}</span>
               <span class="text-xs tabular-nums opacity-75">{{ row.reply.steps }} 步<template v-if="row.reply.durationMs"> · 用时 {{ duration(row.reply.durationMs) }}</template></span>
             </button>
-            <div v-if="workOpen(row.key, row.reply)" class="flex flex-col gap-2 border-t px-3 py-2">
+            <div v-if="workOpen(row.key, row.reply)" class="flex flex-col gap-2 px-3 py-2">
               <template v-for="(part, partIndex) in row.reply.work" :key="partIndex">
                 <div v-if="part.type === 'reasoning' && !longReasoning(part.text)" class="rounded-lg bg-muted px-3 py-2 text-sm italic text-muted-foreground whitespace-pre-wrap">{{ part.text }}</div>
                 <div v-else-if="part.type === 'reasoning'" class="overflow-hidden rounded-lg bg-muted text-sm text-muted-foreground">

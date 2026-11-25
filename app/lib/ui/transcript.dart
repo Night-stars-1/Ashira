@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 
 import '../api/models.dart';
 import '../state/display_prefs.dart';
@@ -287,60 +288,137 @@ class _TurnView extends StatefulWidget {
 class _TurnViewState extends State<_TurnView> {
   /// The user's choice; `null` follows the reply (open while live).
   bool? _toggled;
+  /// How far the open header has moved down its card to stay at the top of the list.
+  final _stuck = ValueNotifier<double>(0);
+  final _card = GlobalKey();
+  final _header = GlobalKey();
+  ScrollPosition? _position;
+
+  bool get _open => _toggled ?? widget.turn.live;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final position = Scrollable.maybeOf(context)?.position;
+    if (position == _position) return;
+    _position?.removeListener(_follow);
+    _position = position?..addListener(_follow);
+  }
+
+  @override
+  void dispose() {
+    _position?.removeListener(_follow);
+    _stuck.dispose();
+    super.dispose();
+  }
+
+  /// The header stays at the top of the list while the rest of its open card is in view:
+  /// moved down by as much as the card has scrolled above the top, never past the card's end.
+  /// Worked out from the scroll offset, which is already the new one when the list scrolls;
+  /// painted positions would still be the last frame's.
+  void _follow() {
+    final position = _position;
+    final card = _card.currentContext?.findRenderObject() as RenderBox?;
+    final header = _header.currentContext?.findRenderObject() as RenderBox?;
+    final viewport = card == null ? null : RenderAbstractViewport.maybeOf(card);
+    if (!_open || position == null || !position.hasPixels || card == null || header == null || viewport == null || !card.hasSize || !header.hasSize) {
+      _stuck.value = 0;
+      return;
+    }
+    // The header's place in the card before it is moved: inside the card's border.
+    final inset = MatrixUtils.transformPoint(header.getTransformTo(card), Offset.zero).dy - _stuck.value;
+    final top = viewport.getOffsetToReveal(card, 0).offset - position.pixels + inset;
+    _stuck.value = (-top).clamp(0, (card.size.height - 2 * inset - header.size.height).clamp(0, double.infinity));
+  }
+
+  void _toggle() {
+    final stuck = _stuck.value > 0;
+    setState(() => _toggled = !_open);
+    // Folding from the stuck header would leave the reader far below the reply; bring
+    // its header back into view instead.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _follow();
+      final card = _card.currentContext;
+      if (stuck && card != null) Scrollable.ensureVisible(card, alignmentPolicy: ScrollPositionAlignmentPolicy.keepVisibleAtStart);
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
     final turn = widget.turn;
     final scheme = Theme.of(context).colorScheme;
-    final open = _toggled ?? turn.live;
+    final open = _open;
     final muted = TextStyle(fontSize: 12, color: scheme.mutedForeground.withValues(alpha: .75), fontFeatures: const [FontFeature.tabularFigures()]);
+    // The card grows and shrinks (streaming, folding) without the list scrolling.
+    if (open) WidgetsBinding.instance.addPostFrameCallback((_) { if (mounted) _follow(); });
+    final header = ValueListenableBuilder<double>(
+      valueListenable: _stuck,
+      builder: (context, stuck, child) => Transform.translate(
+        offset: Offset(0, stuck),
+        // A Material, not a painted box: the tap ripple draws on it, above the work below.
+        child: Material(
+          type: stuck > 0 ? MaterialType.canvas : MaterialType.transparency,
+          color: stuck > 0 ? Theme.of(context).scaffoldBackgroundColor : null,
+          shape: stuck > 0 ? Border(bottom: BorderSide(color: scheme.border)) : null,
+          child: child,
+        ),
+      ),
+      child: InkWell(
+        key: _header,
+        onTap: _toggle,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          child: Row(children: [
+            AnimatedRotation(turns: open ? .25 : 0, duration: const Duration(milliseconds: 150), child: Icon(Icons.chevron_right, size: 14, color: scheme.mutedForeground)),
+            const SizedBox(width: 6),
+            if (turn.live) ...[
+              SizedBox.square(dimension: 12, child: CircularProgressIndicator(strokeWidth: 1.5, color: scheme.mutedForeground)),
+              const SizedBox(width: 6),
+            ],
+            Text(turn.live ? '正在思考' : '思考过程', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w500, color: scheme.mutedForeground)),
+            const SizedBox(width: 6),
+            Text('${turn.steps} 步${turn.durationMs != null && turn.durationMs! > 0 ? ' · 用时 ${_duration(turn.durationMs!)}' : ''}', style: muted),
+          ]),
+        ),
+      ),
+    );
     return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
       if (turn.work.isNotEmpty)
-        Container(
-          margin: EdgeInsets.only(bottom: turn.answer.isEmpty ? 0 : 8),
-          decoration: BoxDecoration(border: Border.all(color: scheme.border), borderRadius: BorderRadius.circular(radius)),
-          clipBehavior: Clip.antiAlias,
-          child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-            InkWell(
-              onTap: () => setState(() => _toggled = !open),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                child: Row(children: [
-                  AnimatedRotation(turns: open ? .25 : 0, duration: const Duration(milliseconds: 150), child: Icon(Icons.chevron_right, size: 14, color: scheme.mutedForeground)),
-                  const SizedBox(width: 6),
-                  if (turn.live) ...[
-                    SizedBox.square(dimension: 12, child: CircularProgressIndicator(strokeWidth: 1.5, color: scheme.mutedForeground)),
-                    const SizedBox(width: 6),
-                  ],
-                  Text(turn.live ? '正在思考' : '思考过程', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w500, color: scheme.mutedForeground)),
-                  const SizedBox(width: 6),
-                  Text('${turn.steps} 步${turn.durationMs != null && turn.durationMs! > 0 ? ' · 用时 ${_duration(turn.durationMs!)}' : ''}', style: muted),
-                ]),
+        Padding(
+          padding: EdgeInsets.only(bottom: turn.answer.isEmpty ? 0 : 8),
+          child: Container(
+            key: _card,
+            decoration: BoxDecoration(border: Border.all(color: scheme.border), borderRadius: BorderRadius.circular(radius)),
+            clipBehavior: Clip.antiAlias,
+            // Laid out bottom-up so the header, listed last, paints over the work and takes
+            // taps first while it is moved down over it.
+            child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, verticalDirection: VerticalDirection.up, children: [
+              AnimatedSize(
+                duration: const Duration(milliseconds: 150),
+                alignment: Alignment.topCenter,
+                child: open
+                    ? Container(
+                        decoration: BoxDecoration(border: Border(top: BorderSide(color: scheme.border))),
+                        padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+                        child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+                          for (final (index, part) in turn.work.indexed)
+                            Padding(
+                              padding: const EdgeInsets.only(bottom: 8),
+                              child: switch (part) {
+                                // The last part of a live reply with no answer yet is still being written.
+                                TextPart(reasoning: true, :final text) => _Reasoning(text, streaming: turn.live && turn.answer.isEmpty && index == turn.work.length - 1),
+                                TextPart(:final text) => Markdown(text),
+                                ToolPart() => ToolCard(part),
+                              },
+                            ),
+                        ]),
+                      )
+                    : const SizedBox(width: double.infinity),
               ),
-            ),
-            AnimatedSize(
-              duration: const Duration(milliseconds: 150),
-              alignment: Alignment.topCenter,
-              child: open
-                  ? Container(
-                      decoration: BoxDecoration(border: Border(top: BorderSide(color: scheme.border))),
-                      padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
-                      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-                        for (final (index, part) in turn.work.indexed)
-                          Padding(
-                            padding: const EdgeInsets.only(bottom: 8),
-                            child: switch (part) {
-                              // The last part of a live reply with no answer yet is still being written.
-                              TextPart(reasoning: true, :final text) => _Reasoning(text, streaming: turn.live && turn.answer.isEmpty && index == turn.work.length - 1),
-                              TextPart(:final text) => Markdown(text),
-                              ToolPart() => ToolCard(part),
-                            },
-                          ),
-                      ]),
-                    )
-                  : const SizedBox(width: double.infinity),
-            ),
-          ]),
+              header,
+            ]),
+          ),
         ),
       if (turn.images.isNotEmpty)
         Padding(
