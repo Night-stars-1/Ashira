@@ -15,7 +15,6 @@ class DisplayPrefs extends ChangeNotifier {
   static const _wrapTerminalKey = 'ashira.wrapTerminal';
   static const _sessionsKey = 'ashira.sessionsOpen';
   static const _replySortKey = 'ashira.replySort';
-  static const _customIslandKey = 'ashira.customIsland';
 
   /// Long lines in tool output wrap; off keeps them whole and scrolls sideways.
   bool wrapToolOutput = true;
@@ -29,18 +28,12 @@ class DisplayPrefs extends ChangeNotifier {
   /// The 逐回复明细 table's order; kept on this device only.
   ReplySort replySort = defaultReplySort;
 
-  /// Android on Xiaomi HyperOS: the reply notifications carry the Super Island template
-  /// (big and small island, opening up on a question or an end). The system shows it only
-  /// for Apps Xiaomi authorized; otherwise it keeps its own island.
-  bool customIsland = false;
-
   Future<void> load() async {
     final prefs = await SharedPreferences.getInstance();
     wrapToolOutput = prefs.getBool(_wrapKey) ?? true;
     wrapTerminal = prefs.getBool(_wrapTerminalKey) ?? true;
     sessionsOpen = prefs.getBool(_sessionsKey) ?? true;
     replySort = _parseSort(prefs.getString(_replySortKey));
-    customIsland = prefs.getBool(_customIslandKey) ?? false;
     notifyListeners();
   }
 
@@ -66,12 +59,6 @@ class DisplayPrefs extends ChangeNotifier {
     replySort = value;
     notifyListeners();
     await (await SharedPreferences.getInstance()).setString(_replySortKey, jsonEncode({'key': value.key, 'dir': value.ascending ? 'asc' : 'desc'}));
-  }
-
-  Future<void> setCustomIsland(bool value) async {
-    customIsland = value;
-    notifyListeners();
-    await (await SharedPreferences.getInstance()).setBool(_customIslandKey, value);
   }
 
   /// The same JSON the web keeps under this key; anything unreadable is the default order.

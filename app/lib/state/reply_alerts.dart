@@ -4,13 +4,12 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 
-import 'display_prefs.dart';
-
 const _channel = MethodChannel('dev.ashira/replies');
 
 /// Android: while replies run, one ongoing notification Android 16+ shows as a Live Update
-/// (a status bar chip with the elapsed time, 「待回答」 while the model waits on the user);
-/// when a reply ends or the model asks something, an alert. Both open their session.
+/// (a status bar chip with the elapsed time, 「待回答」 while the model waits on the user),
+/// and Xiaomi HyperOS as its Super Island; when a reply ends or the model asks something,
+/// an alert. Both open their session.
 ///
 /// Fed with which sessions run and ask ([sync]); the open session's own events add what
 /// only they know ([finished], [asked]). No alert for the session on screen while the App
@@ -44,6 +43,8 @@ class ReplyAlerts {
   final Map<String, int> _since = {};
   /// Ends and questions already alerted from the open session's events, so [sync] skips them.
   final Set<String> _told = {};
+  /// The open session's question, shown on the island while it waits.
+  final Map<String, String> _questions = {};
   String _shown = '';
   String _sent = '';
 
@@ -61,8 +62,9 @@ class ReplyAlerts {
   void asked(String id, String title, String question) {
     if (!supported) return;
     _told.add('ask:$id');
+    _questions[id] = _preview(question);
     if (_quiet(id)) return;
-    _alert(id, title, '等待你回答', _preview(question), done: false);
+    _alert(id, title, '等待你回答', _questions[id]!, done: false);
   }
 
   /// The user opened this session: its alert has been seen.
@@ -95,16 +97,17 @@ class ReplyAlerts {
     _running = {...running};
     _asking = {...asking};
     _since.removeWhere((id, _) => !running.contains(id));
+    _questions.removeWhere((id, _) => !asking.contains(id));
     for (final id in running) {
       _since.putIfAbsent(id, () => now);
     }
     final sessions = [
-      for (final id in running) {'id': id, 'title': title(id), 'asking': asking.contains(id), 'since': _since[id]},
+      for (final id in running) {'id': id, 'title': title(id), 'asking': asking.contains(id), 'question': _questions[id] ?? '', 'since': _since[id]},
     ]..sort((a, b) => (a['since'] as int).compareTo(b['since'] as int));
-    final key = '${displayPrefs.customIsland}|${sessions.map((s) => '${s['id']}|${s['title']}|${s['asking']}').join(',')}';
+    final key = sessions.map((s) => '${s['id']}|${s['title']}|${s['asking']}|${s['question']}').join(',');
     if (key == _sent) return;
     _sent = key;
-    _channel.invokeMethod('update', {'sessions': sessions, 'customIsland': displayPrefs.customIsland}).catchError((Object _) {});
+    _channel.invokeMethod('update', {'sessions': sessions}).catchError((Object _) {});
   }
 
   void dispose() {
@@ -118,11 +121,17 @@ class ReplyAlerts {
   /// on it for a moment instead of popping up, and a question as its 「待回答」.
   void _alert(String id, String title, String text, String detail, {required bool done}) {
     final chip = text == '回复失败' ? '失败' : '已完成';
-    _channel.invokeMethod('alert', {'id': id, 'title': title, 'text': text, 'detail': detail, 'done': done, 'chip': chip, 'customIsland': displayPrefs.customIsland}).catchError((Object _) {});
+    _channel.invokeMethod('alert', {'id': id, 'title': title, 'text': text, 'detail': detail, 'done': done, 'chip': chip}).catchError((Object _) {});
   }
 
+  /// One line of plain text: Markdown marks, links' targets and code fences go.
   static String _preview(String text) {
-    final line = text.replaceAll(RegExp(r'\s+'), ' ').trim();
+    final plain = text
+        .replaceAll(RegExp(r'```[^\n]*'), ' ')
+        .replaceAllMapped(RegExp(r'!?\[([^\]]*)\]\([^)]*\)'), (m) => m[1]!)
+        .replaceAll(RegExp(r'^\s{0,3}(#{1,6}|>|[-*+]|\d+[.)])\s+', multiLine: true), '')
+        .replaceAll(RegExp(r'[*_~`]+'), '');
+    final line = plain.replaceAll(RegExp(r'\s+'), ' ').trim();
     return line.length > 160 ? '${line.substring(0, 160)}…' : line;
   }
 }

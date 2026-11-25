@@ -15,6 +15,7 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.SystemClock
+import org.json.JSONArray
 import org.json.JSONObject
 
 /// While replies run: one ongoing notification Android 16+ promotes to a Live Update (the
@@ -37,6 +38,8 @@ object ReplyNotifications {
     private const val ENDED_MS = 8_000L
     /// The App icon in the island template's `miui.focus.pics`.
     private const val ISLAND_PIC = "miui.focus.pic_app"
+    /// The 「去回答」 button in the template's `miui.focus.actions`.
+    private const val ISLAND_ANSWER = "miui.focus.action_answer"
 
     /// A reply that just ended, on the island until `until` (uptime ms). `chip`: its short text.
     private class Ended(val id: String, val title: String, val text: String, val detail: String, val chip: String, val until: Long)
@@ -52,21 +55,18 @@ object ReplyNotifications {
     private var sessions: List<Map<String, Any?>> = emptyList()
     private val ended = mutableListOf<Ended>()
     private val handler = Handler(Looper.getMainLooper())
-    /// 设置 → 通用 → 自定义超级岛样式: the notifications carry Xiaomi's island template.
-    private var custom = false
 
     /// Empty `sessions` ends the live update once no ended reply is left on it.
-    fun update(context: Context, sessions: List<Map<String, Any?>>, custom: Boolean) {
+    fun update(context: Context, sessions: List<Map<String, Any?>>) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         this.sessions = sessions
-        this.custom = custom
         refresh(context.applicationContext)
     }
 
-    /// Posts the live notification again as it is: with the custom style on, for HyperOS's
-    /// island to take what changed while the App was in front.
+    /// Posts the live notification again as it is: on HyperOS, for its island to take what
+    /// changed while the App was in front.
     fun repost(context: Context) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || !custom || !active) return
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || !active || !islandOs(context)) return
         refresh(context.applicationContext)
     }
 
@@ -81,8 +81,7 @@ object ReplyNotifications {
 
     /// `done`: the reply ended (`chip` says how); else it asks the user something. One alert
     /// per session: a later one (finished after asking) replaces the earlier.
-    fun alert(context: Context, id: String, title: String, text: String, detail: String, done: Boolean, chip: String, custom: Boolean) {
-        this.custom = custom
+    fun alert(context: Context, id: String, title: String, text: String, detail: String, done: Boolean, chip: String) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         channels(context)
         if (islandShown(context)) {
@@ -156,13 +155,18 @@ object ReplyNotifications {
     }
 
     /// Whether the island shows the replies right now: the system chip (the live update was
-    /// promoted), or with the custom style the HyperOS island window itself.
+    /// promoted), or on HyperOS its island window.
     private fun islandShown(context: Context): Boolean =
         context.getSystemService(NotificationManager::class.java).activeNotifications.any {
             it.id == LIVE_ID && it.tag == null && (
                 (Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA && (it.notification.flags and Notification.FLAG_PROMOTED_ONGOING) != 0) ||
                     it.notification.extras.containsKey("miui.focus.param"))
         }
+
+    /// Xiaomi HyperOS 3 and later: the system shows Super Islands from the template
+    /// (`notification_focus_protocol` 3, per the developer guide's query section).
+    private fun islandOs(context: Context): Boolean =
+        android.provider.Settings.System.getInt(context.contentResolver, "notification_focus_protocol", 0) >= 3
 
     /// A pop-up alert, or with [RESULT_CHANNEL] a silent entry in the shade.
     private fun notify(context: Context, id: String, channel: String, title: String, text: String, detail: String) {
@@ -180,16 +184,16 @@ object ReplyNotifications {
 
     /// The running replies, or `finished` (the latest that just ended) while it shows.
     private fun build(context: Context, finished: Ended?): Notification {
+        val hyperOs = islandOs(context)
         val builder = Notification.Builder(context, LIVE_CHANNEL)
             .setSmallIcon(R.drawable.ic_notification)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setCategory(Notification.CATEGORY_PROGRESS)
         // Android 16: ask for the promotion to a Live Update (`setRequestPromotedOngoing`),
-        // shown as the status bar chip (HyperOS: its default island). Not with the custom
-        // style: HyperOS draws that in its own island window, and not for a notification the
-        // chip already shows.
-        if (!custom) builder.addExtras(Bundle().apply { putBoolean("android.requestPromotedOngoing", true) })
+        // shown as the status bar chip. Not on HyperOS: it draws the island from the template
+        // in its own window, and not for a notification the chip already shows.
+        if (!hyperOs) builder.addExtras(Bundle().apply { putBoolean("android.requestPromotedOngoing", true) })
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) builder.setForegroundServiceBehavior(Notification.FOREGROUND_SERVICE_IMMEDIATE)
         if (finished != null) {
             builder.setContentTitle(finished.title)
@@ -197,7 +201,7 @@ object ReplyNotifications {
                 .setContentIntent(open(context, finished.id))
             if (finished.detail.isNotEmpty()) builder.setStyle(Notification.BigTextStyle().bigText("${finished.text}\n${finished.detail}"))
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA) builder.setShortCriticalText(finished.chip)
-            if (custom) builder.addExtras(island(context, finished.title, finished.detail.ifEmpty { finished.text }, finished.chip, null, expand = true))
+            if (hyperOs) builder.addExtras(island(context, finished.id, finished.title, finished.detail.ifEmpty { finished.text }, finished.chip, null, expand = true, answer = false))
             return builder.build()
         }
         val asking = sessions.filter { it["asking"] == true }
@@ -219,21 +223,29 @@ object ReplyNotifications {
             .setContentIntent(open(context, first["id"] as String))
         // The chip's text, in place of the elapsed time, while an answer is wanted.
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA && asking.isNotEmpty()) builder.setShortCriticalText("待回答")
-        if (custom) builder.addExtras(island(context, title, text, if (asking.isEmpty()) "回复中" else "待回答", since, expand = asking.isNotEmpty()))
+        if (hyperOs) {
+            // The card's body: the question when one waits (only one session can be shown),
+            // else what the replies are doing.
+            val question = (first["question"] as? String).orEmpty()
+            val body = if (single && question.isNotEmpty()) question else text
+            builder.addExtras(island(context, first["id"] as String, title, body, if (asking.isEmpty()) "回复中" else "待回答", since, expand = asking.isNotEmpty(), answer = asking.isNotEmpty()))
+        }
         return builder.build()
     }
 
     /// Xiaomi HyperOS Super Island template (`miui.focus.param`, per the developer guide,
-    /// dev.mi.com/xiaomihyperos/documentation/detail?pId=2131): the big island shows the App
-    /// icon with `state`, and a timer from `since` when given; the small island the icon;
-    /// `expand` opens it up when it shows. HyperOS applies it only for Apps Xiaomi
-    /// authorized (an APP_ID and the signing certificate); otherwise it keeps its own island
-    /// and other systems ignore it.
-    private fun island(context: Context, title: String, text: String, state: String, since: Long?, expand: Boolean): Bundle {
+    /// dev.mi.com/xiaomihyperos/documentation/detail?pId=2131). The island: the App icon with
+    /// `state`, and a timer from `since` when given. Opened up, a chat card: the App icon,
+    /// `title` (the session), `body` (what it does, its question, or its answer), the same
+    /// timer, and with `answer` a 「去回答」 button. `expand` opens it up when it shows.
+    private fun island(context: Context, id: String, title: String, body: String, state: String, since: Long?, expand: Boolean, answer: Boolean): Bundle {
         val icon = JSONObject().put("type", 1).put("pic", ISLAND_PIC)
-        val big = JSONObject().put("imageTextInfoLeft", JSONObject().put("type", 1).put("picInfo", icon).put("textInfo", JSONObject().put("title", state)))
         // Counts up from `since`, kept by the system without updates.
-        if (since != null) big.put("sameWidthDigitInfo", JSONObject().put("timerInfo", JSONObject().put("timerType", 1).put("timerWhen", since).put("timerSystemCurrent", System.currentTimeMillis())))
+        val timer = since?.let { JSONObject().put("timerType", 1).put("timerWhen", it).put("timerSystemCurrent", System.currentTimeMillis()) }
+        val big = JSONObject().put("imageTextInfoLeft", JSONObject().put("type", 1).put("picInfo", icon).put("textInfo", JSONObject().put("title", state)))
+        if (timer != null) big.put("sameWidthDigitInfo", JSONObject().put("timerInfo", timer))
+        val chat = JSONObject().put("picProfile", ISLAND_PIC).put("title", title).put("content", body)
+        if (timer != null) chat.put("timerInfo", timer)
         val params = JSONObject()
             .put("protocol", 1)
             .put("business", "ai_reply")
@@ -245,14 +257,19 @@ object ReplyNotifications {
             .put("enableFloat", expand)
             .put("ticker", state)
             .put("aodTitle", "$title $state")
-            .put("baseInfo", JSONObject().put("type", 2).put("title", text).put("content", title))
+            .put("chatInfo", chat)
             .put("param_island", JSONObject()
-                .put("islandProperty", 1)
+                .put("islandProperty", if (answer) 2 else 1)
                 .put("bigIslandArea", big)
                 .put("smallIslandArea", JSONObject().put("picInfo", icon)))
+        // A text button: the plain `actions` one shows only its icon.
+        if (answer) params.put("textButton", JSONArray().put(JSONObject().put("action", ISLAND_ANSWER).put("actionTitle", "去回答")))
         return Bundle().apply {
             putString("miui.focus.param", JSONObject().put("param_v2", params).toString())
             putBundle("miui.focus.pics", Bundle().apply { putParcelable(ISLAND_PIC, Icon.createWithResource(context, R.mipmap.ic_launcher)) })
+            if (answer) putBundle("miui.focus.actions", Bundle().apply {
+                putParcelable(ISLAND_ANSWER, Notification.Action.Builder(Icon.createWithResource(context, R.drawable.ic_notification), "去回答", open(context, id)).build())
+            })
         }
     }
 

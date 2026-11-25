@@ -5,7 +5,6 @@ import 'package:flutter/foundation.dart';
 import '../api/client.dart';
 import '../api/models.dart';
 import 'app_update.dart';
-import 'display_prefs.dart';
 import 'reply_alerts.dart';
 import 'settings.dart';
 
@@ -20,8 +19,6 @@ class AshiraState extends ChangeNotifier {
     _alerts = ReplyAlerts(onOpen: (id) {
       if (id != shownId) unawaited(openSession(id: id));
     });
-    // 自定义超级岛 switched: the running replies' notification takes it at once.
-    displayPrefs.addListener(_syncAlerts);
   }
 
   late final ReplyAlerts _alerts;
@@ -578,7 +575,9 @@ class AshiraState extends ChangeNotifier {
           error = failure ?? '回合失败';
           errorRetry = true;
         }
-        final answer = current is AssistantBlock ? current.text : '';
+        // The answer: the text after the last tool, as the transcript shows it.
+        final parts = current is AssistantBlock ? current.parts : const <ReplyPart>[];
+        final answer = parts.skip(parts.lastIndexWhere((part) => part is ToolPart) + 1).whereType<TextPart>().where((part) => !part.reasoning).map((part) => part.text).join('\n');
         _alerts.finished(shownId, sessionName, error: event.raw['ok'] == false ? failure ?? '回合失败' : null, answer: answer);
         _syncAlerts();
         final mine = _view;
@@ -771,7 +770,6 @@ class AshiraState extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
-    displayPrefs.removeListener(_syncAlerts);
     _alerts.dispose();
     _notify?.cancel();
     _listTimer?.cancel();

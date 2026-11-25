@@ -25,12 +25,12 @@ class MainActivity : FlutterActivity() {
             setMethodCallHandler { call, result ->
                 when (call.method) {
                     "update" -> {
-                        ReplyNotifications.update(this@MainActivity, call.argument<List<Map<String, Any?>>>("sessions") ?: emptyList(), call.argument<Boolean>("customIsland") ?: false)
+                        ReplyNotifications.update(this@MainActivity, call.argument<List<Map<String, Any?>>>("sessions") ?: emptyList())
                         result.success(null)
                     }
                     "alert" -> {
                         ReplyNotifications.alert(this@MainActivity, call.argument("id")!!, call.argument("title")!!, call.argument("text")!!, call.argument("detail") ?: "",
-                            done = call.argument<Boolean>("done") ?: true, chip = call.argument("chip") ?: "已完成", custom = call.argument<Boolean>("customIsland") ?: false)
+                            done = call.argument<Boolean>("done") ?: true, chip = call.argument("chip") ?: "已完成")
                         result.success(null)
                     }
                     "cancel" -> {
