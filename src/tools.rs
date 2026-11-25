@@ -100,13 +100,13 @@ pub fn definitions(role: Option<crate::subagents::Role>, mcp: &[Value], plugins:
         }),
         json!({
             "name": "memory",
-            "description": "Manage global memory shared across projects and sessions. list reads saved entries; set adds or replaces a key; delete forgets one key. Use set/delete for explicit requests to remember, correct or forget information; automatic consolidation is handled separately after completed turns. Never store credentials, secrets, sensitive personal information or temporary task state. Saved memory is loaded on every model request; project rules remain separate.",
+            "description": "Manage global memory shared across projects and sessions. list reads saved entries; set adds or replaces a key; delete forgets one key. Use set/delete for explicit requests to remember, correct or forget information; automatic consolidation is handled separately after completed turns. Write new keys and values in Simplified Chinese (a short noun phrase as the key, one short sentence as the value; proper names as written), and reuse an existing key as it is. Never store credentials, secrets, sensitive personal information or temporary task state. Saved memory is loaded on every model request; project rules remain separate.",
             "input_schema": {
                 "type": "object",
                 "properties": {
                     "action": { "type": "string", "enum": ["list", "set", "delete"] },
-                    "key": { "type": "string", "description": "Required for set/delete; short stable name using letters, numbers, dots, underscores or hyphens" },
-                    "value": { "type": "string", "description": "Required for set; concise durable preference or fact" }
+                    "key": { "type": "string", "description": "Required for set/delete; a short stable name of letters (Chinese characters included), digits, dots, underscores or hyphens, no spaces" },
+                    "value": { "type": "string", "description": "Required for set; concise durable preference or fact, in Simplified Chinese" }
                 },
                 "required": ["action"]
             }
