@@ -43,10 +43,14 @@ pub async fn consolidate(
     cancel: &CancellationToken,
     on_request: impl FnOnce(&Result<api::Response, String>, std::time::Instant),
 ) -> Result<MergeResult, String> {
+    // The model sees memory as it is now, with what the turn saved through the memory tool,
+    // so it reuses those keys instead of adding near-duplicates. `baseline` (before the turn)
+    // still decides conflicts: a key changed during the turn keeps that change.
+    let current = store.snapshot().await?;
     let input = serde_json::to_string(&Input {
         user_message: user,
         assistant_reply: assistant,
-        existing_memory: &baseline.entries,
+        existing_memory: &current.entries,
     }).map_err(|e| format!("Memory extraction input: {e}"))?;
     let tools = client.wire_tools(json!([]));
     let messages = [api::user_text(&input)];
