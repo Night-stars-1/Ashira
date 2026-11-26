@@ -111,7 +111,9 @@ class _ModelPickerState extends State<_ModelPicker> {
   /// so the level can follow the model.
   void _apply() {
     if (_picked.isEmpty) return;
-    widget.state.setModel(_level == '默认' ? _picked : '$_picked:$_level');
+    // The start page shows the name before any session exists to resolve it.
+    final item = _catalog?.models.where((model) => model.selector == _picked).firstOrNull;
+    widget.state.setModel(_level == '默认' ? _picked : '$_picked:$_level', name: item == null ? null : (item.name ?? item.id));
   }
 
   void _choose(ModelItem model, List<String> levels) {

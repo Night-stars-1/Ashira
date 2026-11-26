@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ChartNoAxesColumn, ChevronDown, ChevronsRight, CircleAlert, CornerDownLeft, LoaderCircle, Menu, MessageSquare, PanelRightClose, PanelRightOpen, Paperclip, RotateCw, Send, Square, Terminal, X } from '@lucide/vue'
+import { ChartNoAxesColumn, ChevronDown, ChevronsRight, CircleAlert, CornerDownLeft, Folder, LoaderCircle, Menu, MessageSquare, PanelRightClose, PanelRightOpen, Paperclip, RotateCw, Send, Square, Terminal, X } from '@lucide/vue'
 import { TabsContent, TabsList, TabsRoot, TabsTrigger } from 'reka-ui'
 import Transcript, { type Block, type TextFile } from '@/components/Transcript.vue'
 import ContextRing from '@/components/ContextRing.vue'
@@ -47,6 +47,8 @@ const props = defineProps<{
   /** History paging: blocks before this index are not loaded yet. */
   historyStart: number
   loadingEarlier: boolean
+  /** 新会话: the first message is creating the session. */
+  creating: boolean
 }>()
 
 // Workspace images in replies and tool cards load from this session.
@@ -61,6 +63,8 @@ const emit = defineEmits<{
   openSessions: []
   expandSessions: []
   toggleFiles: []
+  /** 新会话: change the directory the session will start in. */
+  pickDirectory: []
   answer: [answers: QuestionAnswers | null]
   retry: []
   dismissError: []
@@ -131,7 +135,7 @@ function onKey(event: KeyboardEvent) {
 
 async function submit() {
   // While the reply runs, sending is allowed: the message joins that turn.
-  if (props.approvalSubmitting || sending.value || readingImages.value || !props.connected || !props.sessionId || (!props.draft.trim() && !images.value.length && !textFiles.value.length)) return
+  if (props.approvalSubmitting || props.creating || sending.value || readingImages.value || !props.connected || (!props.draft.trim() && !images.value.length && !textFiles.value.length)) return
   const attached = images.value.slice()
   const files = textFiles.value.slice()
   sending.value = true
@@ -297,15 +301,25 @@ function removeText(index: number) {
     <TabsContent value="chat" class="flex min-h-0 min-w-0 flex-1 flex-col data-[state=inactive]:hidden">
       <!-- Opening a session: stay blank until its history arrives (usually instant). -->
       <div v-if="loading" class="min-h-0 flex-1" aria-busy="true" />
+      <!-- 新会话: the input box sits mid-page; the first message creates the session. -->
+      <div v-else-if="!hasSession" class="min-h-0 flex-[1_1_0] max-h-[38%]" />
       <div v-else-if="blocks.length === 0 && !activity" class="flex min-h-0 flex-1 flex-col items-center justify-center px-6 text-center">
-        <p class="text-lg font-medium">{{ hasSession ? '这个目录里要做什么？' : '新建一个会话开始' }}</p>
+        <p class="text-lg font-medium">这个目录里要做什么？</p>
         <p class="mt-2 w-full max-w-md truncate px-3 text-sm text-muted-foreground" :title="cwd">{{ cwd }}</p>
       </div>
       <div v-else class="min-h-0 flex-1">
         <Transcript :key="sessionId" :blocks="blocks" :activity="activity" :start="historyStart" :pending="pendingSteer" :has-earlier="historyStart > 0" :loading-earlier="loadingEarlier" @open-agent="agentId = $event" @load-earlier="emit('loadEarlier')" />
         <AgentView :id="agentId" @close="agentId = ''" />
       </div>
-      <form class="shrink-0 px-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] sm:px-6 sm:pb-6" @submit.prevent="submit">
+      <div v-if="!loading && !hasSession" class="shrink-0 px-6 pb-6 text-center">
+        <p class="text-2xl font-medium">要做什么？</p>
+        <button type="button" class="mx-auto mt-2 flex max-w-md items-center gap-1.5 rounded-md px-2 py-1 text-sm text-muted-foreground hover:bg-muted hover:text-foreground disabled:pointer-events-none" :title="`在 ${cwd} 中新建会话，点击更换目录`" :disabled="creating" @click="emit('pickDirectory')">
+          <Folder aria-hidden="true" class="size-4 shrink-0" />
+          <span class="truncate">{{ cwd }}</span>
+          <ChevronDown aria-hidden="true" class="size-4 shrink-0" />
+        </button>
+      </div>
+      <form class="shrink-0 px-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] sm:px-6 sm:pb-6" :class="!loading && !hasSession && 'mb-auto'" @submit.prevent="submit">
         <div v-if="turnError" role="alert" class="mx-auto mb-2 flex max-w-3xl items-start gap-2.5 rounded-xl border border-destructive/40 bg-destructive/10 px-3 py-2.5 text-sm">
           <CircleAlert aria-hidden="true" class="mt-0.5 size-4 shrink-0 text-destructive" />
           <div class="min-w-0 flex-1">
@@ -342,18 +356,18 @@ function removeText(index: number) {
           <Textarea
             :model-value="draft"
             class="max-h-[40dvh] min-h-16 resize-none border-0 text-base shadow-none transition-none focus-visible:ring-0 sm:text-sm"
-            :placeholder="!hasSession && connected ? '请先选择或新建会话' : busy ? '补充说明，模型会在下一步读到' : '描述任务，Enter 发送，Shift+Enter 换行'"
-            :disabled="sending || !connected || !hasSession"
+            :placeholder="creating ? '正在新建会话…' : busy ? '补充说明，模型会在下一步读到' : '描述任务，Enter 发送，Shift+Enter 换行'"
+            :disabled="sending || creating || !connected"
             @update:model-value="emit('update:draft', String($event))"
             @keydown="onKey"
             @paste="onPaste"
           />
           <div class="flex items-center gap-2 px-1 pt-1">
             <input ref="file" type="file" multiple class="hidden" @change="onFiles" />
-            <Button type="button" size="icon-sm" variant="ghost" class="shrink-0 max-sm:size-9" aria-label="添加图片或文本文件" title="添加图片（单张不超过 1.5 MB）或文本文件" :disabled="sending || readingImages || !connected || !hasSession" @click="file?.click()">
+            <Button type="button" size="icon-sm" variant="ghost" class="shrink-0 max-sm:size-9" aria-label="添加图片或文本文件" title="添加图片（单张不超过 1.5 MB）或文本文件" :disabled="sending || creating || readingImages || !connected" @click="file?.click()">
               <Paperclip />
             </Button>
-            <Button type="button" size="sm" variant="outline" class="min-w-0 max-w-72 shrink max-sm:h-9" :title="model" :disabled="busy || !hasSession" @click="emit('openModels')">
+            <Button type="button" size="sm" variant="outline" class="min-w-0 max-w-72 shrink max-sm:h-9" :title="model" :disabled="busy || creating || !connected" @click="emit('openModels')">
               <span class="truncate">{{ model || '选择模型' }}</span>
               <ChevronDown />
             </Button>
@@ -376,7 +390,7 @@ function removeText(index: number) {
                 <Square /> 停止
               </Button>
               <!-- While the reply runs this adds to it rather than starting a new turn. -->
-              <Button v-if="!busy || draft.trim() || images.length || textFiles.length" type="submit" size="sm" class="shrink-0 max-sm:h-9" :title="busy ? '模型会在下一步读到这条消息' : undefined" :disabled="(!draft.trim() && images.length === 0 && textFiles.length === 0) || !connected || !hasSession || sending || readingImages || approvalSubmitting">
+              <Button v-if="!busy || draft.trim() || images.length || textFiles.length" type="submit" size="sm" class="shrink-0 max-sm:h-9" :title="busy ? '模型会在下一步读到这条消息' : undefined" :disabled="(!draft.trim() && images.length === 0 && textFiles.length === 0) || !connected || creating || sending || readingImages || approvalSubmitting">
                 <component :is="busy ? Send : CornerDownLeft" /> {{ busy ? '补充' : '发送' }}
               </Button>
             </div>

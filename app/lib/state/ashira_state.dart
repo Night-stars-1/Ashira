@@ -99,8 +99,10 @@ class AshiraState extends ChangeNotifier {
   String get cwd => status?.cwd.isNotEmpty == true ? status!.cwd : initialCwd;
   String get modelTitle => _titled(status?.model ?? '', status?.modelName ?? '');
   bool get approvalSubmitting => _approvalRequests.contains(shownId);
-  bool get canSetApprovalMode => !(_disposed || unauthorized || loading || busy || sending || approvalSubmitting) &&
-      connected && shownId.isNotEmpty && status != null;
+  // The start page sets the mode the session will be created with; `--yes` fixes it at full.
+  bool get canSetApprovalMode => shownId.isEmpty
+      ? !(_disposed || unauthorized || loading || creating || _approvalForced) && connected && status != null
+      : !(_disposed || unauthorized || loading || busy || sending || approvalSubmitting) && connected && status != null;
 
   String get sessionName {
     if (shownId.isEmpty) return '新会话';
@@ -131,9 +133,8 @@ class AshiraState extends ChangeNotifier {
       if (selected != null) {
         await openSession(id: selected);
       } else {
-        connected = true;
-        loading = false;
-        _changed();
+        // No session yet: the start page, in the server's working directory.
+        await startNew(service.cwd);
       }
     } catch (reason) {
       if (mine == _view) {
@@ -277,17 +278,12 @@ class AshiraState extends ChangeNotifier {
         if (next != null) {
           await openSession(id: next.id);
         } else {
-          _view++;
-          _closeEvents();
-          shownId = '';
-          status = null;
-          blocks = [];
-          turnId = null;
-          _changed();
+          await startNew();
         }
       });
 
-  Future<void> openSession({String? id, bool create = false, String? cwd}) async {
+  /// Leaves whatever is shown: closes its stream and clears its state; the new view's token.
+  int _resetView() {
     final mine = ++_view;
     _closeEvents();
     connected = false;
@@ -303,19 +299,21 @@ class AshiraState extends ChangeNotifier {
     shownId = '';
     _clearError();
     _changed();
+    return mine;
+  }
+
+  Future<void> openSession({required String id}) async {
+    final mine = _resetView();
     try {
-      final selected = create ? await client.newSession(cwd) : id;
-      if (mine != _view || selected == null || selected.isEmpty) return;
-      final view = await client.session(selected, limit: _historyPage);
+      final view = await client.session(id, limit: _historyPage);
       if (mine != _view) return;
-      shownId = selected;
+      shownId = id;
       _apply(view);
       loading = false;
-      unawaited(ConnectionSettings.rememberSession(selected));
-      _alerts.seen(selected);
+      unawaited(ConnectionSettings.rememberSession(id));
+      _alerts.seen(id);
       _syncAlerts();
-      _connect(selected, mine);
-      if (create) await refresh();
+      _connect(id, mine);
       _changed();
     } catch (reason) {
       if (mine == _view) _fail(reason, '会话操作失败');
@@ -325,6 +323,92 @@ class AshiraState extends ChangeNotifier {
         _changed();
       }
     }
+  }
+
+  /// 新会话's start page (no session shown). [status] holds what the session will be created
+  /// with: the directory, model, fast and approval mode chosen there, starting from the
+  /// server's defaults ([_freshDefaults]); the first message creates it.
+  Status? _freshDefaults;
+  bool _approvalForced = false;
+  bool creating = false;
+
+  /// Shows the start page for [cwd] (default: the shown session's directory).
+  Future<void> startNew([String? cwd]) async {
+    final dir = cwd ?? this.cwd;
+    final mine = _resetView();
+    try {
+      final results = await Future.wait([client.status(), client.approval()]);
+      if (mine != _view) return;
+      final service = results[0] as Status;
+      final approval = results[1] as ApprovalSettings;
+      _approvalForced = approval.forced;
+      final defaults = Status(
+        cwd: dir.isEmpty ? service.cwd : dir,
+        sessionId: '',
+        model: service.model,
+        modelName: service.modelName,
+        fast: service.fast,
+        approvalMode: approval.forced ? 'full' : approval.defaultMode,
+      );
+      _freshDefaults = defaults;
+      status = defaults;
+      connected = true;
+    } catch (reason) {
+      if (mine == _view) _fail(reason, '无法连接 Ashira');
+    } finally {
+      if (mine == _view) {
+        loading = false;
+        _changed();
+      }
+    }
+  }
+
+  /// The start page's first message: creates the session with what was chosen there, opens
+  /// it, and sends once its event stream is listening, so the reply streams in.
+  Future<bool> _sendFirst(String text, List<({String mediaType, String data})> images, List<TextFile> files) async {
+    final chosen = status;
+    final defaults = _freshDefaults;
+    if (creating || !connected || chosen == null || defaults == null) return false;
+    final mine = _view;
+    creating = true;
+    _clearError();
+    _changed();
+    try {
+      final id = await client.newSession(chosen.cwd);
+      if (chosen.model != null && chosen.model != defaults.model) await client.setModel(id, chosen.model!);
+      if (chosen.fast != defaults.fast) await client.setFast(id, chosen.fast);
+      if (!approvalHidden && chosen.approvalMode != defaults.approvalMode) await client.setApprovalMode(id, chosen.approvalMode);
+      if (mine != _view) return false;
+      unawaited(refresh().catchError((Object _) {}));
+      await openSession(id: id);
+      if (shownId != id) return false;
+      if (!await _streamOpen(id)) {
+        if (shownId == id) {
+          _fail('', '会话已新建，但连接没有就绪，消息未发送');
+          returnedDraft = text;
+        }
+        return false;
+      }
+      final sent = await send(text, images, files);
+      // The session opened with a fresh input box; a failed send gives the text back.
+      if (!sent && shownId == id) returnedDraft = text;
+      return sent;
+    } catch (reason) {
+      if (mine == _view) _fail(reason, '新建会话失败');
+      return false;
+    } finally {
+      creating = false;
+      _changed();
+    }
+  }
+
+  /// Completes once the shown session's event stream is open, or false after [limit].
+  Future<bool> _streamOpen(String id, {Duration limit = const Duration(seconds: 10)}) async {
+    final deadline = DateTime.now().add(limit);
+    while (!connected && shownId == id && DateTime.now().isBefore(deadline)) {
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+    }
+    return connected && shownId == id;
   }
 
   void _setStatus(Status value, {int? approvalSnapshot}) {
@@ -598,10 +682,12 @@ class AshiraState extends ChangeNotifier {
 
   /// While the reply runs the message joins that turn (`steered`) instead of starting one.
   Future<bool> send(String text, List<({String mediaType, String data})> images, [List<TextFile> files = const []]) async {
+    if (text.trim().isEmpty && images.isEmpty && files.isEmpty) return false;
+    if (shownId.isEmpty) return _sendFirst(text, images, files);
     final id = shownId;
     final mine = _view;
     final atSend = _revision;
-    if (id.isEmpty || !connected || sending || approvalSubmitting || (text.trim().isEmpty && images.isEmpty && files.isEmpty)) return false;
+    if (!connected || sending || approvalSubmitting) return false;
     _clearError();
     sending = true;
     _changed();
@@ -685,9 +771,25 @@ class AshiraState extends ChangeNotifier {
     if (turn != null && shownId.isNotEmpty) await _run(() => client.interrupt(shownId, turn));
   }
 
-  Future<void> setModel(String selector) => _updateSettings((id) => client.setModel(id, selector));
+  /// The model picker: the open session switches; the start page only remembers the choice.
+  Future<void> setModel(String selector, {String? name}) async {
+    if (shownId.isNotEmpty) return _updateSettings((id) => client.setModel(id, selector));
+    status = status?.copyWith(model: selector, modelName: name ?? selector);
+    _changed();
+  }
 
-  Future<void> setFast(bool enabled) => _updateSettings((id) => client.setFast(id, enabled));
+  Future<void> setFast(bool enabled) async {
+    if (shownId.isNotEmpty) return _updateSettings((id) => client.setFast(id, enabled));
+    status = status?.copyWith(fast: enabled);
+    _changed();
+  }
+
+  /// The start page's directory, from the picker.
+  void setNewCwd(String cwd) {
+    if (shownId.isNotEmpty || status == null) return;
+    status = status!.copyWith(cwd: cwd);
+    _changed();
+  }
 
   /// 设置 → 通用 saved `approval:`; hiding moved idle sessions to the default, so re-read this one.
   void approvalSaved(ApprovalSettings value) {
@@ -698,6 +800,12 @@ class AshiraState extends ChangeNotifier {
 
   Future<void> setApprovalMode(String mode, {Future<bool> Function()? confirmFullAccess}) async {
     if (!canSetApprovalMode || status?.approvalMode == mode) return;
+    if (shownId.isEmpty) {
+      if (mode == 'full' && (confirmFullAccess == null || !await confirmFullAccess())) return;
+      if (shownId.isEmpty && canSetApprovalMode) status = status?.copyWith(approvalMode: mode);
+      _changed();
+      return;
+    }
     final id = shownId;
     final mine = _view;
     if (mode == 'full' && (confirmFullAccess == null || !await confirmFullAccess())) return;

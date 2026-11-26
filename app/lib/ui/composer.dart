@@ -45,7 +45,6 @@ class Composer extends StatefulWidget {
   const Composer({
     super.key,
     required this.enabled,
-    required this.hasSession,
     required this.busy,
     required this.model,
     this.context = 0,
@@ -63,9 +62,8 @@ class Composer extends StatefulWidget {
     this.approval,
   });
 
+  /// [enabled] also drops while the session's stream reconnects or 新会话 creates the session.
   final bool enabled, busy;
-  /// Picks the hint; [enabled] also drops while the session's stream reconnects.
-  final bool hasSession;
   final String model, error;
   /// [error] came from a failed turn: 重试 asks the model again. Null for other errors.
   final VoidCallback? onRetry;
@@ -319,9 +317,7 @@ class _ComposerState extends State<Composer> {
                           fillColor: Colors.white.withValues(alpha: Theme.of(context).brightness == Brightness.dark ? .045 : 0),
                           isDense: true,
                           contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                          // Like the web: only a missing session changes the hint; the brief reconnect
-                          // while switching sessions keeps it steady.
-                          hintText: !widget.hasSession ? '请先选择或新建会话' : widget.busy ? '补充说明，模型会在下一步读到' : desktop ? '描述任务，Enter 发送，Shift+Enter 换行' : '描述任务',
+                          hintText: widget.busy ? '补充说明，模型会在下一步读到' : desktop ? '描述任务，Enter 发送，Shift+Enter 换行' : '描述任务',
                         ),
                         ),
                       ),
@@ -354,7 +350,7 @@ class _ComposerState extends State<Composer> {
                           if (widget.approval case final approval?) ...[const SizedBox(width: 6), approval],
                         ]),
                       ),
-                      if (widget.hasSession && widget.context > 0) ...[
+                      if (widget.context > 0) ...[
                         const SizedBox(width: 4),
                         ContextRing(context: widget.context, window: widget.window),
                       ],

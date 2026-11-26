@@ -34,23 +34,15 @@ const aliasName = ref('')
 const aliasError = ref('')
 const {
   status, server, refreshServer, restarting, restartServer, updating, updateProgress, updateServer, tree, archive, blocks, draft, model, modelTitle, fast, connected, loading, naming, confirm, question,
-  busy, hasReplyText, shownId, shownCwd, sessionName, needsConnection, runningIds, askingIds, send, openSession, decide, answer, interrupt, refresh, updateSettings, renameSession, setArchived, setFolded,
+  busy, hasReplyText, shownId, shownCwd, sessionName, needsConnection, runningIds, askingIds, send, openSession, startNew, chooseModel, chooseFast, creating, approvalMode, decide, answer, interrupt, refresh, updateSettings, renameSession, setArchived, setFolded,
   canSetApprovalMode, approvalSubmitting, setApprovalMode, turnError, retry, pendingSteer, historyStart, loadingEarlier, loadEarlier,
 } = useAshira()
 
 // Hint only: a newer web release shows a download link in the sidebar.
 void checkWebUpdate()
 
-function chooseModel(selector: string) {
-  return updateSettings((id) => api.model(id, selector))
-}
-
 function showModels() {
   modelsOpen.value = true
-}
-
-function setFast(enabled: boolean) {
-  void updateSettings((id) => api.fast(id, enabled))
 }
 
 /** 设置 → 通用 saved `approval:`; hiding the switch also moved idle sessions to the default. */
@@ -59,17 +51,24 @@ function onApprovalSaved(value: ApprovalSettings) {
   void updateSettings(async () => {})
 }
 
-async function startSession(cwd: string) {
+/** The picker chose where 新会话 starts; the page stays, keeping what was typed. */
+function pickDirectory(cwd: string) {
   pickerOpen.value = false
-  await openSession(true, undefined, cwd)
+  fresh(cwd)
 }
 
 watch(shownId, () => { filePath.value = '' })
 watch(desktop, () => { drawer.value = null })
 
-function showProjectPicker() {
+/** 新会话: the start page in the shown session's directory; the first message creates it. */
+function newSession() {
   drawer.value = null
-  pickerOpen.value = true
+  if (shownId.value) void startNew()
+}
+
+function fresh(cwd: string) {
+  const typed = draft.value
+  void startNew(cwd).then(() => { if (!draft.value) draft.value = typed })
 }
 
 /** Opens settings, on `tab` when given (the sidebar's update hint opens 关于). */
@@ -82,7 +81,7 @@ function showSettings(tab?: SettingsTab) {
 
 function selectSession(id: string) {
   drawer.value = null
-  if (shownId.value !== id) void openSession(false, id)
+  if (shownId.value !== id) void openSession(id)
 }
 
 function toggleFiles() {
@@ -136,7 +135,7 @@ function saveRename() {
     <div v-if="desktop" class="flex shrink-0 overflow-hidden border-sidebar-border transition-[width] duration-200 ease-out motion-reduce:transition-none" :class="sessionsOpen ? 'w-64 border-r' : 'w-0'">
       <div class="flex w-64 shrink-0">
         <SessionSidebar :tree="tree" :active-id="shownId" :running="runningIds" :asking="askingIds" :connected="connected" :server-version="server.version" :server-update="server.update" :hosted="server.web !== null" :restart-pending="server.restartPending" :restarting="restarting" collapsible
-          @resume="selectSession" @alias="openAlias" @rename="openRename" @archive="(kind, key) => setArchived(kind, key, true)" @fold="setFolded" @create="showProjectPicker" @settings="showSettings()" @about="showSettings('about')" @collapse="sessionsOpen = false" @restart="restartServer" />
+          @resume="selectSession" @alias="openAlias" @rename="openRename" @archive="(kind, key) => setArchived(kind, key, true)" @fold="setFolded" @create="newSession" @settings="showSettings()" @about="showSettings('about')" @collapse="sessionsOpen = false" @restart="restartServer" />
       </div>
     </div>
 
@@ -148,7 +147,7 @@ function saveRename() {
       >
         <DialogTitle class="sr-only">{{ drawer === 'sessions' ? '会话列表' : '项目文件' }}</DialogTitle>
         <SessionSidebar v-if="drawer === 'sessions'" :tree="tree" :active-id="shownId" :running="runningIds" :asking="askingIds" :connected="connected" :server-version="server.version" :server-update="server.update" :hosted="server.web !== null" :restart-pending="server.restartPending" :restarting="restarting"
-          @resume="selectSession" @alias="openAlias" @rename="openRename" @archive="(kind, key) => setArchived(kind, key, true)" @fold="setFolded" @create="showProjectPicker" @settings="showSettings()" @about="showSettings('about')" @restart="restartServer" />
+          @resume="selectSession" @alias="openAlias" @rename="openRename" @archive="(kind, key) => setArchived(kind, key, true)" @fold="setFolded" @create="newSession" @settings="showSettings()" @about="showSettings('about')" @restart="restartServer" />
         <FilesSidebar v-else-if="drawer === 'files' && shownId" :key="shownId" class="w-full flex-1 border-0"
           :session-id="shownId" :cwd="shownCwd" :active="filePath" @open="openFile" />
       </DialogContent>
@@ -163,7 +162,7 @@ function saveRename() {
       :blocks="blocks"
       :draft="draft"
       :model="modelTitle || model"
-      :approval-mode="status?.approvalMode ?? null"
+      :approval-mode="approvalMode"
       :approval-enabled="canSetApprovalMode"
       :approval-hidden="server.approvalHidden"
       :approval-submitting="approvalSubmitting"
@@ -181,6 +180,7 @@ function saveRename() {
       :pending-steer="pendingSteer"
       :history-start="historyStart"
       :loading-earlier="loadingEarlier"
+      :creating="creating"
       @retry="retry"
       @dismiss-error="turnError = null"
       @load-earlier="loadEarlier"
@@ -193,6 +193,7 @@ function saveRename() {
       @open-sessions="drawer = 'sessions'"
       @expand-sessions="sessionsOpen = true"
       @toggle-files="toggleFiles"
+      @pick-directory="drawer = null; pickerOpen = true"
     />
 
     <FileEditor v-if="filePath && shownId" :key="shownId" :session-id="shownId" :path="filePath" @close="filePath = ''" @open="filePath = $event" @files="filePath = ''; drawer = 'files'" />
@@ -219,8 +220,8 @@ function saveRename() {
     />
     <UsageDialog v-model:open="usageOpen" :status="status" :blocks="blocks" />
 
-    <ProjectPicker v-model:open="pickerOpen" :start-path="shownCwd" @start="startSession" />
-    <ModelPicker v-model:open="modelsOpen" :current="model" :fast="fast" @select="chooseModel" @fast="setFast" />
+    <ProjectPicker v-model:open="pickerOpen" :start-path="shownCwd" @start="pickDirectory" />
+    <ModelPicker v-model:open="modelsOpen" :current="model" :fast="fast" @select="chooseModel" @fast="chooseFast" />
 
     <Dialog :open="confirm !== null" @update:open="(open) => { if (!open) decide('no') }">
       <DialogContent>

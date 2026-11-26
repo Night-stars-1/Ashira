@@ -1,4 +1,4 @@
-import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { api, ApiError, connection, parseDiff, parseEvent, parseReplyMetrics, streamUrl, type AgentEvent, type ApprovalMode, type Archive, type ConfirmRequest, type QuestionAnswers, type QuestionRequest, type SessionNode, type SessionView, type Status, type UpdateProgress } from './api'
 import { toast } from './toast'
 import type { Block, ReplyPart, TextFile } from '@/components/Transcript.vue'
@@ -89,7 +89,13 @@ export function useAshira() {
   const loadingEarlier = ref(false)
   const approvalRequests = reactive(new Set<string>())
   const approvalSubmitting = computed(() => approvalRequests.has(shownId.value))
-  const shownCwd = computed(() => status.value?.cwd || initialCwd.value)
+  /** 新会话's start page (no session shown): the session is created by its first message, in
+   *  `cwd`, with the model, fast and approval chosen there. `defaults` is what a new session
+   *  gets anyway, so only changes are sent. */
+  const fresh = reactive({ cwd: '', approval: 'manual' as ApprovalMode, forced: false, defaults: { model: '', fast: false, approval: 'manual' as ApprovalMode } })
+  const creating = ref(false)
+  const shownCwd = computed(() => status.value?.cwd || fresh.cwd || initialCwd.value)
+  const approvalMode = computed(() => shownId.value ? status.value?.approvalMode ?? null : fresh.approval)
   let source: EventSource | undefined
   let view = 0
   let revision = 0
@@ -177,9 +183,52 @@ export function useAshira() {
     fast.value = value.fast
   }
 
+  /** Shows 新会话's start page for `cwd`, with the server's defaults preselected. */
+  async function startNew(cwd = shownCwd.value) {
+    const mine = resetView()
+    shownId.value = ''
+    fresh.cwd = cwd
+    try { sessionStorage.removeItem(viewKey) } catch { /* storage may be blocked */ }
+    try {
+      const [service, approval] = await Promise.all([api.status(), api.approval()])
+      if (mine !== view) return
+      model.value = service.model || ''
+      modelName.value = service.modelName || ''
+      fast.value = service.fast
+      const mode = approval.forced ? 'full' : approval.default
+      fresh.approval = mode
+      fresh.forced = approval.forced
+      fresh.defaults = { model: model.value, fast: fast.value, approval: mode }
+      connected.value = true
+    } catch (reason) {
+      if (mine === view) fail(reason, '无法连接 Ashira')
+    } finally {
+      if (mine === view) loading.value = false
+    }
+  }
+
+  /** The model picker: the open session switches; the start page only remembers the choice. */
+  async function chooseModel(selector: string) {
+    if (shownId.value) return updateSettings((id) => api.model(id, selector))
+    model.value = selector
+    const split = selector.lastIndexOf(':')
+    const base = split > 0 && LEVELS.includes(selector.slice(split + 1)) ? selector.slice(0, split) : selector
+    modelName.value = ''
+    const item = await api.models().then((catalog) => catalog.models.find((entry) => entry.selector === base), () => undefined)
+    if (model.value === selector) modelName.value = item?.name || item?.id || ''
+  }
+
+  function chooseFast(enabled: boolean) {
+    if (shownId.value) return updateSettings((id) => api.fast(id, enabled))
+    fast.value = enabled
+  }
+
   /** Set when the API rejected the token or could not be reached at all. */
   const needsConnection = ref(false)
-  const canSetApprovalMode = computed(() => Boolean(status.value && shownId.value && connected.value && !needsConnection.value && !loading.value && !busy.value && !approvalSubmitting.value))
+  // The start page sets the mode the session will be created with; `--yes` fixes it at full.
+  const canSetApprovalMode = computed(() => shownId.value
+    ? Boolean(status.value && connected.value && !needsConnection.value && !loading.value && !busy.value && !approvalSubmitting.value)
+    : connected.value && !loading.value && !creating.value && !fresh.forced)
 
   function fail(reason: unknown, fallback: string) {
     if (reason instanceof ApiError && reason.status === 401) {
@@ -371,10 +420,15 @@ export function useAshira() {
 
   async function send(images: { mediaType: string; data: string }[] = [], files: { name: string; text: string }[] = []): Promise<boolean> {
     const text = draft.value
-    const id = shownId.value
+    if (!text.trim() && images.length === 0 && files.length === 0) return false
+    if (!shownId.value) return sendFirst(text, images, files)
+    if (!connected.value || approvalSubmitting.value) return false
+    return post(shownId.value, text, images, files)
+  }
+
+  async function post(id: string, text: string, images: { mediaType: string; data: string }[], files: { name: string; text: string }[]): Promise<boolean> {
     const mine = view
     const atSend = revision
-    if (!id || !connected.value || approvalSubmitting.value || (!text.trim() && images.length === 0 && files.length === 0)) return false
     try {
       const accepted = await api.message(id, text.trim(), images.map(({ mediaType, data }) => ({ mediaType, data })), files)
       if (mine === view) {
@@ -389,9 +443,56 @@ export function useAshira() {
       }
       return true
     } catch (reason) {
-      if (mine === view) turnError.value = { message: reason instanceof Error ? reason.message : '发送失败', retry: false }
+      if (mine === view) {
+        turnError.value = { message: reason instanceof Error ? reason.message : '发送失败', retry: false }
+        // The first message of a new session: its box was emptied when the session opened.
+        if (!draft.value) draft.value = text
+      }
       return false
     }
+  }
+
+  /** The start page's first message: creates the session with what was chosen there, opens
+   *  it, and sends once its event stream is listening, so the reply streams in. */
+  async function sendFirst(text: string, images: { mediaType: string; data: string }[], files: { name: string; text: string }[]): Promise<boolean> {
+    if (creating.value || !connected.value) return false
+    const mine = view
+    const chosen = { model: model.value, fast: fast.value, approval: fresh.approval }
+    creating.value = true
+    turnError.value = null
+    try {
+      const id = await api.newSession(fresh.cwd || undefined)
+      if (chosen.model && chosen.model !== fresh.defaults.model) await api.model(id, chosen.model)
+      if (chosen.fast !== fresh.defaults.fast) await api.fast(id, chosen.fast)
+      if (!server.value.approvalHidden && chosen.approval !== fresh.defaults.approval) await api.setApprovalMode(id, chosen.approval)
+      if (mine !== view) return false
+      await openSession(id)
+      if (shownId.value !== id) return false
+      if (!await streamOpen(id)) {
+        // Opening cleared the box; give the message back with the reason.
+        if (shownId.value === id) {
+          turnError.value = { message: '会话已新建，但连接没有就绪，消息未发送', retry: false }
+          if (!draft.value) draft.value = text
+        }
+        return false
+      }
+      return post(id, text, images, files)
+    } catch (reason) {
+      if (mine === view) turnError.value = { message: reason instanceof Error ? reason.message : '新建会话失败', retry: false }
+      return false
+    } finally {
+      creating.value = false
+    }
+  }
+
+  /** Resolves once the shown session's event stream is open, or false after `ms`. */
+  function streamOpen(id: string, ms = 10_000): Promise<boolean> {
+    if (connected.value) return Promise.resolve(true)
+    return new Promise((resolve) => {
+      const done = (open: boolean) => { stop(); clearTimeout(timer); resolve(open && shownId.value === id) }
+      const stop = watch(connected, (open) => { if (open) done(true) })
+      const timer = setTimeout(() => done(false), ms)
+    })
   }
 
   /** 重试 on a failed turn: the model answers again from the history as it stands. */
@@ -412,7 +513,8 @@ export function useAshira() {
     }
   }
 
-  async function openSession(create: boolean, id?: string, cwd?: string) {
+  /** Leaves whatever is shown: closes its stream and clears its state; the new view's token. */
+  function resetView() {
     const mine = ++view
     source?.close()
     source = undefined
@@ -427,23 +529,25 @@ export function useAshira() {
     blocks.value = []
     historyStart.value = 0
     historyTotal.value = 0
-    // Known target: the title updates at once instead of passing through "新会话".
-    shownId.value = create ? '' : id ?? ''
     draft.value = ''
+    return mine
+  }
+
+  async function openSession(id: string) {
+    const mine = resetView()
+    // Known target: the title updates at once instead of passing through "新会话".
+    shownId.value = id
     try {
-      const selected = create ? await api.newSession(cwd) : id
-      if (mine !== view || !selected) return
-      const body = await api.session(selected, { limit: HISTORY_PAGE })
+      const body = await api.session(id, { limit: HISTORY_PAGE })
       if (mine !== view) return
-      shownId.value = selected
       setStatus(body)
       showHistory(body)
       turnId.value = body.turnId
       confirm.value = body.confirm
       question.value = body.question
-      try { sessionStorage.setItem(viewKey, JSON.stringify({ id: selected })) } catch { /* storage may be blocked */ }
+      try { sessionStorage.setItem(viewKey, JSON.stringify({ id })) } catch { /* storage may be blocked */ }
       loading.value = false
-      connect(selected)
+      connect(id)
       // Also picks up turns running in other sessions (shown in the list).
       await refresh()
     } catch (reason) {
@@ -500,7 +604,8 @@ export function useAshira() {
   }
 
   async function setApprovalMode(mode: ApprovalMode) {
-    if (!canSetApprovalMode.value || mode === status.value?.approvalMode) return
+    if (!canSetApprovalMode.value || mode === approvalMode.value) return
+    if (!shownId.value) { fresh.approval = mode; return }
     const id = shownId.value
     const mine = view
     const approvalSnapshot = approvalRevision
@@ -548,11 +653,9 @@ export function useAshira() {
       })
       const previous = savedId()
       const selected = ids.includes(previous) ? previous : ids[0]
-      if (selected) await openSession(false, selected)
-      else {
-        connected.value = true
-        loading.value = false
-      }
+      if (selected) await openSession(selected)
+      // No session yet: the start page, in the server's working directory.
+      else await startNew(service.cwd)
     } catch (reason) {
       if (mine === view) {
         loading.value = false
@@ -565,7 +668,7 @@ export function useAshira() {
   onUnmounted(() => { view++; source?.close(); clearTimeout(listTimer) })
 
   return { status, server, refreshServer, restarting, restartServer, updating, updateProgress, updateServer, tree, archive, blocks, draft, model, modelTitle, fast, connected, loading, naming, confirm, question,
-    busy, hasReplyText, shownId, shownCwd, sessionName, needsConnection, runningIds, askingIds, send, openSession, decide, answer, interrupt, refresh, updateSettings, renameSession, setArchived, setFolded,
+    busy, hasReplyText, shownId, shownCwd, sessionName, needsConnection, runningIds, askingIds, send, openSession, startNew, chooseModel, chooseFast, creating, approvalMode, decide, answer, interrupt, refresh, updateSettings, renameSession, setArchived, setFolded,
     canSetApprovalMode, approvalSubmitting, setApprovalMode, turnError, retry, pendingSteer, historyStart, loadingEarlier, loadEarlier }
 }
 

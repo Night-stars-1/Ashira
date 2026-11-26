@@ -163,13 +163,13 @@ class Status {
   /// 设置 → 通用 hid the chat's approval switch: sessions run in the default mode.
   final bool approvalHidden;
 
-  Status copyWith({String? model, String? modelName, int? context, Statistics? statistics, String? approvalMode}) => Status(
-        cwd: cwd,
+  Status copyWith({String? cwd, String? model, String? modelName, bool? fast, int? context, Statistics? statistics, String? approvalMode}) => Status(
+        cwd: cwd ?? this.cwd,
         sessionId: sessionId,
         model: model ?? this.model,
         modelName: modelName ?? this.modelName,
         busy: busy,
-        fast: fast,
+        fast: fast ?? this.fast,
         approvalMode: approvalMode ?? this.approvalMode,
         context: context ?? this.context,
         window: window,

@@ -69,10 +69,15 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  Future<void> _create() async {
+  /// 新会话: the start page in the shown session's directory; the first message creates it.
+  void _create() {
     _scaffold.currentState?.closeDrawer();
+    if (state.shownId.isNotEmpty) unawaited(state.startNew());
+  }
+
+  Future<void> _pickDirectory() async {
     final cwd = await showProjectPicker(context, state);
-    if (cwd != null) await state.openSession(create: true, cwd: cwd);
+    if (cwd != null) state.setNewCwd(cwd);
   }
 
   void _select(String id) {
@@ -207,47 +212,56 @@ class _HomePageState extends State<HomePage> {
             ],
           ),
         );
+        final composer = Composer(
+          key: ValueKey('composer-${state.shownId}'),
+          enabled: state.connected && !state.approvalSubmitting && !state.creating,
+          busy: state.busy,
+          model: state.modelTitle,
+          context: state.status?.context ?? 0,
+          window: state.status?.window,
+          error: state.error,
+          onRetry: state.errorRetry && !state.busy ? state.retry : null,
+          onDismissError: state.dismissError,
+          returnedDraft: state.returnedDraft,
+          onDraftTaken: () => state.returnedDraft = null,
+          approval: !state.approvalHidden && !state.loading ? _ApprovalSelector(key: ValueKey(state.shownId), state: state) : null,
+          onSend: state.send,
+          onInterrupt: state.interrupt,
+          onModels: () => showModelPicker(context, state),
+          question: state.question,
+          onAnswer: state.answer,
+        );
+        // 新会话: the input box sits mid-page under the directory it will start in.
+        final fresh = !hasSession && !state.loading;
         final conversation = Column(children: [
-          Expanded(
-            // Opening a session stays blank until its history arrives, like the web.
-            child: state.loading
-                ? const SizedBox.shrink()
-                : state.blocks.isEmpty && state.activity.isEmpty
-                ? _Empty(hasSession: hasSession, cwd: state.cwd)
-                : WorkspaceImages(
-                    uri: (path) => state.client.rawUri(state.shownId, path),
-                    child: Transcript(
-                      key: ValueKey(state.shownId),
-                      blocks: state.blocks,
-                      activity: state.activity,
-                      start: state.historyStart,
-                      pending: state.pendingSteer,
-                      loadingEarlier: state.loadingEarlier,
-                      onLoadEarlier: state.historyStart > 0 ? state.loadEarlier : null,
-                      onOpenAgent: (id) => showSubagent(context, state.client, id, (path) => state.client.rawUri(state.shownId, path)),
+          if (fresh) ...[
+            const Spacer(flex: 2),
+            _NewSession(cwd: state.cwd, onPick: state.creating ? null : _pickDirectory),
+            composer,
+            const Spacer(flex: 3),
+          ] else ...[
+            Expanded(
+              // Opening a session stays blank until its history arrives, like the web.
+              child: state.loading
+                  ? const SizedBox.shrink()
+                  : state.blocks.isEmpty && state.activity.isEmpty
+                  ? _Empty(cwd: state.cwd)
+                  : WorkspaceImages(
+                      uri: (path) => state.client.rawUri(state.shownId, path),
+                      child: Transcript(
+                        key: ValueKey(state.shownId),
+                        blocks: state.blocks,
+                        activity: state.activity,
+                        start: state.historyStart,
+                        pending: state.pendingSteer,
+                        loadingEarlier: state.loadingEarlier,
+                        onLoadEarlier: state.historyStart > 0 ? state.loadEarlier : null,
+                        onOpenAgent: (id) => showSubagent(context, state.client, id, (path) => state.client.rawUri(state.shownId, path)),
+                      ),
                     ),
-                  ),
-          ),
-          Composer(
-            key: ValueKey('composer-${state.shownId}'),
-            enabled: hasSession && state.connected && !state.approvalSubmitting,
-            hasSession: hasSession,
-            busy: state.busy,
-            model: state.modelTitle,
-            context: state.status?.context ?? 0,
-            window: state.status?.window,
-            error: state.error,
-            onRetry: state.errorRetry && !state.busy ? state.retry : null,
-            onDismissError: state.dismissError,
-            returnedDraft: state.returnedDraft,
-            onDraftTaken: () => state.returnedDraft = null,
-            approval: hasSession && !state.approvalHidden ? _ApprovalSelector(key: ValueKey(state.shownId), state: state) : null,
-            onSend: state.send,
-            onInterrupt: state.interrupt,
-            onModels: () => showModelPicker(context, state),
-            question: state.question,
-            onAnswer: state.answer,
-          ),
+            ),
+            composer,
+          ],
         ]);
         final chat = Column(children: [
           header,
@@ -365,20 +379,52 @@ class _ApprovalSelector extends StatelessWidget {
 }
 
 class _Empty extends StatelessWidget {
-  const _Empty({required this.hasSession, required this.cwd});
-  final bool hasSession;
+  const _Empty({required this.cwd});
   final String cwd;
   @override
   Widget build(BuildContext context) => Center(
         child: Padding(
           padding: const EdgeInsets.all(24),
           child: Column(mainAxisSize: MainAxisSize.min, children: [
-            Text(hasSession ? '这个目录里要做什么？' : '新建一个会话开始', style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w500)),
+            Text('这个目录里要做什么？', style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w500)),
             const SizedBox(height: 8),
             Text(cwd, textAlign: TextAlign.center, maxLines: 2, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 13, color: Theme.of(context).colorScheme.mutedForeground)),
           ]),
         ),
       );
+}
+
+/// 新会话's heading over the input box, with the directory the session will start in;
+/// tapping it opens the directory picker.
+class _NewSession extends StatelessWidget {
+  const _NewSession({required this.cwd, required this.onPick});
+  final String cwd;
+  final VoidCallback? onPick;
+  @override
+  Widget build(BuildContext context) {
+    final muted = Theme.of(context).colorScheme.mutedForeground;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(24, 0, 24, 16),
+      child: Column(children: [
+        Text('要做什么？', style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w500)),
+        const SizedBox(height: 8),
+        Tooltip(
+          message: '在 $cwd 中新建会话，点击更换目录',
+          child: TextButton(
+            onPressed: onPick,
+            style: TextButton.styleFrom(foregroundColor: muted, padding: const EdgeInsets.symmetric(horizontal: 8)),
+            child: Row(mainAxisSize: MainAxisSize.min, children: [
+              const Icon(Icons.folder_outlined, size: 16),
+              const SizedBox(width: 6),
+              Flexible(child: Text(cwd, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13))),
+              const SizedBox(width: 2),
+              const Icon(Icons.expand_more, size: 16),
+            ]),
+          ),
+        ),
+      ]),
+    );
+  }
 }
 
 /// The web's 对话/终端 TabsList: a muted track with the selected tab raised on the
