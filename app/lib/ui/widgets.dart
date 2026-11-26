@@ -197,7 +197,9 @@ class SettingsCard extends StatelessWidget {
       decoration: BoxDecoration(color: scheme.muted.withValues(alpha: .6), borderRadius: BorderRadius.circular(radius + 4)),
       child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
         for (final (index, child) in children.indexed) ...[
-          if (index > 0) Divider(height: 1, color: scheme.border.withValues(alpha: .6)),
+          // 60% of the border's own opacity, like the web's `divide-border/60`; `withValues(alpha:)`
+          // alone replaces it, which made the dark theme's 10% white line 60% white.
+          if (index > 0) Divider(height: 1, color: scheme.border.withValues(alpha: scheme.border.a * .6)),
           Padding(padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14), child: child),
         ],
       ]),
