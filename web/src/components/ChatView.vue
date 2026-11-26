@@ -108,6 +108,8 @@ const canChooseApproval = computed(() => props.approvalEnabled && !sending.value
 watch(canChooseApproval, (enabled) => { if (!enabled) confirmFull.value = false })
 const TerminalView = defineAsyncComponent(() => import('@/components/TerminalView.vue'))
 const hasSession = computed(() => Boolean(props.sessionId))
+/** The start page names the folder; the full path is in its tooltip. */
+const folderName = computed(() => props.cwd.split(/[\\/]/).filter(Boolean).at(-1) || props.cwd)
 const view = ref<'chat' | 'terminal'>('chat')
 const terminalOpened = ref(false)
 
@@ -311,11 +313,11 @@ function removeText(index: number) {
         <Transcript :key="sessionId" :blocks="blocks" :activity="activity" :start="historyStart" :pending="pendingSteer" :has-earlier="historyStart > 0" :loading-earlier="loadingEarlier" @open-agent="agentId = $event" @load-earlier="emit('loadEarlier')" />
         <AgentView :id="agentId" @close="agentId = ''" />
       </div>
-      <div v-if="!loading && !hasSession" class="shrink-0 px-6 pb-6 text-center">
+      <div v-if="!loading && !hasSession" class="shrink-0 px-6 pb-5 text-center">
         <p class="text-2xl font-medium">要做什么？</p>
-        <button type="button" class="mx-auto mt-2 flex max-w-md items-center gap-1.5 rounded-md px-2 py-1 text-sm text-muted-foreground hover:bg-muted hover:text-foreground disabled:pointer-events-none" :title="`在 ${cwd} 中新建会话，点击更换目录`" :disabled="creating" @click="emit('pickDirectory')">
+        <button type="button" class="mx-auto mt-2 flex max-w-full items-center gap-1.5 rounded-md px-2 py-1 text-sm text-muted-foreground hover:bg-muted hover:text-foreground disabled:pointer-events-none" :title="`${cwd}\n点击更换目录`" :aria-label="`工作目录 ${cwd}，点击更换`" :disabled="creating" @click="emit('pickDirectory')">
           <Folder aria-hidden="true" class="size-4 shrink-0" />
-          <span class="truncate">{{ cwd }}</span>
+          <span class="min-w-0 truncate">{{ folderName }}</span>
           <ChevronDown aria-hidden="true" class="size-4 shrink-0" />
         </button>
       </div>

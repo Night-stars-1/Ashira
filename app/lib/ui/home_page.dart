@@ -394,8 +394,8 @@ class _Empty extends StatelessWidget {
       );
 }
 
-/// 新会话's heading over the input box, with the directory the session will start in;
-/// tapping it opens the directory picker.
+/// 新会话's heading over the input box, with the folder the session will start in (the
+/// full path in the tooltip); tapping it opens the directory picker.
 class _NewSession extends StatelessWidget {
   const _NewSession({required this.cwd, required this.onPick});
   final String cwd;
@@ -403,20 +403,21 @@ class _NewSession extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final muted = Theme.of(context).colorScheme.mutedForeground;
+    final folder = cwd.split(RegExp(r'[\\/]')).lastWhere((part) => part.isNotEmpty, orElse: () => cwd);
     return Padding(
       padding: const EdgeInsets.fromLTRB(24, 0, 24, 16),
       child: Column(children: [
         Text('要做什么？', style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w500)),
         const SizedBox(height: 8),
         Tooltip(
-          message: '在 $cwd 中新建会话，点击更换目录',
+          message: '$cwd\n点击更换目录',
           child: TextButton(
             onPressed: onPick,
             style: TextButton.styleFrom(foregroundColor: muted, padding: const EdgeInsets.symmetric(horizontal: 8)),
             child: Row(mainAxisSize: MainAxisSize.min, children: [
               const Icon(Icons.folder_outlined, size: 16),
               const SizedBox(width: 6),
-              Flexible(child: Text(cwd, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13))),
+              Flexible(child: Text(folder, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13))),
               const SizedBox(width: 2),
               const Icon(Icons.expand_more, size: 16),
             ]),
