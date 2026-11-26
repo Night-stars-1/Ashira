@@ -9,6 +9,7 @@ import 'theme.dart';
 import 'transcript.dart';
 import 'widgets.dart';
 import 'window_frame.dart';
+import 'select_field.dart';
 import 'workspace_image.dart';
 
 String errorText(Object error, String fallback) => error is ApiException ? error.message : '$fallback：$error';
@@ -258,20 +259,20 @@ class _ModelPickerState extends State<_ModelPicker> {
             clipBehavior: Clip.antiAlias,
             child: narrow
                 ? Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+                    // The web's shadcn Select, not Material's full-width dropdown sheet.
                     Container(
                       decoration: BoxDecoration(border: Border(bottom: BorderSide(color: scheme.border))),
-                      padding: const EdgeInsets.symmetric(horizontal: 12),
-                      child: DropdownButtonHideUnderline(
-                        child: DropdownButton<String>(
+                      padding: const EdgeInsets.all(8),
+                      child: SizedBox(
+                        height: 36,
+                        child: SelectField<String>(
                           value: _group,
-                          isExpanded: true,
-                          style: TextStyle(fontSize: 14, color: scheme.onSurface),
-                          dropdownColor: scheme.card,
-                          items: [
-                            DropdownMenuItem(value: '', child: Text('全部服务商（${matched.length}）')),
-                            for (final group in groups) DropdownMenuItem(value: group, child: Text('$group（${counts[group]}）')),
+                          label: '服务商',
+                          options: [
+                            ('', '全部服务商（${matched.length}）'),
+                            for (final group in groups) (group, '$group（${counts[group]}）'),
                           ],
-                          onChanged: (value) => setState(() => _group = value ?? ''),
+                          onChanged: (value) => setState(() => _group = value),
                         ),
                       ),
                     ),
