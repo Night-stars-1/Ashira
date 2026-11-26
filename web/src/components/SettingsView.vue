@@ -15,7 +15,7 @@ import ShellSettings from '@/components/ShellSettings.vue'
 import ApprovalSettingsRows from '@/components/ApprovalSettings.vue'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Switch } from '@/components/ui/switch'
-import { wrapTerminal, wrapToolOutput } from '@/lib/display'
+import { foldToolOutput, wrapTerminal, wrapToolOutput } from '@/lib/display'
 import { api, type ApprovalSettings, type Archive, type McpForm, type McpServer, type MemoryEntry, type UpdateProgress } from '@/lib/api'
 
 const open = defineModel<boolean>('open', { required: true })
@@ -264,13 +264,20 @@ watch(open, (value) => { if (value) void load() })
                 <ApprovalSettingsRows :active="open && tab === 'display'" @saved="(value) => emit('approval', value)" />
               </div>
               <h3 class="px-1 text-xs font-medium text-muted-foreground">显示</h3>
-              <div class="rounded-xl bg-muted/60">
+              <div class="divide-y divide-border/60 rounded-xl bg-muted/60">
                 <label class="flex items-center gap-3 px-4 py-3.5">
                   <span class="min-w-0 flex-1">
                     <span class="block text-sm">工具输出自动换行</span>
                     <span class="block text-xs text-muted-foreground">关闭后长行保持完整，左右滚动查看</span>
                   </span>
                   <Switch v-model="wrapToolOutput" />
+                </label>
+                <label class="flex items-center gap-3 px-4 py-3.5">
+                  <span class="min-w-0 flex-1">
+                    <span class="block text-sm">默认折叠工具输出</span>
+                    <span class="block text-xs text-muted-foreground">工具运行结束后只显示标题行，点击展开；运行中、失败的工具和待办保持展开</span>
+                  </span>
+                  <Switch v-model="foldToolOutput" />
                 </label>
               </div>
               <h3 class="mt-3 px-1 text-xs font-medium text-muted-foreground">终端</h3>

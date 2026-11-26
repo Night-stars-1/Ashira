@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { Ban, Check, ChevronDown, Circle, CircleDot, CircleHelp, CornerDownRight, Minus } from '@lucide/vue'
 import { Badge } from '@/components/ui/badge'
 import { ScrollArea } from '@/components/ui/scroll-area'
@@ -7,7 +7,7 @@ import ImageViewer from '@/components/ImageViewer.vue'
 import type { ToolCard } from '@/components/Transcript.vue'
 import WorkspaceImage from '@/components/WorkspaceImage.vue'
 import { generatedImages, type DiffRow } from '@/lib/api'
-import { wrapToolOutput } from '@/lib/display'
+import { foldToolOutput, wrapToolOutput } from '@/lib/display'
 
 type TodoTask = { content: string; status: string; reason: string }
 type TodoPhase = { name: string; tasks: TodoTask[] }
@@ -21,6 +21,21 @@ const numbered = computed(() => todo.value || asked.value || !props.tool.output 
 const change = computed(() => !props.tool.error && props.tool.diff?.added != null ? props.tool.diff : null)
 /** The diff opens on demand; the header shows the counts. */
 const changeOpen = ref(false)
+/** Whether the card has a body below its header that 默认折叠工具输出 can hide. */
+const hasBody = computed(() => Boolean(images.value.length || props.tool.image || todo.value || asked.value || (props.tool.output && !change.value)))
+/** 设置 → 通用 → 显示 → 默认折叠工具输出 folds finished tools; a running or failed one and the
+ *  todo board stay open. A write/edit diff already opens on demand, so it is left alone. */
+const foldable = computed(() => foldToolOutput.value && hasBody.value && !change.value && !todo.value && props.tool.done && !props.tool.error)
+/** This card's own choice once its header is clicked; until then the setting decides. */
+const opened = ref<boolean | null>(null)
+const bodyOpen = computed(() => !foldable.value || (opened.value ?? false))
+// Flipping the setting resets cards opened or closed by hand to the new default.
+watch(foldToolOutput, () => { opened.value = null })
+
+function toggleHeader() {
+  if (change.value) changeOpen.value = !changeOpen.value
+  else if (foldable.value) opened.value = !bodyOpen.value
+}
 /** The full-size view of the picture `read` gave the model. */
 const zoomed = ref(false)
 
@@ -120,11 +135,11 @@ function todoLabel(status: string) {
 <template>
   <div class="overflow-hidden rounded-lg border">
     <component
-      :is="change ? 'button' : 'div'"
-      v-bind="change ? { type: 'button', 'aria-expanded': changeOpen, title: changeOpen ? '收起改动' : '查看改动' } : {}"
+      :is="change || foldable ? 'button' : 'div'"
+      v-bind="change ? { type: 'button', 'aria-expanded': changeOpen, title: changeOpen ? '收起改动' : '查看改动' } : foldable ? { type: 'button', 'aria-expanded': bodyOpen, title: bodyOpen ? '收起输出' : '展开输出' } : {}"
       class="flex w-full items-center gap-2 px-3 py-2 text-left text-sm"
-      :class="change && 'hover:bg-muted/50'"
-      @click="change && (changeOpen = !changeOpen)"
+      :class="(change || foldable) && 'hover:bg-muted/50'"
+      @click="toggleHeader"
     >
       <Badge variant="secondary">{{ tool.name === 'todo' ? '待办' : tool.name === 'ask_user' ? '提问' : tool.name === 'generate_image' ? '生成图片' : tool.name }}</Badge>
       <span v-if="tool.name !== 'todo'" class="min-w-0 flex-1 truncate text-muted-foreground">{{ tool.summary }}</span>
@@ -138,6 +153,7 @@ function todoLabel(status: string) {
         </span>
         <ChevronDown aria-hidden="true" class="size-4 shrink-0 text-muted-foreground transition-transform motion-reduce:transition-none" :class="changeOpen && 'rotate-180'" />
       </template>
+      <ChevronDown v-else-if="foldable" aria-hidden="true" class="size-4 shrink-0 text-muted-foreground transition-transform motion-reduce:transition-none" :class="bodyOpen && 'rotate-180'" />
     </component>
     <!-- Replayed `edit` rows count from the snippet, so they carry no line numbers. -->
     <ScrollArea v-if="change && changeOpen" class="border-t" viewport-class="max-h-96" :scroll-x="!wrapToolOutput">
@@ -157,6 +173,7 @@ function todoLabel(status: string) {
         <p v-if="change.omitted" class="px-3 pt-1 text-muted-foreground">还有 {{ change.omitted }} 行未显示</p>
       </div>
     </ScrollArea>
+    <template v-if="bodyOpen">
     <div v-if="images.length" class="flex flex-wrap gap-2 border-t px-3 py-2">
       <WorkspaceImage v-for="path in images" :key="path" :path="path" size="thumb" />
     </div>
@@ -216,5 +233,6 @@ function todoLabel(status: string) {
       </div>
       <pre v-else class="px-3 py-2 font-mono text-xs" :class="wrapToolOutput ? 'whitespace-pre-wrap' : 'w-max min-w-full whitespace-pre [overflow-wrap:normal]'">{{ tool.output }}</pre>
     </ScrollArea>
+    </template>
   </div>
 </template>

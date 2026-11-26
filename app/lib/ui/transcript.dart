@@ -656,7 +656,8 @@ List<String> generatedImages(ToolPart tool) => tool.name == 'generate_image' && 
 
 /// The web's ToolOutput: a badge with the tool's name and its summary, then the result
 /// (todo board, `ask_user` answers or raw/numbered output) under a divider. A `write`/`edit`
-/// card shows its `+`/`−` line counts instead; tapping the header opens the diff.
+/// card shows its `+`/`−` line counts instead; tapping the header opens the diff. With
+/// 默认折叠工具输出 on, a finished card shows only its header until tapped.
 class ToolCard extends StatefulWidget {
   const ToolCard(this.tool, {super.key});
   final ToolPart tool;
@@ -666,6 +667,30 @@ class ToolCard extends StatefulWidget {
 
 class _ToolCardState extends State<ToolCard> {
   bool _diffOpen = false;
+  /// This card's own choice once its header is tapped; until then 默认折叠工具输出 decides.
+  bool? _opened;
+  bool _fold = displayPrefs.foldToolOutput;
+
+  @override
+  void initState() {
+    super.initState();
+    displayPrefs.addListener(_prefsChanged);
+  }
+
+  @override
+  void dispose() {
+    displayPrefs.removeListener(_prefsChanged);
+    super.dispose();
+  }
+
+  /// Flipping the setting resets cards opened or closed by hand to the new default.
+  void _prefsChanged() {
+    if (displayPrefs.foldToolOutput == _fold) return;
+    setState(() {
+      _fold = displayPrefs.foldToolOutput;
+      _opened = null;
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -678,6 +703,11 @@ class _ToolCardState extends State<ToolCard> {
     final images = generatedImages(tool);
     // A binary or unreadable file has no counts and shows the text result instead.
     final change = !tool.error && tool.diff?.added != null ? tool.diff : null;
+    final hasBody = images.isNotEmpty || tool.image != null || todo != null || asked != null || (tool.output.isNotEmpty && change == null);
+    // A running or failed tool and the todo board stay open; a write/edit diff already
+    // opens on demand, so it is left alone.
+    final foldable = _fold && hasBody && change == null && todo == null && tool.done && !tool.error;
+    final bodyOpen = !foldable || (_opened ?? false);
     // `max-h-64` scroll area for the todo board and raw output; answers are short and show whole.
     Widget scrolled(Widget child) => ConstrainedBox(
           constraints: const BoxConstraints(maxHeight: 256),
@@ -733,42 +763,53 @@ class _ToolCardState extends State<ToolCard> {
               style: monoStyle(context).copyWith(fontSize: 12, fontFeatures: const [FontFeature.tabularFigures()]),
             ),
           ),
-          const SizedBox(width: 6),
           AnimatedRotation(
             turns: _diffOpen ? .5 : 0,
             duration: const Duration(milliseconds: 150),
             child: Icon(Icons.expand_more, size: 16, color: scheme.mutedForeground),
           ),
-        ],
+        ] else if (foldable)
+          AnimatedRotation(
+            turns: bodyOpen ? .5 : 0,
+            duration: const Duration(milliseconds: 150),
+            child: Icon(Icons.expand_more, size: 16, color: scheme.mutedForeground),
+          ),
       ]),
     );
     return Container(
       decoration: BoxDecoration(border: Border.all(color: scheme.border), borderRadius: BorderRadius.circular(radius)),
       clipBehavior: Clip.antiAlias,
       child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-        if (change != null)
+        if (change != null || foldable)
           Material(
             type: MaterialType.transparency,
             child: InkWell(
-              onTap: () => setState(() => _diffOpen = !_diffOpen),
-              child: Semantics(button: true, expanded: _diffOpen, hint: _diffOpen ? '收起改动' : '查看改动', child: header),
+              onTap: () => setState(() => change != null ? _diffOpen = !_diffOpen : _opened = !bodyOpen),
+              child: Semantics(
+                button: true,
+                expanded: change != null ? _diffOpen : bodyOpen,
+                hint: change != null ? (_diffOpen ? '收起改动' : '查看改动') : (bodyOpen ? '收起输出' : '展开输出'),
+                child: header,
+              ),
             ),
           )
         else
           header,
         if (change != null && _diffOpen) ...[const Divider(), _Diff(change)],
-        if (images.isNotEmpty) ...[
-          const Divider(),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-            child: Wrap(spacing: 8, runSpacing: 8, children: [for (final path in images) WorkspaceImage(path, maxHeight: 256)]),
-          ),
+        if (bodyOpen) ...[
+          if (images.isNotEmpty) ...[
+            const Divider(),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              child: Wrap(spacing: 8, runSpacing: 8, children: [for (final path in images) WorkspaceImage(path, maxHeight: 256)]),
+            ),
+          ],
+          if (tool.image case final image?) ...[
+            const Divider(),
+            Padding(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8), child: _ReadImage(image, label: tool.summary)),
+          ],
+          if (body != null) ...[const Divider(), body],
         ],
-        if (tool.image case final image?) ...[
-          const Divider(),
-          Padding(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8), child: _ReadImage(image, label: tool.summary)),
-        ],
-        if (body != null) ...[const Divider(), body],
       ]),
     );
   }
