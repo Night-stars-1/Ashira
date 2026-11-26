@@ -812,7 +812,7 @@ class _Diff extends StatelessWidget {
                 SizedBox(width: 32, child: SelectionContainer.disabled(child: Text(number?.toString() ?? '', textAlign: TextAlign.right, style: muted))),
               if (numbered) const SizedBox(width: 8),
               SizedBox(width: 12, child: SelectionContainer.disabled(child: Text(sign, style: style))),
-              if (wrap) Expanded(child: Text(row.text, style: style)) else Text(row.text, style: style, softWrap: false),
+              if (wrap) Expanded(child: _DiffText(row, style: style)) else _DiffText(row, style: style, softWrap: false),
             ]),
           );
         }
@@ -849,6 +849,71 @@ class _Diff extends StatelessWidget {
       },
     );
   }
+}
+
+/// A diff row's text: changed characters on a stronger tint, and the leading indentation
+/// with a faint dot per column painted over it, so a copy keeps the spaces. Flutter has no
+/// tab stops, so a leading tab shows (and copies) as four spaces, the web's `tab-size: 4`.
+class _DiffText extends StatelessWidget {
+  const _DiffText(this.row, {required this.style, this.softWrap = true});
+  final DiffRow row;
+  final TextStyle style;
+  final bool softWrap;
+
+  @override
+  Widget build(BuildContext context) {
+    final text = row.text;
+    var indent = 0;
+    while (indent < text.length && (text[indent] == ' ' || text[indent] == '\t')) {
+      indent++;
+    }
+    // A change inside the indentation keeps it as plain text so the mark shows.
+    if (row.marks.isNotEmpty && row.marks.first.$1 < indent) indent = row.marks.first.$1;
+    final shown = text.substring(0, indent).replaceAll('\t', '    ');
+    final onSurface = Theme.of(context).colorScheme.onSurface;
+    final tint = style.color ?? onSurface;
+    final spans = <TextSpan>[if (shown.isNotEmpty) TextSpan(text: shown)];
+    var at = indent;
+    for (final (start, end) in row.marks) {
+      if (start < at) continue;
+      if (start > at) spans.add(TextSpan(text: text.substring(at, start)));
+      spans.add(TextSpan(text: text.substring(start, end), style: TextStyle(backgroundColor: tint.withValues(alpha: .3), color: onSurface)));
+      at = end;
+    }
+    if (at < text.length) spans.add(TextSpan(text: text.substring(at)));
+    final body = Text.rich(TextSpan(children: spans), style: style, softWrap: softWrap);
+    if (shown.isEmpty) return body;
+    return Stack(children: [
+      body,
+      Positioned(
+        left: 0,
+        top: 0,
+        child: IgnorePointer(child: CustomPaint(size: Size.zero, painter: _IndentDots(shown.length, style, tint.withValues(alpha: .45)))),
+      ),
+    ]);
+  }
+}
+
+/// One dot per monospace column of indentation, centred on the first line.
+class _IndentDots extends CustomPainter {
+  _IndentDots(this.columns, this.style, this.color);
+  final int columns;
+  final TextStyle style;
+  final Color color;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final probe = TextPainter(text: TextSpan(text: ' ', style: style), textDirection: TextDirection.ltr)..layout();
+    final width = probe.width, middle = probe.height / 2;
+    probe.dispose();
+    final paint = Paint()..color = color;
+    for (var column = 0; column < columns; column++) {
+      canvas.drawCircle(Offset((column + .5) * width, middle), 1, paint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(_IndentDots old) => old.columns != columns || old.style != style || old.color != color;
 }
 
 /// The picture `read` gave the model (a data URL), decoded once; tap shows it full size.

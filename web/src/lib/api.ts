@@ -247,8 +247,9 @@ export type AgentEvent = {
   approvalMode?: ApprovalMode
 }
 
-/** A file change on a `write`/`edit` card. Rows of a replayed `edit` have no line numbers. */
-export type DiffRow = { kind: 'context' | 'added' | 'removed' | 'hunk' | 'note'; text: string; old?: number; new?: number }
+/** A file change on a `write`/`edit` card. Rows of a replayed `edit` have no line numbers.
+ * `marks`: `[start, end)` string offsets of the characters that changed within a paired line. */
+export type DiffRow = { kind: 'context' | 'added' | 'removed' | 'hunk' | 'note'; text: string; old?: number; new?: number; marks?: [number, number][] }
 export type FileDiff = { added: number | null; removed: number | null; rows: DiffRow[]; omitted: number; notice: string }
 
 const DIFF_KINDS: DiffRow['kind'][] = ['context', 'added', 'removed', 'hunk', 'note']
@@ -261,8 +262,13 @@ export function parseDiff(value: unknown): FileDiff | undefined {
     if (!item || typeof item !== 'object') return []
     const row = item as Record<string, unknown>
     const kind = DIFF_KINDS.find((name) => name === row.kind)
-    if (!kind || typeof row.text !== 'string') return []
-    return [{ kind, text: row.text, old: count(row.old) ?? undefined, new: count(row.new) ?? undefined }]
+    const text = row.text
+    if (!kind || typeof text !== 'string') return []
+    const marks = Array.isArray(row.marks) ? row.marks.flatMap((mark): [number, number][] => {
+      const [start, end] = Array.isArray(mark) ? mark.map(count) : []
+      return start != null && end != null && start < end && end <= text.length ? [[start, end]] : []
+    }) : []
+    return [{ kind, text, old: count(row.old) ?? undefined, new: count(row.new) ?? undefined, marks: marks.length ? marks : undefined }]
   }) : []
   return { added: count(body.added), removed: count(body.removed), rows, omitted: count(body.omitted) ?? 0, notice: typeof body.notice === 'string' ? body.notice : '' }
 }

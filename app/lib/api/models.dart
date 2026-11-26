@@ -422,8 +422,9 @@ class ToolPart extends ReplyPart {
 }
 
 /// One line of a [FileDiff]; `kind` is `context`, `added`, `removed`, `hunk` or `note`.
-/// A replayed `edit` counts from its snippet, so its rows have no line numbers.
-typedef DiffRow = ({String kind, String text, int? old, int? line});
+/// A replayed `edit` counts from its snippet, so its rows have no line numbers. `marks`
+/// are `[start, end)` string offsets of the characters that changed within a paired line.
+typedef DiffRow = ({String kind, String text, int? old, int? line, List<(int, int)> marks});
 
 /// A file change on a `write`/`edit` card. `added`/`removed` are null when the file was
 /// binary or unreadable, and the card shows the text result instead.
@@ -444,7 +445,16 @@ class FileDiff {
       rows: [
         for (final raw in asList(body['rows']))
           if (asMap(raw) case final row when kinds.contains(row['kind']) && row['text'] is String)
-            (kind: row['kind'] as String, text: row['text'] as String, old: count(row['old']), line: count(row['new'])),
+            (
+              kind: row['kind'] as String,
+              text: row['text'] as String,
+              old: count(row['old']),
+              line: count(row['new']),
+              marks: [
+                for (final mark in asList(row['marks']))
+                  if (asList(mark) case [final int start, final int end] when start >= 0 && start < end && end <= (row['text'] as String).length) (start, end),
+              ],
+            ),
       ],
       omitted: count(body['omitted']) ?? 0,
     );

@@ -1108,6 +1108,7 @@ fn diff_json(change: &crate::file_output::FileChange, numbered: bool) -> Value {
     let rows: Vec<Value> = change.rows.iter().take(ROWS).map(|row| {
         let kind = match row.kind { DiffKind::Context => "context", DiffKind::Added => "added", DiffKind::Removed => "removed", DiffKind::Hunk => "hunk", DiffKind::NoNewline => "note" };
         let mut value = json!({"kind": kind, "text": if numbered || row.kind != DiffKind::Hunk { row.text.as_str() } else { "" }});
+        if !row.highlights.is_empty() { value["marks"] = json!(utf16_ranges(&row.text, &row.highlights)); }
         if numbered {
             if let Some(old) = row.old { value["old"] = json!(old); }
             if let Some(new) = row.new { value["new"] = json!(new); }
@@ -1116,6 +1117,13 @@ fn diff_json(change: &crate::file_output::FileChange, numbered: bool) -> Value {
     }).collect();
     let omitted = change.omitted_rows + change.rows.len().saturating_sub(ROWS);
     json!({"added": change.added, "removed": change.removed, "rows": rows, "omitted": omitted, "notice": change.notice})
+}
+
+/// Byte ranges of `text` as `[start, end]` UTF-16 offsets, which is how JavaScript and
+/// Dart index strings.
+fn utf16_ranges(text: &str, ranges: &[std::ops::Range<usize>]) -> Vec<[usize; 2]> {
+    let offset = |byte: usize| text.get(..byte).map_or(0, |head| head.encode_utf16().count());
+    ranges.iter().map(|range| [offset(range.start), offset(range.end)]).collect()
 }
 
 async fn files(cwd: &Path, relative: &str) -> Result<Value, String> {
