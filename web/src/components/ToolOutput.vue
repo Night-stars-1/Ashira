@@ -37,22 +37,19 @@ const markClass: Record<string, string> = {
   removed: 'rounded-sm bg-destructive/35 text-foreground',
 }
 
-type Segment = { text: string; kind: 'indent' | 'mark' | 'plain' }
+type Segment = { text: string; mark: boolean }
 
-/** A diff row split into its leading indentation, changed characters and the rest. */
+/** A diff row split into the characters that changed and the rest. */
 function segments(row: DiffRow): Segment[] {
   const out: Segment[] = []
-  // A change inside the indentation keeps it as plain text so the mark shows.
-  const indent = Math.min(row.text.length - row.text.replace(/^[ \t]+/, '').length, row.marks?.[0]?.[0] ?? Infinity)
-  if (indent > 0) out.push({ text: row.text.slice(0, indent), kind: 'indent' })
-  let at = indent
+  let at = 0
   for (const [start, end] of row.marks ?? []) {
     if (start < at) continue
-    if (start > at) out.push({ text: row.text.slice(at, start), kind: 'plain' })
-    out.push({ text: row.text.slice(start, end), kind: 'mark' })
+    if (start > at) out.push({ text: row.text.slice(at, start), mark: false })
+    out.push({ text: row.text.slice(start, end), mark: true })
     at = end
   }
-  if (at < row.text.length) out.push({ text: row.text.slice(at), kind: 'plain' })
+  if (at < row.text.length) out.push({ text: row.text.slice(at), mark: false })
   return out
 }
 
@@ -154,7 +151,7 @@ function todoLabel(status: string) {
           <div v-else class="flex gap-2 px-3" :class="rowClass[row.kind]">
             <span v-if="row.old !== undefined || row.new !== undefined" class="w-8 shrink-0 text-right opacity-60 tabular-nums select-none">{{ row.kind === 'removed' ? row.old : row.new }}</span>
             <span class="w-3 shrink-0 select-none">{{ row.kind === 'added' ? '+' : row.kind === 'removed' ? '−' : '' }}</span>
-            <span class="min-w-0 flex-1 [tab-size:4]" :class="wrapToolOutput ? 'whitespace-pre-wrap' : 'whitespace-pre'"><template v-for="(part, partIndex) in segments(row)" :key="partIndex"><span v-if="part.kind === 'indent'" class="diff-indent">{{ part.text }}</span><mark v-else-if="part.kind === 'mark'" :class="markClass[row.kind]">{{ part.text }}</mark><template v-else>{{ part.text }}</template></template></span>
+            <span class="min-w-0 flex-1 [tab-size:4]" :class="wrapToolOutput ? 'whitespace-pre-wrap' : 'whitespace-pre'"><template v-for="(part, partIndex) in segments(row)" :key="partIndex"><mark v-if="part.mark" :class="markClass[row.kind]">{{ part.text }}</mark><template v-else>{{ part.text }}</template></template></span>
           </div>
         </template>
         <p v-if="change.omitted" class="px-3 pt-1 text-muted-foreground">还有 {{ change.omitted }} 行未显示</p>

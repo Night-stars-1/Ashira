@@ -74,21 +74,11 @@ fn clipped_spans(spans: &[Span<'static>], width: usize) -> (Vec<Span<'static>>, 
     (result, true)
 }
 
-/// A diff row's text: highlighted ranges on a solid background, and the leading
-/// indentation drawn as dim `·` per space and `→···` per tab (four cells, as `sanitize`
-/// expands it) so its depth reads at a glance.
 fn diff_text(row: &crate::file_output::DiffRow, color: Color) -> Vec<Span<'static>> {
     let normal = Style::new().fg(color);
     let highlighted = Style::new().fg(CARD_BG).bg(color);
     let mut spans = Vec::new();
-    let indent = row.text.len() - row.text.trim_start_matches([' ', '\t']).len();
-    // A highlight that starts inside the indentation keeps the real spaces, so it shows.
-    let indent = row.highlights.first().map_or(indent, |range| indent.min(range.start));
-    if indent > 0 {
-        let dots: String = row.text[..indent].chars().map(|c| if c == '\t' { "→···" } else { "·" }).collect();
-        spans.push(Span::styled(dots, Style::new().fg(color).add_modifier(Modifier::DIM)));
-    }
-    let mut pos = indent;
+    let mut pos = 0;
     for range in &row.highlights {
         if range.start < pos || range.end <= range.start { continue; }
         let (Some(before), Some(marked)) = (row.text.get(pos..range.start), row.text.get(range.start..range.end)) else { continue; };

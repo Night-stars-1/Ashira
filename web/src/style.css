@@ -170,11 +170,3 @@
     cursor: pointer;
   }
 }
-
-/* Leading indentation on a diff row: a faint dot per column, painted as a background so a
-   copy keeps the real spaces and tabs. */
-.diff-indent {
-  background-image: radial-gradient(circle, color-mix(in oklab, currentColor 45%, transparent) 0.9px, transparent 1.4px);
-  background-size: 1ch 100%;
-  background-repeat: repeat-x;
-}
