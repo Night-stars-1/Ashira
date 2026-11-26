@@ -311,13 +311,27 @@ class _ProjectPickerState extends State<_ProjectPicker> {
   BrowseListing? _listing;
   bool _loading = false;
   String _error = '';
+  /// The path field: the folder shown, or a path typed to jump to (Enter).
+  final _path = TextEditingController();
+  /// Filters the folder's subfolders by name.
+  final _query = TextEditingController();
 
   @override
   void initState() {
     super.initState();
+    _query.addListener(() => setState(() {}));
+    _path.addListener(() => setState(() {}));
     _load(widget.start);
   }
 
+  @override
+  void dispose() {
+    _path.dispose();
+    _query.dispose();
+    super.dispose();
+  }
+
+  /// A path that does not open leaves the folder shown as it was.
   Future<void> _load(String path) async {
     setState(() {
       _loading = true;
@@ -325,7 +339,10 @@ class _ProjectPickerState extends State<_ProjectPicker> {
     });
     try {
       final listing = await widget.client.browse(path);
-      if (mounted) setState(() => _listing = listing);
+      if (!mounted) return;
+      setState(() => _listing = listing);
+      _path.text = listing.path;
+      _query.clear();
     } catch (error) {
       if (mounted) setState(() => _error = errorText(error, '无法打开目录'));
     } finally {
@@ -333,83 +350,119 @@ class _ProjectPickerState extends State<_ProjectPicker> {
     }
   }
 
-  /// Breadcrumb segments with the path each one opens, like the web picker.
-  List<({String name, String path})> _crumbs(String value) {
-    if (value.isEmpty) return const [];
-    final sep = value.contains('\\') ? '\\' : '/';
-    final crumbs = <({String name, String path})>[];
-    var acc = '';
-    for (final part in value.split(RegExp(r'[\\/]')).where((part) => part.isNotEmpty)) {
-      acc = acc.isEmpty ? (part.endsWith(':') ? '$part$sep' : (value.startsWith('/') ? '/$part' : part)) : '${acc.replaceFirst(RegExp(r'[\\/]$'), '')}$sep$part';
-      crumbs.add((name: part, path: acc));
-    }
-    return crumbs;
+  void _go() {
+    final next = _path.text.trim();
+    if (next.isNotEmpty && next != _listing?.path) _load(next);
   }
 
   @override
   Widget build(BuildContext context) {
     final listing = _listing;
     final scheme = Theme.of(context).colorScheme;
-    final crumbs = _crumbs(listing?.path ?? '');
-    final name = crumbs.isEmpty ? '此目录' : crumbs.last.name;
+    final name = listing == null ? '此目录' : listing.path.split(RegExp(r'[\\/]')).lastWhere((part) => part.isNotEmpty, orElse: () => listing.path);
+    final needle = _query.text.trim().toLowerCase();
+    final entries = listing == null ? const <BrowseEntry>[] : [for (final entry in listing.entries) if (needle.isEmpty || entry.name.toLowerCase().contains(needle)) entry];
+    final typed = _path.text.trim();
+    final parent = listing?.parent;
     return Padding(
       padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
       child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-        SizedBox(
-          height: 32,
-          child: ListView(scrollDirection: Axis.horizontal, children: [
-            for (final (index, crumb) in crumbs.indexed) ...[
-              if (index > 0) Icon(Icons.chevron_right, size: 14, color: scheme.mutedForeground),
-              TextButton(
-                onPressed: _loading || index == crumbs.length - 1 ? null : () => _load(crumb.path),
-                style: TextButton.styleFrom(
-                  padding: const EdgeInsets.symmetric(horizontal: 6),
-                  minimumSize: const Size(0, 28),
-                  backgroundColor: index == crumbs.length - 1 ? scheme.muted : null,
-                  disabledForegroundColor: index == crumbs.length - 1 ? scheme.onSurface : null,
-                ),
-                child: Text(crumb.name),
-              ),
-            ],
-          ]),
-        ),
+        Row(children: [
+          IconButton(
+            tooltip: '上一级目录',
+            icon: const Icon(Icons.arrow_upward, size: 18),
+            onPressed: _loading || parent == null ? null : () => _load(parent),
+          ),
+          const SizedBox(width: 4),
+          Expanded(
+            child: TextField(
+              controller: _path,
+              style: monoStyle(context).copyWith(fontSize: 12),
+              autocorrect: false,
+              enableSuggestions: false,
+              textInputAction: TextInputAction.go,
+              decoration: const InputDecoration(isDense: true, hintText: '输入路径，回车前往'),
+              onSubmitted: (_) => _go(),
+            ),
+          ),
+          const SizedBox(width: 4),
+          IconButton(
+            tooltip: '前往路径',
+            icon: const Icon(Icons.arrow_forward, size: 18),
+            onPressed: _loading || typed.isEmpty || typed == listing?.path ? null : _go,
+          ),
+        ]),
         if (_error.isNotEmpty) Padding(padding: const EdgeInsets.only(top: 8), child: Text(_error, style: TextStyle(fontSize: 13, color: scheme.error))),
         const SizedBox(height: 12),
         Expanded(
           child: Container(
             decoration: BoxDecoration(border: Border.all(color: scheme.border), borderRadius: BorderRadius.circular(radius)),
             clipBehavior: Clip.antiAlias,
-            child: _loading
-                ? const Center(child: SizedBox.square(dimension: 18, child: CircularProgressIndicator()))
-                : (listing?.entries.isEmpty ?? true)
-                    ? Center(child: Text('没有子目录，可以直接使用当前目录', style: TextStyle(fontSize: 13, color: scheme.mutedForeground)))
-                    : ListView(padding: const EdgeInsets.all(4), children: [
-                        for (final entry in listing!.entries)
-                          CompactRow(
-                            onTap: () => _load(entry.path),
-                            padding: const EdgeInsets.symmetric(horizontal: 10),
-                            child: Row(children: [
-                              Icon(Icons.folder_outlined, size: 15, color: scheme.mutedForeground),
-                              const SizedBox(width: 8),
-                              Expanded(child: Text(entry.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13))),
-                              Icon(Icons.chevron_right, size: 14, color: scheme.mutedForeground),
-                            ]),
-                          ),
-                      ]),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+              TextField(
+                controller: _query,
+                autofocus: true,
+                autocorrect: false,
+                enableSuggestions: false,
+                style: const TextStyle(fontSize: 13),
+                decoration: InputDecoration(
+                  isDense: true,
+                  hintText: '搜索当前目录',
+                  prefixIcon: Icon(Icons.search, size: 16, color: scheme.mutedForeground),
+                  prefixIconConstraints: const BoxConstraints(minWidth: 36),
+                  filled: false,
+                  border: InputBorder.none,
+                  enabledBorder: InputBorder.none,
+                  focusedBorder: InputBorder.none,
+                  contentPadding: const EdgeInsets.symmetric(vertical: 10),
+                ),
+                // Enter opens the only folder left.
+                onSubmitted: (_) {
+                  if (entries.length == 1) _load(entries.single.path);
+                },
+              ),
+              const Divider(),
+              Expanded(
+                child: _loading
+                    ? const Center(child: SizedBox.square(dimension: 18, child: CircularProgressIndicator()))
+                    : entries.isEmpty
+                        ? Center(
+                            child: Text(
+                              (listing?.entries.isEmpty ?? true) ? '没有子目录，可以直接使用当前目录' : '没有名称包含「${_query.text.trim()}」的文件夹',
+                              style: TextStyle(fontSize: 13, color: scheme.mutedForeground),
+                            ),
+                          )
+                        : ListView(padding: const EdgeInsets.all(4), children: [
+                            for (final entry in entries)
+                              CompactRow(
+                                onTap: () => _load(entry.path),
+                                padding: const EdgeInsets.symmetric(horizontal: 10),
+                                child: Row(children: [
+                                  Icon(Icons.folder_outlined, size: 15, color: scheme.mutedForeground),
+                                  const SizedBox(width: 8),
+                                  Expanded(child: Text(entry.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13))),
+                                  Icon(Icons.chevron_right, size: 14, color: scheme.mutedForeground),
+                                ]),
+                              ),
+                          ]),
+              ),
+            ]),
           ),
         ),
         const SizedBox(height: 16),
-        Row(children: [
-          Expanded(child: Text(listing?.path ?? '', maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 12, color: scheme.mutedForeground))),
-          const SizedBox(width: 12),
-          ConstrainedBox(
+        Align(
+          alignment: Alignment.centerRight,
+          child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 260),
-            child: FilledButton(
-              onPressed: listing == null || _loading ? null : () => Navigator.of(context).pop(listing.path),
-              child: Text('在 $name 开始', maxLines: 1, overflow: TextOverflow.ellipsis),
+            child: Tooltip(
+              message: listing?.path ?? '',
+              child: FilledButton(
+                onPressed: listing == null || _loading ? null : () => Navigator.of(context).pop(listing.path),
+                child: Text('在 $name 开始', maxLines: 1, overflow: TextOverflow.ellipsis),
+              ),
             ),
           ),
-        ]),
+        ),
       ]),
     );
   }
