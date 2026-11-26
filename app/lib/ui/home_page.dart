@@ -422,35 +422,31 @@ class _NewSession extends StatelessWidget {
       child: Column(children: [
         Text('要做什么？', style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w500)),
         const SizedBox(height: 8),
+        // The web's menu: `w-72` (288px) with `p-1`, rows `px-2 py-1.5`, icon, name, a check
+        // pinned right on the current project.
         MenuAnchor(
-          style: const MenuStyle(maximumSize: WidgetStatePropertyAll(Size(320, 360))),
+          alignmentOffset: const Offset(0, 4),
+          style: const MenuStyle(maximumSize: WidgetStatePropertyAll(Size(288, 360))),
           menuChildren: [
             if (projects.isNotEmpty) ...[
               Padding(
-                padding: const EdgeInsets.fromLTRB(12, 6, 12, 4),
+                padding: const EdgeInsets.fromLTRB(8, 6, 8, 6),
                 child: Text('项目', style: TextStyle(fontSize: 12, color: scheme.mutedForeground)),
               ),
               for (final project in projects)
                 Tooltip(
                   message: project.path,
                   waitDuration: const Duration(milliseconds: 600),
-                  child: MenuItemButton(
+                  child: _ProjectRow(
+                    icon: Icons.folder_outlined,
+                    label: project.name,
+                    checked: _plain(project.path) == current,
                     onPressed: onPick == null ? null : () => onPick!(project.path),
-                    leadingIcon: const Icon(Icons.folder_outlined, size: 16),
-                    trailingIcon: _plain(project.path) == current ? const Icon(Icons.check, size: 16) : null,
-                    child: ConstrainedBox(
-                      constraints: const BoxConstraints(maxWidth: 220),
-                      child: Text(project.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13)),
-                    ),
                   ),
                 ),
-              const Divider(height: 9),
+              Divider(height: 9, color: scheme.border),
             ],
-            MenuItemButton(
-              onPressed: onBrowse,
-              leadingIcon: const Icon(Icons.create_new_folder_outlined, size: 16),
-              child: const Text('新建项目…', style: TextStyle(fontSize: 13)),
-            ),
+            _ProjectRow(icon: Icons.create_new_folder_outlined, label: '新建项目…', onPressed: onBrowse),
           ],
           builder: (context, controller, _) => Tooltip(
             message: '$cwd\n点击更换目录',
@@ -468,6 +464,36 @@ class _NewSession extends StatelessWidget {
           ),
         ),
       ]),
+    );
+  }
+}
+
+/// One row of 新会话's project menu, 280px wide (the web's `w-72` less `p-1`).
+class _ProjectRow extends StatelessWidget {
+  const _ProjectRow({required this.icon, required this.label, required this.onPressed, this.checked = false});
+  final IconData icon;
+  final String label;
+  final VoidCallback? onPressed;
+  final bool checked;
+  @override
+  Widget build(BuildContext context) {
+    final muted = Theme.of(context).colorScheme.mutedForeground;
+    return MenuItemButton(
+      onPressed: onPressed,
+      style: MenuItemButton.styleFrom(
+        minimumSize: const Size(0, 32),
+        padding: const EdgeInsets.symmetric(horizontal: 8),
+        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+      ),
+      child: SizedBox(
+        width: 264,
+        child: Row(children: [
+          Icon(icon, size: 14, color: muted),
+          const SizedBox(width: 8),
+          Expanded(child: Text(label, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 14))),
+          if (checked) ...[const SizedBox(width: 8), Icon(Icons.check, size: 14, color: muted)],
+        ]),
+      ),
     );
   }
 }
@@ -493,7 +519,10 @@ class _ViewTabs extends StatelessWidget {
             cursor: enabled ? SystemMouseCursors.click : SystemMouseCursors.basic,
             child: GestureDetector(
               onTap: enabled && !selected ? () => onSelect(value) : null,
+              // Only the colours animate; the size jumps when the window crosses the compact
+              // width, since a fixed width cannot tween to an unbounded one.
               child: AnimatedContainer(
+                key: ValueKey(compact),
                 duration: const Duration(milliseconds: 150),
                 height: compact ? 28 : 24,
                 width: compact ? 28 : null,
