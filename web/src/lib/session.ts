@@ -1,5 +1,5 @@
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
-import { api, ApiError, connection, parseEvent, parseReplyMetrics, streamUrl, type AgentEvent, type ApprovalMode, type Archive, type ConfirmRequest, type QuestionAnswers, type QuestionRequest, type SessionNode, type SessionView, type Status, type UpdateProgress } from './api'
+import { api, ApiError, connection, parseDiff, parseEvent, parseReplyMetrics, streamUrl, type AgentEvent, type ApprovalMode, type Archive, type ConfirmRequest, type QuestionAnswers, type QuestionRequest, type SessionNode, type SessionView, type Status, type UpdateProgress } from './api'
 import { toast } from './toast'
 import type { Block, ReplyPart, TextFile } from '@/components/Transcript.vue'
 
@@ -300,6 +300,7 @@ export function useAshira() {
           tool.output = event.output ?? ''
           tool.error = event.isError === true
           if (event.image) tool.image = event.image
+          if (event.diff) tool.diff = event.diff
           tool.done = true
         }
       }
@@ -618,7 +619,7 @@ export function historyBlocks(body: unknown): Block[] {
       const text = (key: string) => typeof part[key] === 'string' ? part[key] : ''
       if (part.type === 'text' || part.type === 'reasoning') return text('text') ? [{ type: part.type, text: text('text') }] : []
       if (part.type !== 'tool') return []
-      return [{ type: 'tool', name: text('name') || 'tool', summary: text('summary'), output: text('output'), error: part.error === true, done: part.done !== false, image: imageSrc(part.image) }]
+      return [{ type: 'tool', name: text('name') || 'tool', summary: text('summary'), output: text('output'), error: part.error === true, done: part.done !== false, image: imageSrc(part.image), diff: parseDiff(part.diff) }]
     }) : []
     return [{ kind: 'assistant', parts, live: false, metrics: parseReplyMetrics(row.metrics) }]
   })

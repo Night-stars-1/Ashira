@@ -411,12 +411,44 @@ class TextPart extends ReplyPart {
 }
 
 class ToolPart extends ReplyPart {
-  ToolPart({required this.name, required this.summary, this.output = '', this.error = false, this.done = false, this.image});
+  ToolPart({required this.name, required this.summary, this.output = '', this.error = false, this.done = false, this.image, this.diff});
   final String name, summary;
   String output;
   bool error, done;
   /// The picture `read` gave the model, as a data URL; shown on the tool card.
   String? image;
+  /// What `write`/`edit` changed, when the server computed it.
+  FileDiff? diff;
+}
+
+/// One line of a [FileDiff]; `kind` is `context`, `added`, `removed`, `hunk` or `note`.
+/// A replayed `edit` counts from its snippet, so its rows have no line numbers.
+typedef DiffRow = ({String kind, String text, int? old, int? line});
+
+/// A file change on a `write`/`edit` card. `added`/`removed` are null when the file was
+/// binary or unreadable, and the card shows the text result instead.
+class FileDiff {
+  const FileDiff({this.added, this.removed, this.rows = const [], this.omitted = 0});
+  final int? added, removed;
+  final List<DiffRow> rows;
+  final int omitted;
+
+  static FileDiff? fromJson(Object? value) {
+    if (value is! Map) return null;
+    final body = asMap(value);
+    int? count(Object? item) => item is int && item >= 0 ? item : null;
+    const kinds = {'context', 'added', 'removed', 'hunk', 'note'};
+    return FileDiff(
+      added: count(body['added']),
+      removed: count(body['removed']),
+      rows: [
+        for (final raw in asList(body['rows']))
+          if (asMap(raw) case final row when kinds.contains(row['kind']) && row['text'] is String)
+            (kind: row['kind'] as String, text: row['text'] as String, old: count(row['old']), line: count(row['new'])),
+      ],
+      omitted: count(body['omitted']) ?? 0,
+    );
+  }
 }
 
 sealed class Block {}
@@ -488,7 +520,7 @@ List<Block> historyBlocks(Object? messages, [String Function(String path)? resol
           if ((type == 'text' || type == 'reasoning') && str(part['text']).isNotEmpty) {
             parts.add(TextPart(str(part['text']), reasoning: type == 'reasoning'));
           } else if (type == 'tool') {
-            parts.add(ToolPart(name: str(part['name'], 'tool'), summary: str(part['summary']), output: str(part['output']), error: part['error'] == true, done: part['done'] != false, image: imageUrl(part['image'], resolve)));
+            parts.add(ToolPart(name: str(part['name'], 'tool'), summary: str(part['summary']), output: str(part['output']), error: part['error'] == true, done: part['done'] != false, image: imageUrl(part['image'], resolve), diff: FileDiff.fromJson(part['diff'])));
           }
         }
         blocks.add(AssistantBlock(parts: parts, metrics: ReplyMetrics.fromJson(row['metrics'])));

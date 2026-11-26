@@ -984,7 +984,7 @@ fn project_assistant(blocks: &mut Vec<Value>, message: &Value, stats: Option<&se
             Some("tool_use") => {
                 let name = block["name"].as_str().unwrap_or("tool");
                 if matches!(name, "task" | "wait" | "task_status" | "task_cancel") { continue; }
-                parts.push(json!({
+                let mut tool = json!({
                     "type": "tool",
                     "id": block["id"].as_str().unwrap_or(""),
                     "name": name,
@@ -992,7 +992,13 @@ fn project_assistant(blocks: &mut Vec<Value>, message: &Value, stats: Option<&se
                     "output": "",
                     "error": false,
                     "done": true,
-                }));
+                });
+                // The file's text before the call is gone, so only `edit` has a diff to show:
+                // its `old` and `new`, numbered from the snippet rather than the file.
+                if name == "edit" && let (Some(old), Some(new)) = (block["input"]["old"].as_str(), block["input"]["new"].as_str()) {
+                    tool["diff"] = diff_json(&crate::file_output::preview(old, new), false);
+                }
+                parts.push(tool);
             }
             _ => {}
         }
@@ -1037,6 +1043,8 @@ fn attach_result(blocks: &mut Vec<Value>, result: &Value, image: Option<String>)
             .find(|tool| tool["id"].as_str() == Some(id) || (id.is_empty() && tool["output"].as_str() == Some(""))) else { continue };
         tool["output"] = json!(output);
         tool["error"] = json!(error);
+        // A failed edit changed nothing.
+        if error && let Some(tool) = tool.as_object_mut() { tool.remove("diff"); }
         tool["done"] = json!(true);
         if let Some(image) = image { tool["image"] = json!(image); }
         return;
@@ -1090,6 +1098,24 @@ fn cap_text(text: &str) -> String {
     let head: String = text.chars().take(4_000).collect();
     let tail: String = text.chars().skip(count - 4_000).collect();
     format!("{head}\n…\n{tail}")
+}
+
+/// A file change for a tool card: `+`/`−` line counts and up to `ROWS` diff rows. Rows
+/// carry line numbers only when `numbered`, i.e. when they count from the file's start.
+fn diff_json(change: &crate::file_output::FileChange, numbered: bool) -> Value {
+    use crate::file_output::DiffKind;
+    const ROWS: usize = 400;
+    let rows: Vec<Value> = change.rows.iter().take(ROWS).map(|row| {
+        let kind = match row.kind { DiffKind::Context => "context", DiffKind::Added => "added", DiffKind::Removed => "removed", DiffKind::Hunk => "hunk", DiffKind::NoNewline => "note" };
+        let mut value = json!({"kind": kind, "text": if numbered || row.kind != DiffKind::Hunk { row.text.as_str() } else { "" }});
+        if numbered {
+            if let Some(old) = row.old { value["old"] = json!(old); }
+            if let Some(new) = row.new { value["new"] = json!(new); }
+        }
+        value
+    }).collect();
+    let omitted = change.omitted_rows + change.rows.len().saturating_sub(ROWS);
+    json!({"added": change.added, "removed": change.removed, "rows": rows, "omitted": omitted, "notice": change.notice})
 }
 
 async fn files(cwd: &Path, relative: &str) -> Result<Value, String> {
@@ -1452,7 +1478,13 @@ fn encode(shared: &Shared, routing: &mut Routing, event: Event) -> Option<Frame>
         Event::Reasoning(text) => json!({"type": "reasoning", "text": text}),
         Event::ReasoningEnd => json!({"type": "reasoning_end"}),
         Event::ToolStart { call, summary } => json!({"type": "tool_start", "name": call.name, "intent": call.intent, "summary": summary, "agent": call.agent.as_ref().map(|agent| agent.name.clone())}),
-        Event::ToolEnd { call, output, is_error, image, .. } => json!({"type": "tool_end", "name": call.name, "output": clip(&output), "isError": is_error, "image": image.as_deref()}),
+        Event::ToolEnd { call, output, is_error, image, file } => {
+            let mut value = json!({"type": "tool_end", "name": call.name, "output": clip(&output), "isError": is_error, "image": image.as_deref()});
+            if let Some(crate::file_output::FileOutput { detail: crate::file_output::FileDetail::Change(change), .. }) = &file {
+                value["diff"] = diff_json(change, true);
+            }
+            value
+        }
         Event::Todo(snapshot) => json!({"type": "todo", "snapshot": &*snapshot}),
         Event::ToolBatchEnd => json!({"type": "tool_batch_end"}),
         Event::Confirm { id, call, command, reason, always, reply, cancel } => {

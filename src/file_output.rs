@@ -105,7 +105,22 @@ fn inline_ranges(old: &str, new: &str) -> (Vec<Range<usize>>, Vec<Range<usize>>)
     (old_ranges, new_ranges)
 }
 
+/// The diff of one file's whole text, saving the full diff to an artifact when the
+/// bounded preview is truncated.
 pub fn change(path: &str, before: &str, after: &str) -> FileChange {
+    diff(Some(path), before, after)
+}
+
+/// The same bounded diff with no artifact, for texts that are not a file on disk (an
+/// `edit` call's `old` and `new` replayed from history). A snippet rarely ends in a
+/// newline, so "no newline at end of file" would only be noise there.
+pub fn preview(before: &str, after: &str) -> FileChange {
+    let mut change = diff(None, before, after);
+    change.rows.retain(|row| row.kind != DiffKind::NoNewline);
+    change
+}
+
+fn diff(path: Option<&str>, before: &str, after: &str) -> FileChange {
     let diff = TextDiff::from_lines(before, after);
     let mut added = 0;
     let mut removed = 0;
@@ -128,7 +143,7 @@ pub fn change(path: &str, before: &str, after: &str) -> FileChange {
         let omitted = rows.len() >= MAX_ROWS || bytes >= MAX_BYTES;
         let mut end = if omitted { 0 } else { text.len().min(MAX_LINE_BYTES.min(MAX_BYTES - bytes)) };
         while !text.is_char_boundary(end) { end -= 1; }
-        if !started && (omitted || end < text.len()) {
+        if let Some(path) = path && !started && (omitted || end < text.len()) {
             started = true;
             match create_artifact() {
                 Ok((path_buf, mut writer)) => {
@@ -208,8 +223,10 @@ pub fn change(path: &str, before: &str, after: &str) -> FileChange {
         drop(writer);
         if truncated && !artifact_failed { full_diff_path = Some(path); } else { let _ = fs::remove_file(path); }
     }
-    let notice = if truncated {
+    let notice = if !truncated { None } else if path.is_none() {
+        Some("Diff preview truncated.".to_string())
+    } else {
         Some(if artifact_failed { "Diff preview truncated; saving the full diff failed." } else { "Diff preview truncated; full diff saved to the artifact." }.to_string())
-    } else { None };
+    };
     FileChange { added: Some(added), removed: Some(removed), rows, omitted_rows, full_diff_path, notice }
 }

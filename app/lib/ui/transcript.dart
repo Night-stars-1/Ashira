@@ -655,19 +655,29 @@ List<String> generatedImages(ToolPart tool) => tool.name == 'generate_image' && 
     : const [];
 
 /// The web's ToolOutput: a badge with the tool's name and its summary, then the result
-/// (todo board, `ask_user` answers or raw/numbered output) under a divider. Always open.
-class ToolCard extends StatelessWidget {
+/// (todo board, `ask_user` answers or raw/numbered output) under a divider. A `write`/`edit`
+/// card shows its `+`/`−` line counts instead; tapping the header opens the diff.
+class ToolCard extends StatefulWidget {
   const ToolCard(this.tool, {super.key});
   final ToolPart tool;
+  @override
+  State<ToolCard> createState() => _ToolCardState();
+}
+
+class _ToolCardState extends State<ToolCard> {
+  bool _diffOpen = false;
 
   @override
   Widget build(BuildContext context) {
+    final tool = widget.tool;
     final scheme = Theme.of(context).colorScheme;
     final todo = tool.name == 'todo' ? parseTodo(tool.output) : null;
     final asked = tool.name == 'ask_user' ? parseAsk(tool.output) : null;
     final numbered = todo == null && asked == null && tool.output.isNotEmpty ? numberedLines(tool.output) : null;
     final label = switch (tool.name) { 'todo' => '待办', 'ask_user' => '提问', 'generate_image' => '生成图片', _ => tool.name };
     final images = generatedImages(tool);
+    // A binary or unreadable file has no counts and shows the text result instead.
+    final change = !tool.error && tool.diff?.added != null ? tool.diff : null;
     // `max-h-64` scroll area for the todo board and raw output; answers are short and show whole.
     Widget scrolled(Widget child) => ConstrainedBox(
           constraints: const BoxConstraints(maxHeight: 256),
@@ -689,34 +699,64 @@ class ToolCard extends StatelessWidget {
         : asked != null
             ? Padding(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8), child: _AskResult(asked))
             // A picture `read` returned is the result; its "attached for you to view" note is for the model.
-            : tool.output.isEmpty || tool.image != null
+            : tool.output.isEmpty || tool.image != null || change != null
                 ? null
                 : output();
+    final header = Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      child: Row(children: [
+        // The web's secondary Badge: 20px tall, fully rounded, 12px medium text.
+        Container(
+          height: 20,
+          padding: const EdgeInsets.symmetric(horizontal: 8),
+          alignment: Alignment.center,
+          decoration: BoxDecoration(color: scheme.secondary, borderRadius: BorderRadius.circular(999)),
+          child: Text(label, style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500, height: 1, color: scheme.onSecondary)),
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(tool.name == 'todo' ? '' : tool.summary, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: scheme.mutedForeground, fontSize: 14)),
+        ),
+        if (!tool.done)
+          Text('运行中', style: TextStyle(fontSize: 12, color: scheme.mutedForeground))
+        else if (tool.error)
+          Text('失败', style: TextStyle(fontSize: 12, color: scheme.error))
+        else if (change != null) ...[
+          Semantics(
+            label: '新增 ${change.added} 行，删除 ${change.removed} 行',
+            excludeSemantics: true,
+            child: Text.rich(
+              TextSpan(children: [
+                TextSpan(text: '+${change.added}', style: TextStyle(color: _added(context))),
+                TextSpan(text: '  −${change.removed}', style: TextStyle(color: scheme.error)),
+              ]),
+              style: monoStyle(context).copyWith(fontSize: 12, fontFeatures: const [FontFeature.tabularFigures()]),
+            ),
+          ),
+          const SizedBox(width: 6),
+          AnimatedRotation(
+            turns: _diffOpen ? .5 : 0,
+            duration: const Duration(milliseconds: 150),
+            child: Icon(Icons.expand_more, size: 16, color: scheme.mutedForeground),
+          ),
+        ],
+      ]),
+    );
     return Container(
       decoration: BoxDecoration(border: Border.all(color: scheme.border), borderRadius: BorderRadius.circular(radius)),
       clipBehavior: Clip.antiAlias,
       child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-          child: Row(children: [
-            // The web's secondary Badge: 20px tall, fully rounded, 12px medium text.
-            Container(
-              height: 20,
-              padding: const EdgeInsets.symmetric(horizontal: 8),
-              alignment: Alignment.center,
-              decoration: BoxDecoration(color: scheme.secondary, borderRadius: BorderRadius.circular(999)),
-              child: Text(label, style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500, height: 1, color: scheme.onSecondary)),
+        if (change != null)
+          Material(
+            type: MaterialType.transparency,
+            child: InkWell(
+              onTap: () => setState(() => _diffOpen = !_diffOpen),
+              child: Semantics(button: true, expanded: _diffOpen, hint: _diffOpen ? '收起改动' : '查看改动', child: header),
             ),
-            const SizedBox(width: 8),
-            Expanded(
-              child: Text(tool.name == 'todo' ? '' : tool.summary, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: scheme.mutedForeground, fontSize: 14)),
-            ),
-            if (!tool.done)
-              Text('运行中', style: TextStyle(fontSize: 12, color: scheme.mutedForeground))
-            else if (tool.error)
-              Text('失败', style: TextStyle(fontSize: 12, color: scheme.error)),
-          ]),
-        ),
+          )
+        else
+          header,
+        if (change != null && _diffOpen) ...[const Divider(), _Diff(change)],
         if (images.isNotEmpty) ...[
           const Divider(),
           Padding(
@@ -730,6 +770,83 @@ class ToolCard extends StatelessWidget {
         ],
         if (body != null) ...[const Divider(), body],
       ]),
+    );
+  }
+}
+
+/// The web's `text-emerald-700 dark:text-emerald-400`, for added lines.
+Color _added(BuildContext context) =>
+    Theme.of(context).brightness == Brightness.dark ? const Color(0xFF34D399) : const Color(0xFF047857);
+
+/// A [FileDiff]'s rows, red/green like `git diff`, up to 384px tall. Replayed `edit` rows
+/// count from their snippet, so they have no line-number gutter.
+class _Diff extends StatelessWidget {
+  const _Diff(this.change);
+  final FileDiff change;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final added = _added(context);
+    final mono = monoStyle(context).copyWith(fontSize: 12, height: 1.45);
+    final muted = mono.copyWith(color: scheme.mutedForeground);
+    final numbered = change.rows.any((row) => row.old != null || row.line != null);
+    return ListenableBuilder(
+      listenable: displayPrefs,
+      builder: (context, _) {
+        final wrap = displayPrefs.wrapToolOutput;
+        Widget line(DiffRow row) {
+          final (color, background, sign) = switch (row.kind) {
+            'added' => (added, added.withValues(alpha: .1), '+'),
+            'removed' => (scheme.error, scheme.error.withValues(alpha: .1), '−'),
+            'context' => (null, null, ''),
+            _ => (scheme.mutedForeground, null, ''),
+          };
+          final style = mono.copyWith(color: color);
+          final number = row.kind == 'removed' ? row.old : row.line;
+          return Container(
+            color: background,
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            child: Row(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: wrap ? MainAxisSize.max : MainAxisSize.min, children: [
+              if (numbered)
+                SizedBox(width: 32, child: SelectionContainer.disabled(child: Text(number?.toString() ?? '', textAlign: TextAlign.right, style: muted))),
+              if (numbered) const SizedBox(width: 8),
+              SizedBox(width: 12, child: SelectionContainer.disabled(child: Text(sign, style: style))),
+              if (wrap) Expanded(child: Text(row.text, style: style)) else Text(row.text, style: style, softWrap: false),
+            ]),
+          );
+        }
+
+        final rows = <Widget>[
+          for (final (index, row) in change.rows.indexed)
+            if (row.kind != 'hunk')
+              line(row)
+            // A replayed `edit` has no `@@` text: a gap between its hunks is just a line.
+            else if (row.text.isNotEmpty)
+              Padding(
+                padding: EdgeInsets.fromLTRB(12, index > 0 ? 6 : 2, 12, 2),
+                child: Text(row.text, style: muted, softWrap: wrap),
+              )
+            else if (index > 0)
+              Padding(padding: const EdgeInsets.symmetric(vertical: 4), child: Divider(color: scheme.border)),
+          if (change.omitted > 0) Padding(padding: const EdgeInsets.fromLTRB(12, 4, 12, 0), child: Text('还有 ${change.omitted} 行未显示', style: muted)),
+        ];
+        final column = SelectionArea(
+          child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, mainAxisSize: MainAxisSize.min, children: rows),
+        );
+        return ConstrainedBox(
+          constraints: const BoxConstraints(maxHeight: 384),
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.symmetric(vertical: 4),
+            child: wrap
+                ? column
+                : SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: IntrinsicWidth(child: column),
+                  ),
+          ),
+        );
+      },
     );
   }
 }

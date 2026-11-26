@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { Ban, Check, Circle, CircleDot, CircleHelp, CornerDownRight, Minus } from '@lucide/vue'
+import { Ban, Check, ChevronDown, Circle, CircleDot, CircleHelp, CornerDownRight, Minus } from '@lucide/vue'
 import { Badge } from '@/components/ui/badge'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import ImageViewer from '@/components/ImageViewer.vue'
@@ -17,8 +17,20 @@ const todo = computed(() => props.tool.name === 'todo' ? todoBoard(props.tool.ou
 const asked = computed(() => props.tool.name === 'ask_user' ? askResult(props.tool.output) : null)
 const images = computed(() => generatedImages(props.tool))
 const numbered = computed(() => todo.value || asked.value || !props.tool.output ? null : numberedLines(props.tool.output))
+/** What `write`/`edit` changed; a binary or unreadable file has no counts and shows the text result instead. */
+const change = computed(() => !props.tool.error && props.tool.diff?.added != null ? props.tool.diff : null)
+/** The diff opens on demand; the header shows the counts. */
+const changeOpen = ref(false)
 /** The full-size view of the picture `read` gave the model. */
 const zoomed = ref(false)
+
+const rowClass: Record<string, string> = {
+  added: 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-400',
+  removed: 'bg-destructive/10 text-destructive',
+  context: '',
+  hunk: 'text-muted-foreground',
+  note: 'text-muted-foreground',
+}
 
 type Answer = { question: string; answer: string; typed: boolean; skipped: boolean }
 
@@ -86,13 +98,44 @@ function todoLabel(status: string) {
 
 <template>
   <div class="overflow-hidden rounded-lg border">
-    <div class="flex items-center gap-2 px-3 py-2 text-sm">
+    <component
+      :is="change ? 'button' : 'div'"
+      v-bind="change ? { type: 'button', 'aria-expanded': changeOpen, title: changeOpen ? '收起改动' : '查看改动' } : {}"
+      class="flex w-full items-center gap-2 px-3 py-2 text-left text-sm"
+      :class="change && 'hover:bg-muted/50'"
+      @click="change && (changeOpen = !changeOpen)"
+    >
       <Badge variant="secondary">{{ tool.name === 'todo' ? '待办' : tool.name === 'ask_user' ? '提问' : tool.name === 'generate_image' ? '生成图片' : tool.name }}</Badge>
       <span v-if="tool.name !== 'todo'" class="min-w-0 flex-1 truncate text-muted-foreground">{{ tool.summary }}</span>
       <span v-else class="min-w-0 flex-1" />
       <span v-if="!tool.done" class="text-xs text-muted-foreground">运行中</span>
       <span v-else-if="tool.error" class="text-xs text-destructive">失败</span>
-    </div>
+      <template v-else-if="change">
+        <span class="flex shrink-0 gap-1.5 font-mono text-xs tabular-nums" :aria-label="`新增 ${change.added} 行，删除 ${change.removed} 行`">
+          <span class="text-emerald-700 dark:text-emerald-400">+{{ change.added }}</span>
+          <span class="text-destructive">−{{ change.removed }}</span>
+        </span>
+        <ChevronDown aria-hidden="true" class="size-4 shrink-0 text-muted-foreground transition-transform motion-reduce:transition-none" :class="changeOpen && 'rotate-180'" />
+      </template>
+    </component>
+    <!-- Replayed `edit` rows count from the snippet, so they carry no line numbers. -->
+    <ScrollArea v-if="change && changeOpen" class="border-t" viewport-class="max-h-96" :scroll-x="!wrapToolOutput">
+      <div class="py-1 font-mono text-xs" :class="!wrapToolOutput && 'w-max min-w-full'">
+        <template v-for="(row, rowIndex) in change.rows" :key="rowIndex">
+          <!-- A replayed `edit` has no `@@` text: a gap between its hunks is just a dashed line. -->
+          <template v-if="row.kind === 'hunk'">
+            <div v-if="row.text" class="px-3 py-1 text-muted-foreground" :class="rowIndex > 0 && 'mt-1 border-t border-dashed'">{{ row.text }}</div>
+            <div v-else-if="rowIndex > 0" class="my-1 border-t border-dashed" />
+          </template>
+          <div v-else class="flex gap-2 px-3" :class="rowClass[row.kind]">
+            <span v-if="row.old !== undefined || row.new !== undefined" class="w-8 shrink-0 text-right opacity-60 tabular-nums select-none">{{ row.kind === 'removed' ? row.old : row.new }}</span>
+            <span class="w-3 shrink-0 select-none">{{ row.kind === 'added' ? '+' : row.kind === 'removed' ? '−' : '' }}</span>
+            <span class="min-w-0 flex-1" :class="wrapToolOutput ? 'whitespace-pre-wrap' : 'whitespace-pre'">{{ row.text }}</span>
+          </div>
+        </template>
+        <p v-if="change.omitted" class="px-3 pt-1 text-muted-foreground">还有 {{ change.omitted }} 行未显示</p>
+      </div>
+    </ScrollArea>
     <div v-if="images.length" class="flex flex-wrap gap-2 border-t px-3 py-2">
       <WorkspaceImage v-for="path in images" :key="path" :path="path" size="thumb" />
     </div>
@@ -140,7 +183,7 @@ function todoLabel(status: string) {
     </div>
     <!-- 设置 → 通用 → 显示: unwrapped lines keep their width and scroll sideways. -->
     <!-- A picture `read` returned is the result; its "attached for you to view" note is for the model. -->
-    <ScrollArea v-else-if="tool.output && !tool.image" class="border-t" viewport-class="max-h-64" :scroll-x="!wrapToolOutput">
+    <ScrollArea v-else-if="tool.output && !tool.image && !change" class="border-t" viewport-class="max-h-64" :scroll-x="!wrapToolOutput">
       <div v-if="numbered" class="px-3 py-2 font-mono text-xs" :class="!wrapToolOutput && 'w-max min-w-full'">
         <template v-for="(row, rowIndex) in numbered" :key="rowIndex">
           <div v-if="row.n" class="flex gap-2">

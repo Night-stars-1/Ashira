@@ -530,6 +530,7 @@ class AshiraState extends ChangeNotifier {
             tool.output = event.field('output') ?? '';
             tool.error = event.isError;
             tool.image = imageUrl(event.raw['image']) ?? tool.image;
+            tool.diff = FileDiff.fromJson(event.raw['diff']) ?? tool.diff;
             tool.done = true;
           }
         }

@@ -224,6 +224,8 @@ export type AgentEvent = {
   isError?: boolean
   /** `tool_end` of `read`: the picture attached for the model, as a data URL. */
   image?: string
+  /** `tool_end` of `write`/`edit`: the file change, when the server computed one. */
+  diff?: FileDiff
   id?: number
   command?: string
   reason?: string
@@ -243,6 +245,26 @@ export type AgentEvent = {
   /** `subagent`: the finished job's kind, `task`, `scout` or `shell` (a background command). */
   role?: string
   approvalMode?: ApprovalMode
+}
+
+/** A file change on a `write`/`edit` card. Rows of a replayed `edit` have no line numbers. */
+export type DiffRow = { kind: 'context' | 'added' | 'removed' | 'hunk' | 'note'; text: string; old?: number; new?: number }
+export type FileDiff = { added: number | null; removed: number | null; rows: DiffRow[]; omitted: number; notice: string }
+
+const DIFF_KINDS: DiffRow['kind'][] = ['context', 'added', 'removed', 'hunk', 'note']
+
+export function parseDiff(value: unknown): FileDiff | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const body = value as Record<string, unknown>
+  const count = (item: unknown) => typeof item === 'number' && Number.isInteger(item) && item >= 0 ? item : null
+  const rows = Array.isArray(body.rows) ? body.rows.flatMap((item): DiffRow[] => {
+    if (!item || typeof item !== 'object') return []
+    const row = item as Record<string, unknown>
+    const kind = DIFF_KINDS.find((name) => name === row.kind)
+    if (!kind || typeof row.text !== 'string') return []
+    return [{ kind, text: row.text, old: count(row.old) ?? undefined, new: count(row.new) ?? undefined }]
+  }) : []
+  return { added: count(body.added), removed: count(body.removed), rows, omitted: count(body.omitted) ?? 0, notice: typeof body.notice === 'string' ? body.notice : '' }
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -415,6 +437,7 @@ export function parseEvent(raw: string): AgentEvent | null {
     output: typeof value.output === 'string' ? value.output : undefined,
     isError: typeof value.isError === 'boolean' ? value.isError : undefined,
     image: typeof value.image === 'string' && value.image.startsWith('data:image/') ? value.image : undefined,
+    diff: body.type === 'tool_end' ? parseDiff(value.diff) : undefined,
     id: typeof value.id === 'number' ? value.id : undefined,
     command: typeof value.command === 'string' ? value.command : undefined,
     reason: typeof value.reason === 'string' ? value.reason : undefined,

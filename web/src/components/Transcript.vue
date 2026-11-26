@@ -8,11 +8,11 @@ import ToolOutput from '@/components/ToolOutput.vue'
 import ImageViewer from '@/components/ImageViewer.vue'
 import WorkspaceImage from '@/components/WorkspaceImage.vue'
 import TextFileCard from '@/components/TextFileCard.vue'
-import { generatedImages, type ReplyMetrics } from '@/lib/api'
+import { generatedImages, type FileDiff, type ReplyMetrics } from '@/lib/api'
 import { wrapToolOutput } from '@/lib/display'
 
-/** `image`: the picture `read` gave the model (a data URL), shown on the card. */
-export type ToolCard = { name: string; summary: string; output: string; error: boolean; done: boolean; image?: string }
+/** `image`: the picture `read` gave the model (a data URL), shown on the card. `diff`: what `write`/`edit` changed. */
+export type ToolCard = { name: string; summary: string; output: string; error: boolean; done: boolean; image?: string; diff?: FileDiff }
 export type ReplyPart = { type: 'text'; text: string } | { type: 'reasoning'; text: string } | ({ type: 'tool' } & ToolCard)
 export type TextFile = { name: string; text: string; lines: number }
 export type Block =
