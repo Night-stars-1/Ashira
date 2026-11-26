@@ -465,27 +465,43 @@ class _ProjectPickerState extends State<_ProjectPicker> {
             decoration: BoxDecoration(border: Border.all(color: scheme.border), borderRadius: BorderRadius.circular(radius)),
             clipBehavior: Clip.antiAlias,
             child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-              TextField(
-                controller: _query,
-                autofocus: true,
-                autocorrect: false,
-                enableSuggestions: false,
-                style: const TextStyle(fontSize: 13),
-                decoration: InputDecoration(
-                  isDense: true,
-                  hintText: '搜索当前目录',
-                  prefixIcon: Icon(Icons.search, size: 16, color: scheme.mutedForeground),
-                  prefixIconConstraints: const BoxConstraints(minWidth: 36),
-                  filled: false,
-                  border: InputBorder.none,
-                  enabledBorder: InputBorder.none,
-                  focusedBorder: InputBorder.none,
-                  contentPadding: const EdgeInsets.symmetric(vertical: 10),
-                ),
-                // Enter opens the only folder left.
-                onSubmitted: (_) {
-                  if (entries.length == 1) _load(entries.single.path);
+              // Esc with a query clears it; on an empty field it closes the picker as before.
+              CallbackShortcuts(
+                bindings: {
+                  if (_query.text.isNotEmpty) const SingleActivator(LogicalKeyboardKey.escape): _query.clear,
                 },
+                child: TextField(
+                  controller: _query,
+                  autofocus: true,
+                  autocorrect: false,
+                  enableSuggestions: false,
+                  style: const TextStyle(fontSize: 13),
+                  decoration: InputDecoration(
+                    isDense: true,
+                    hintText: '搜索当前目录',
+                    prefixIcon: Icon(Icons.search, size: 16, color: scheme.mutedForeground),
+                    prefixIconConstraints: const BoxConstraints(minWidth: 36),
+                    suffixIcon: _query.text.isEmpty
+                        ? null
+                        : IconButton(
+                            tooltip: '清除搜索',
+                            iconSize: 14,
+                            visualDensity: VisualDensity.compact,
+                            icon: Icon(Icons.close, color: scheme.mutedForeground),
+                            onPressed: _query.clear,
+                          ),
+                    suffixIconConstraints: const BoxConstraints(minWidth: 36, minHeight: 32),
+                    filled: false,
+                    border: InputBorder.none,
+                    enabledBorder: InputBorder.none,
+                    focusedBorder: InputBorder.none,
+                    contentPadding: const EdgeInsets.symmetric(vertical: 10),
+                  ),
+                  // Enter opens the only folder left.
+                  onSubmitted: (_) {
+                    if (entries.length == 1) _load(entries.single.path);
+                  },
+                ),
               ),
               const Divider(),
               Expanded(
