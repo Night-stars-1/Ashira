@@ -51,9 +51,11 @@ function onApprovalSaved(value: ApprovalSettings) {
   void updateSettings(async () => {})
 }
 
-/** The picker chose where 新会话 starts; the page stays, keeping what was typed. */
+/** 新会话's directory menu and the picker: a path starts there (keeping what was typed);
+ *  empty, from the menu's 新建项目, browses for a new folder. */
 function pickDirectory(cwd: string) {
   pickerOpen.value = false
+  if (!cwd) { drawer.value = null; pickerOpen.value = true; return }
   fresh(cwd)
 }
 
@@ -181,6 +183,7 @@ function saveRename() {
       :history-start="historyStart"
       :loading-earlier="loadingEarlier"
       :creating="creating"
+      :projects="tree.map(({ name, path }) => ({ name, path }))"
       @retry="retry"
       @dismiss-error="turnError = null"
       @load-earlier="loadEarlier"
@@ -193,7 +196,7 @@ function saveRename() {
       @open-sessions="drawer = 'sessions'"
       @expand-sessions="sessionsOpen = true"
       @toggle-files="toggleFiles"
-      @pick-directory="drawer = null; pickerOpen = true"
+      @pick-directory="pickDirectory"
     />
 
     <FileEditor v-if="filePath && shownId" :key="shownId" :session-id="shownId" :path="filePath" @close="filePath = ''" @open="filePath = $event" @files="filePath = ''; drawer = 'files'" />

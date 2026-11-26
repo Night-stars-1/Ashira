@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { ChartNoAxesColumn, ChevronDown, ChevronsRight, CircleAlert, CornerDownLeft, Folder, LoaderCircle, Menu, MessageSquare, PanelRightClose, PanelRightOpen, Paperclip, RotateCw, Send, Square, Terminal, X } from '@lucide/vue'
-import { TabsContent, TabsList, TabsRoot, TabsTrigger } from 'reka-ui'
+import { Check, ChartNoAxesColumn, ChevronDown, ChevronsRight, CircleAlert, CornerDownLeft, Folder, FolderPlus, LoaderCircle, Menu, MessageSquare, PanelRightClose, PanelRightOpen, Paperclip, RotateCw, Send, Square, Terminal, X } from '@lucide/vue'
+import { DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuPortal, DropdownMenuRoot, DropdownMenuSeparator, DropdownMenuTrigger, TabsContent, TabsList, TabsRoot, TabsTrigger } from 'reka-ui'
 import Transcript, { type Block, type TextFile } from '@/components/Transcript.vue'
 import ContextRing from '@/components/ContextRing.vue'
 import TextFileCard from '@/components/TextFileCard.vue'
@@ -49,6 +49,8 @@ const props = defineProps<{
   loadingEarlier: boolean
   /** 新会话: the first message is creating the session. */
   creating: boolean
+  /** 新会话: the folders that already have sessions, offered before browsing for a new one. */
+  projects: { name: string; path: string }[]
 }>()
 
 // Workspace images in replies and tool cards load from this session.
@@ -63,8 +65,8 @@ const emit = defineEmits<{
   openSessions: []
   expandSessions: []
   toggleFiles: []
-  /** 新会话: change the directory the session will start in. */
-  pickDirectory: []
+  /** 新会话: start in `path` (an existing project), or browse for a new folder when empty. */
+  pickDirectory: [path: string]
   answer: [answers: QuestionAnswers | null]
   retry: []
   dismissError: []
@@ -110,6 +112,12 @@ const TerminalView = defineAsyncComponent(() => import('@/components/TerminalVie
 const hasSession = computed(() => Boolean(props.sessionId))
 /** The start page names the folder; the full path is in its tooltip. */
 const folderName = computed(() => props.cwd.split(/[\\/]/).filter(Boolean).at(-1) || props.cwd)
+const menuItem = 'flex cursor-default items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-none data-highlighted:bg-accent [&_svg]:size-3.5 [&_svg]:shrink-0 [&_svg]:text-muted-foreground'
+/** Paths from the session list and the server can differ in separators and, on Windows, case. */
+function samePath(left: string, right: string) {
+  const plain = (path: string) => path.replace(/[\\/]+$/, '').replace(/\\/g, '/').toLowerCase()
+  return plain(left) === plain(right)
+}
 const view = ref<'chat' | 'terminal'>('chat')
 const terminalOpened = ref(false)
 
@@ -315,11 +323,32 @@ function removeText(index: number) {
       </div>
       <div v-if="!loading && !hasSession" class="shrink-0 px-6 pb-5 text-center">
         <p class="text-2xl font-medium">要做什么？</p>
-        <button type="button" class="mx-auto mt-2 flex max-w-full items-center gap-1.5 rounded-md px-2 py-1 text-sm text-muted-foreground hover:bg-muted hover:text-foreground disabled:pointer-events-none" :title="`${cwd}\n点击更换目录`" :aria-label="`工作目录 ${cwd}，点击更换`" :disabled="creating" @click="emit('pickDirectory')">
-          <Folder aria-hidden="true" class="size-4 shrink-0" />
-          <span class="min-w-0 truncate">{{ folderName }}</span>
-          <ChevronDown aria-hidden="true" class="size-4 shrink-0" />
-        </button>
+        <DropdownMenuRoot :modal="false">
+          <DropdownMenuTrigger as-child>
+            <button type="button" class="mx-auto mt-2 flex max-w-full items-center gap-1.5 rounded-md px-2 py-1 text-sm text-muted-foreground hover:bg-muted hover:text-foreground disabled:pointer-events-none data-[state=open]:bg-muted data-[state=open]:text-foreground" :title="`${cwd}\n点击更换目录`" :aria-label="`工作目录 ${cwd}，点击更换`" :disabled="creating">
+              <Folder aria-hidden="true" class="size-4 shrink-0" />
+              <span class="min-w-0 truncate">{{ folderName }}</span>
+              <ChevronDown aria-hidden="true" class="size-4 shrink-0" />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuPortal>
+            <DropdownMenuContent class="z-50 max-h-80 w-72 max-w-[calc(100vw-2rem)] overflow-y-auto rounded-md border bg-popover p-1 text-left text-popover-foreground shadow-md" align="center" :side-offset="4">
+              <template v-if="projects.length">
+                <DropdownMenuLabel class="px-2 py-1.5 text-xs text-muted-foreground">项目</DropdownMenuLabel>
+                <DropdownMenuItem v-for="project in projects" :key="project.path" :class="menuItem" :title="project.path" @select="emit('pickDirectory', project.path)">
+                  <Folder aria-hidden="true" />
+                  <span class="min-w-0 flex-1 truncate">{{ project.name }}</span>
+                  <Check v-if="samePath(project.path, cwd)" aria-hidden="true" />
+                </DropdownMenuItem>
+                <DropdownMenuSeparator class="-mx-1 my-1 h-px bg-border" />
+              </template>
+              <DropdownMenuItem :class="menuItem" @select="emit('pickDirectory', '')">
+                <FolderPlus aria-hidden="true" />
+                <span>新建项目…</span>
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenuPortal>
+        </DropdownMenuRoot>
       </div>
       <form class="shrink-0 px-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] sm:px-6 sm:pb-6" :class="!loading && !hasSession && 'mb-auto'" @submit.prevent="submit">
         <div v-if="turnError" role="alert" class="mx-auto mb-2 flex max-w-3xl items-start gap-2.5 rounded-xl border border-destructive/40 bg-destructive/10 px-3 py-2.5 text-sm">

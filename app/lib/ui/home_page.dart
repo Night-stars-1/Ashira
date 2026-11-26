@@ -75,7 +75,8 @@ class _HomePageState extends State<HomePage> {
     if (state.shownId.isNotEmpty) unawaited(state.startNew());
   }
 
-  Future<void> _pickDirectory() async {
+  /// 新会话's 新建项目: browse for a folder that has no sessions yet.
+  Future<void> _browseDirectory() async {
     final cwd = await showProjectPicker(context, state);
     if (cwd != null) state.setNewCwd(cwd);
   }
@@ -236,7 +237,12 @@ class _HomePageState extends State<HomePage> {
         final conversation = Column(children: [
           if (fresh) ...[
             const Spacer(flex: 2),
-            _NewSession(cwd: state.cwd, onPick: state.creating ? null : _pickDirectory),
+            _NewSession(
+              cwd: state.cwd,
+              projects: [for (final node in state.tree) (name: node.name, path: node.path)],
+              onPick: state.creating ? null : state.setNewCwd,
+              onBrowse: state.creating ? null : _browseDirectory,
+            ),
             composer,
             const Spacer(flex: 3),
           ] else ...[
@@ -395,32 +401,70 @@ class _Empty extends StatelessWidget {
 }
 
 /// 新会话's heading over the input box, with the folder the session will start in (the
-/// full path in the tooltip); tapping it opens the directory picker.
+/// full path in the tooltip). Its menu lists the projects that already have sessions,
+/// then 新建项目… to browse for another folder.
 class _NewSession extends StatelessWidget {
-  const _NewSession({required this.cwd, required this.onPick});
+  const _NewSession({required this.cwd, required this.projects, required this.onPick, required this.onBrowse});
   final String cwd;
-  final VoidCallback? onPick;
+  final List<({String name, String path})> projects;
+  final void Function(String path)? onPick;
+  final VoidCallback? onBrowse;
+
+  static String _plain(String path) => path.replaceFirst(RegExp(r'[\\/]+$'), '').replaceAll('\\', '/').toLowerCase();
+
   @override
   Widget build(BuildContext context) {
-    final muted = Theme.of(context).colorScheme.mutedForeground;
+    final scheme = Theme.of(context).colorScheme;
     final folder = cwd.split(RegExp(r'[\\/]')).lastWhere((part) => part.isNotEmpty, orElse: () => cwd);
+    final current = _plain(cwd);
     return Padding(
       padding: const EdgeInsets.fromLTRB(24, 0, 24, 16),
       child: Column(children: [
         Text('要做什么？', style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w500)),
         const SizedBox(height: 8),
-        Tooltip(
-          message: '$cwd\n点击更换目录',
-          child: TextButton(
-            onPressed: onPick,
-            style: TextButton.styleFrom(foregroundColor: muted, padding: const EdgeInsets.symmetric(horizontal: 8)),
-            child: Row(mainAxisSize: MainAxisSize.min, children: [
-              const Icon(Icons.folder_outlined, size: 16),
-              const SizedBox(width: 6),
-              Flexible(child: Text(folder, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13))),
-              const SizedBox(width: 2),
-              const Icon(Icons.expand_more, size: 16),
-            ]),
+        MenuAnchor(
+          style: const MenuStyle(maximumSize: WidgetStatePropertyAll(Size(320, 360))),
+          menuChildren: [
+            if (projects.isNotEmpty) ...[
+              Padding(
+                padding: const EdgeInsets.fromLTRB(12, 6, 12, 4),
+                child: Text('项目', style: TextStyle(fontSize: 12, color: scheme.mutedForeground)),
+              ),
+              for (final project in projects)
+                Tooltip(
+                  message: project.path,
+                  waitDuration: const Duration(milliseconds: 600),
+                  child: MenuItemButton(
+                    onPressed: onPick == null ? null : () => onPick!(project.path),
+                    leadingIcon: const Icon(Icons.folder_outlined, size: 16),
+                    trailingIcon: _plain(project.path) == current ? const Icon(Icons.check, size: 16) : null,
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 220),
+                      child: Text(project.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13)),
+                    ),
+                  ),
+                ),
+              const Divider(height: 9),
+            ],
+            MenuItemButton(
+              onPressed: onBrowse,
+              leadingIcon: const Icon(Icons.create_new_folder_outlined, size: 16),
+              child: const Text('新建项目…', style: TextStyle(fontSize: 13)),
+            ),
+          ],
+          builder: (context, controller, _) => Tooltip(
+            message: '$cwd\n点击更换目录',
+            child: TextButton(
+              onPressed: onPick == null ? null : () => controller.isOpen ? controller.close() : controller.open(),
+              style: TextButton.styleFrom(foregroundColor: scheme.mutedForeground, padding: const EdgeInsets.symmetric(horizontal: 8)),
+              child: Row(mainAxisSize: MainAxisSize.min, children: [
+                const Icon(Icons.folder_outlined, size: 16),
+                const SizedBox(width: 6),
+                Flexible(child: Text(folder, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13))),
+                const SizedBox(width: 2),
+                const Icon(Icons.expand_more, size: 16),
+              ]),
+            ),
           ),
         ),
       ]),
