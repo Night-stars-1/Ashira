@@ -5,7 +5,8 @@ import { Button } from '@/components/ui/button'
 import FileTreeSkeleton from '@/components/FileTreeSkeleton.vue'
 import { api, type FileEntry } from '@/lib/api'
 
-const props = defineProps<{ sessionId: string; path: string; name?: string; depth: number; active?: string; initialEntries?: FileEntry[]; refresh?: { parent: string } }>()
+/** `refresh`: reload the folder named by `parent`, or with no `parent` every subfolder (the root gets fresh `initialEntries`). */
+const props = defineProps<{ sessionId: string; path: string; name?: string; depth: number; active?: string; initialEntries?: FileEntry[]; refresh?: { parent?: string } }>()
 const emit = defineEmits<{ open: [path: string] }>()
 const open = ref(false)
 const loaded = ref(props.initialEntries !== undefined)
@@ -45,7 +46,12 @@ watch(() => props.initialEntries, (listing) => {
 })
 
 watch(() => props.refresh, (change) => {
-  if (change?.parent === props.path && (!props.name || loaded.value || open.value)) void load()
+  if (!change) return
+  if (change.parent === undefined) {
+    // An expanded folder reloads now; a collapsed one read earlier reloads when opened.
+    if (props.name && open.value) void load()
+    else if (props.name) loaded.value = false
+  } else if (change.parent === props.path && (!props.name || loaded.value || open.value)) void load()
 })
 
 function childPath(name: string) {

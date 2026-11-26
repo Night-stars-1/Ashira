@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ArrowRight, ArrowUp, FilePlus, FolderPlus } from '@lucide/vue'
+import { ArrowRight, ArrowUp, FilePlus, FolderPlus, RefreshCw } from '@lucide/vue'
 import { nextTick, ref, watch } from 'vue'
 import FileTree from '@/components/FileTree.vue'
 import { Button } from '@/components/ui/button'
@@ -104,7 +104,24 @@ const input = ref<{ $el: HTMLInputElement } | null>(null)
 const path = ref('')
 const pending = ref(false)
 const error = ref('')
-const refresh = ref<{ parent: string }>()
+const refresh = ref<{ parent?: string }>()
+const reloading = ref(false)
+
+/** Rereads the shown folder and every expanded one; the tree keeps what is open. */
+async function reload() {
+  if (reloading.value || navigating.value) return
+  reloading.value = true
+  navigationError.value = ''
+  try {
+    const listing = await api.files(props.sessionId, directory.value)
+    initialEntries.value = listing.entries
+    refresh.value = {}
+  } catch (reason) {
+    navigationError.value = reason instanceof Error ? reason.message : '无法读取目录'
+  } finally {
+    reloading.value = false
+  }
+}
 
 async function start(next: EntryKind) {
   kind.value = next
@@ -148,7 +165,10 @@ async function create() {
           <ArrowRight aria-hidden="true" />
         </Button>
       </div>
-      <div role="group" aria-label="新建条目" class="flex shrink-0 items-center">
+      <div role="group" aria-label="目录操作" class="flex shrink-0 items-center">
+        <Button type="button" size="icon-xs" variant="ghost" class="max-lg:size-8" aria-label="刷新" title="刷新" :disabled="reloading || navigating" @click="reload">
+          <RefreshCw aria-hidden="true" :class="reloading && 'motion-safe:animate-spin'" />
+        </Button>
         <Button type="button" size="icon-xs" variant="ghost" class="max-lg:size-8" aria-label="新建文件" title="新建文件" :disabled="pending" @click="start('file')">
           <FilePlus aria-hidden="true" />
         </Button>

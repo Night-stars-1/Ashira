@@ -1,3 +1,4 @@
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:re_editor/re_editor.dart';
 
@@ -31,6 +32,12 @@ class _FilesPanelState extends State<FilesPanel> {
   final Map<String, List<FileEntry>> _listings = {};
   final Set<String> _open = {};
   final Set<String> _loading = {};
+  bool _refreshing = false;
+  /// Desktop context menu: [_menuDir] is the folder its 「新建」 items create in;
+  /// [_hitDir] is the one the right click landed on, before the menu opens.
+  final _menu = MenuController();
+  String _menuDir = '';
+  String? _hitDir;
   final Map<String, String> _failed = {};
 
   @override
@@ -67,22 +74,58 @@ class _FilesPanelState extends State<FilesPanel> {
   static String _join(String parent, String name) => parent.isEmpty ? name : '$parent/$name';
   static String _parentOf(String path) => path.contains('/') ? path.substring(0, path.lastIndexOf('/')) : '';
 
-  Future<void> _create({required bool directory}) async {
+  /// Creates an entry under [parent] (the root by default) and shows it.
+  Future<void> _create({required bool directory, String? parent}) async {
+    final base = parent ?? _root;
     final name = await askText(
       context,
       title: directory ? '新建文件夹' : '新建文件',
-      description: '相对当前目录的路径',
+      description: base == _root ? '相对当前目录的路径' : '相对 ${base.substring(_root.isEmpty ? 0 : _root.length + 1)}/ 的路径',
       hint: directory ? '例如 docs' : '例如 notes.md',
       action: '创建',
     );
     final entered = name?.trim().replaceAll('\\', '/') ?? '';
     if (entered.isEmpty) return;
-    final path = _join(_root, entered);
+    final path = _join(base, entered);
     try {
       await widget.client.createEntry(widget.sessionId, path, directory: directory);
+      // A folder right-clicked while collapsed opens to show what was made in it.
+      if (base != _root) setState(() => _open.add(base));
       await _load(_parentOf(path));
     } catch (error) {
-      if (mounted) setState(() => _failed[_root] = errorText(error, '新建失败'));
+      if (mounted) setState(() => _failed[base] = errorText(error, '新建失败'));
+    }
+  }
+
+  /// A right click: on a folder it creates there, on a file beside it, elsewhere in the root.
+  /// Pointer events, not a tap recognizer: the rows' InkWells would win the gesture arena.
+  Offset? _rightDown;
+  void _pointerDown(PointerDownEvent event) {
+    if (event.kind == PointerDeviceKind.mouse && event.buttons == kSecondaryMouseButton) _rightDown = event.localPosition;
+  }
+
+  void _pointerUp(PointerUpEvent event) {
+    final down = _rightDown;
+    _rightDown = null;
+    final dir = _hitDir;
+    _hitDir = null;
+    if (down == null || (event.localPosition - down).distance > kTouchSlop) return;
+    _menuDir = dir ?? _root;
+    _menu.open(position: event.localPosition);
+  }
+
+  /// Reloads the shown folder and every expanded one in place; a collapsed folder
+  /// read earlier is dropped and reloads when it is opened again.
+  Future<void> _refresh() async {
+    if (_refreshing) return;
+    setState(() {
+      _refreshing = true;
+      _listings.removeWhere((path, _) => path != _root && !_open.contains(path));
+    });
+    try {
+      await Future.wait([_load(_root), for (final path in _open) if (_listings.containsKey(path)) _load(path)]);
+    } finally {
+      if (mounted) setState(() => _refreshing = false);
     }
   }
 
@@ -99,7 +142,7 @@ class _FilesPanelState extends State<FilesPanel> {
     for (final entry in entries) {
       final child = _join(path, entry.name);
       final open = _open.contains(child);
-      rows.add(_TreeRow(
+      final row = _TreeRow(
         // Keyed by path so expanding a folder keeps each row's state (the chevron
         // rotation) instead of reusing the widget that happened to sit at that index.
         key: ValueKey(child),
@@ -109,7 +152,17 @@ class _FilesPanelState extends State<FilesPanel> {
         open: open,
         active: !entry.dir && child == widget.active,
         onTap: () => entry.dir ? _toggle(child) : widget.onOpen(child),
-      ));
+      );
+      // Notes which row a right click hit; the list's handler then opens the menu.
+      rows.add(isDesktop
+          ? Listener(
+              key: ValueKey(child),
+              onPointerDown: (event) {
+                if (event.buttons & kSecondaryMouseButton != 0) _hitDir = entry.dir ? child : path;
+              },
+              child: row,
+            )
+          : row);
       if (entry.dir && open) rows.addAll(_rows(child, depth + 1, muted));
     }
     return rows;
@@ -153,25 +206,36 @@ class _FilesPanelState extends State<FilesPanel> {
                 ),
               ),
               const SizedBox(width: 4),
-              Center(child: _SmallIcon(tooltip: '新建文件', icon: Icons.note_add_outlined, onPressed: () => _create(directory: false))),
-              Center(child: _SmallIcon(tooltip: '新建文件夹', icon: Icons.create_new_folder_outlined, onPressed: () => _create(directory: true))),
+              Center(child: _SmallIcon(tooltip: '刷新', icon: Icons.refresh, onPressed: _refreshing ? null : _refresh)),
+              // Desktop creates from the right-click menu instead.
+              if (!isDesktop) ...[
+                Center(child: _SmallIcon(tooltip: '新建文件', icon: Icons.note_add_outlined, onPressed: () => _create(directory: false))),
+                Center(child: _SmallIcon(tooltip: '新建文件夹', icon: Icons.create_new_folder_outlined, onPressed: () => _create(directory: true))),
+              ],
               if (widget.windowButtons) ...[const SizedBox(width: 4), const WindowButtons()] else const SizedBox(width: 8),
             ]),
           ),
         ),
         Expanded(
           child: RefreshIndicator(
-            onRefresh: () async {
-              _listings.clear();
-              await _load(_root);
-              for (final path in _open.toList()) {
-                await _load(path);
-              }
-            },
-            child: ListView.builder(
-              padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
-              itemCount: rows.length,
-              itemBuilder: (_, index) => rows[index],
+            onRefresh: _refresh,
+            child: MenuAnchor(
+              controller: _menu,
+              menuChildren: [
+                MenuItemButton(leadingIcon: const Icon(Icons.note_add_outlined, size: 16), onPressed: () => _create(directory: false, parent: _menuDir), child: const Text('新建文件', style: TextStyle(fontSize: 13))),
+                MenuItemButton(leadingIcon: const Icon(Icons.create_new_folder_outlined, size: 16), onPressed: () => _create(directory: true, parent: _menuDir), child: const Text('新建文件夹', style: TextStyle(fontSize: 13))),
+              ],
+              child: Listener(
+                // Opaque so blank space below the rows takes a right click too.
+                behavior: HitTestBehavior.opaque,
+                onPointerDown: isDesktop ? _pointerDown : null,
+                onPointerUp: isDesktop ? _pointerUp : null,
+                child: ListView.builder(
+                  padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
+                  itemCount: rows.length,
+                  itemBuilder: (_, index) => rows[index],
+                ),
+              ),
             ),
           ),
         ),
