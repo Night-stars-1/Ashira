@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
-import { ArrowRight, ChevronRight, Folder, Pencil, Search } from '@lucide/vue'
+import { ArrowRight, ChevronRight, Folder, Pencil, Search, X } from '@lucide/vue'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
@@ -130,10 +130,14 @@ function start() {
       </div>
       <p v-if="error" role="alert" class="text-sm break-all text-destructive">{{ error }}</p>
       <div class="flex min-h-0 flex-col overflow-hidden rounded-lg border">
-        <label class="flex shrink-0 items-center gap-2 border-b px-3">
+        <!-- A plain text field: `type="search"` adds Chromium's own blue clear button. -->
+        <div class="flex shrink-0 items-center gap-2 border-b pr-1 pl-3">
           <Search aria-hidden="true" class="size-4 shrink-0 text-muted-foreground" />
-          <input ref="searchInput" v-model="query" type="search" class="h-9 min-w-0 flex-1 bg-transparent text-base outline-none placeholder:text-muted-foreground md:text-sm" placeholder="搜索当前目录" aria-label="搜索当前目录" autocomplete="off" spellcheck="false" @keydown.enter.prevent="openMatch" />
-        </label>
+          <input ref="searchInput" v-model="query" type="text" class="h-9 min-w-0 flex-1 bg-transparent text-base outline-none placeholder:text-muted-foreground md:text-sm" placeholder="搜索当前目录" aria-label="搜索当前目录" autocomplete="off" spellcheck="false" @keydown.enter.prevent="openMatch" @keydown.esc="query && ($event.stopPropagation(), query = '')" />
+          <Button v-if="query" type="button" size="icon-xs" variant="ghost" class="shrink-0 text-muted-foreground" aria-label="清除搜索" title="清除搜索" @click="query = ''; searchInput?.focus()">
+            <X />
+          </Button>
+        </div>
         <ScrollArea class="h-72 min-h-20">
           <ListSkeleton v-if="loading" :rows="8" />
           <template v-else>
