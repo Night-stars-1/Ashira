@@ -86,11 +86,19 @@ class _TranscriptState extends State<Transcript> {
     return false;
   }
 
-  /// The list's extent changed (new rows measured, a card animating): stay at the bottom.
+  /// The list's extent or viewport changed (new rows measured, a card animating, the
+  /// keyboard opening or closing): stay at the bottom, and have open 「思考过程」 cards
+  /// re-place their stuck header. A taller viewport at the bottom clamps the offset
+  /// without telling the position's listeners, so the cards would not hear of it.
   bool _onMetrics(ScrollMetricsNotification notification) {
-    if (_follow && notification.depth == 0) _pin();
+    if (notification.depth != 0) return false;
+    if (_follow) _pin();
+    // After the frame: the header's new place is only known once this layout is done.
+    WidgetsBinding.instance.addPostFrameCallback((_) { if (mounted) _metrics.value++; });
     return false;
   }
+
+  final _metrics = ValueNotifier<int>(0);
 
   void _pin() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -111,6 +119,7 @@ class _TranscriptState extends State<Transcript> {
   @override
   void dispose() {
     _scroll.dispose();
+    _metrics.dispose();
     super.dispose();
   }
 
@@ -141,7 +150,7 @@ class _TranscriptState extends State<Transcript> {
                     ? const _LoadingEarlier()
                     : index < rows.length
                     ? switch (rows[index]) {
-                        final _Turn turn => _TurnView(turn, key: ValueKey(turn.key)),
+                        final _Turn turn => _TurnView(turn, relayout: _metrics, key: ValueKey(turn.key)),
                         final block => _BlockView(block: block as Block, onOpenAgent: widget.onOpenAgent),
                       }
                     : index < rows.length + widget.pending.length
@@ -279,8 +288,10 @@ String _duration(double ms) {
 /// The web's reply: a 「思考过程」 card, open while the reply runs and folded once it has
 /// finished (a tap sticks), then the answer itself.
 class _TurnView extends StatefulWidget {
-  const _TurnView(this.turn, {super.key});
+  const _TurnView(this.turn, {required this.relayout, super.key});
   final _Turn turn;
+  /// Fires when the list's metrics change without a scroll; the stuck header follows.
+  final Listenable relayout;
   @override
   State<_TurnView> createState() => _TurnViewState();
 }
@@ -297,6 +308,20 @@ class _TurnViewState extends State<_TurnView> {
   bool get _open => _toggled ?? widget.turn.live;
 
   @override
+  void initState() {
+    super.initState();
+    widget.relayout.addListener(_follow);
+  }
+
+  @override
+  void didUpdateWidget(_TurnView old) {
+    super.didUpdateWidget(old);
+    if (old.relayout == widget.relayout) return;
+    old.relayout.removeListener(_follow);
+    widget.relayout.addListener(_follow);
+  }
+
+  @override
   void didChangeDependencies() {
     super.didChangeDependencies();
     final position = Scrollable.maybeOf(context)?.position;
@@ -307,6 +332,7 @@ class _TurnViewState extends State<_TurnView> {
 
   @override
   void dispose() {
+    widget.relayout.removeListener(_follow);
     _position?.removeListener(_follow);
     _stuck.dispose();
     super.dispose();
