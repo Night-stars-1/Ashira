@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../api/client.dart';
 import '../api/models.dart';
@@ -311,8 +312,10 @@ class _ProjectPickerState extends State<_ProjectPicker> {
   BrowseListing? _listing;
   bool _loading = false;
   String _error = '';
-  /// The path field: the folder shown, or a path typed to jump to (Enter).
+  /// The path row shows breadcrumbs; while [_editing], a field to type a path to jump to.
+  bool _editing = false;
   final _path = TextEditingController();
+  final _pathFocus = FocusNode();
   /// Filters the folder's subfolders by name.
   final _query = TextEditingController();
 
@@ -321,12 +324,17 @@ class _ProjectPickerState extends State<_ProjectPicker> {
     super.initState();
     _query.addListener(() => setState(() {}));
     _path.addListener(() => setState(() {}));
+    // Leaving the field goes back to the breadcrumbs, unless the typed path failed.
+    _pathFocus.addListener(() {
+      if (!_pathFocus.hasFocus && !_loading && _error.isEmpty) setState(() => _editing = false);
+    });
     _load(widget.start);
   }
 
   @override
   void dispose() {
     _path.dispose();
+    _pathFocus.dispose();
     _query.dispose();
     super.dispose();
   }
@@ -340,8 +348,10 @@ class _ProjectPickerState extends State<_ProjectPicker> {
     try {
       final listing = await widget.client.browse(path);
       if (!mounted) return;
-      setState(() => _listing = listing);
-      _path.text = listing.path;
+      setState(() {
+        _listing = listing;
+        _editing = false;
+      });
       _query.clear();
     } catch (error) {
       if (mounted) setState(() => _error = errorText(error, '无法打开目录'));
@@ -350,48 +360,104 @@ class _ProjectPickerState extends State<_ProjectPicker> {
     }
   }
 
+  /// Swaps the breadcrumbs for the path field, with the path selected for typing over.
+  void _editPath() {
+    final path = _listing?.path ?? '';
+    _path.value = TextEditingValue(text: path, selection: TextSelection(baseOffset: 0, extentOffset: path.length));
+    setState(() => _editing = true);
+    WidgetsBinding.instance.addPostFrameCallback((_) => _pathFocus.requestFocus());
+  }
+
+  /// A path that does not open keeps the field and the folder shown.
   void _go() {
     final next = _path.text.trim();
-    if (next.isNotEmpty && next != _listing?.path) _load(next);
+    if (next.isEmpty || next == _listing?.path) {
+      setState(() => _editing = false);
+    } else {
+      _load(next);
+    }
+  }
+
+  /// Breadcrumb segments with the path each one opens, like the web picker.
+  static List<({String name, String path})> _crumbs(String value) {
+    if (value.isEmpty) return const [];
+    final sep = value.contains('\\') ? '\\' : '/';
+    final crumbs = <({String name, String path})>[];
+    var acc = '';
+    for (final part in value.split(RegExp(r'[\\/]')).where((part) => part.isNotEmpty)) {
+      acc = acc.isEmpty ? (part.endsWith(':') ? '$part$sep' : (value.startsWith('/') ? '/$part' : part)) : '${acc.replaceFirst(RegExp(r'[\\/]$'), '')}$sep$part';
+      crumbs.add((name: part, path: acc));
+    }
+    return crumbs;
   }
 
   @override
   Widget build(BuildContext context) {
     final listing = _listing;
     final scheme = Theme.of(context).colorScheme;
-    final name = listing == null ? '此目录' : listing.path.split(RegExp(r'[\\/]')).lastWhere((part) => part.isNotEmpty, orElse: () => listing.path);
+    final crumbs = _crumbs(listing?.path ?? '');
+    final name = crumbs.isEmpty ? '此目录' : crumbs.last.name;
     final needle = _query.text.trim().toLowerCase();
     final entries = listing == null ? const <BrowseEntry>[] : [for (final entry in listing.entries) if (needle.isEmpty || entry.name.toLowerCase().contains(needle)) entry];
     final typed = _path.text.trim();
-    final parent = listing?.parent;
     return Padding(
       padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
       child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-        Row(children: [
-          IconButton(
-            tooltip: '上一级目录',
-            icon: const Icon(Icons.arrow_upward, size: 18),
-            onPressed: _loading || parent == null ? null : () => _load(parent),
-          ),
-          const SizedBox(width: 4),
-          Expanded(
-            child: TextField(
-              controller: _path,
-              style: monoStyle(context).copyWith(fontSize: 12),
-              autocorrect: false,
-              enableSuggestions: false,
-              textInputAction: TextInputAction.go,
-              decoration: const InputDecoration(isDense: true, hintText: '输入路径，回车前往'),
-              onSubmitted: (_) => _go(),
-            ),
-          ),
-          const SizedBox(width: 4),
-          IconButton(
-            tooltip: '前往路径',
-            icon: const Icon(Icons.arrow_forward, size: 18),
-            onPressed: _loading || typed.isEmpty || typed == listing?.path ? null : _go,
-          ),
-        ]),
+        SizedBox(
+          height: 36,
+          child: _editing
+              ? Row(children: [
+                  Expanded(
+                    child: CallbackShortcuts(
+                      bindings: {const SingleActivator(LogicalKeyboardKey.escape): () => setState(() => _editing = false)},
+                      child: TextField(
+                        controller: _path,
+                        focusNode: _pathFocus,
+                        style: monoStyle(context).copyWith(fontSize: 12),
+                        autocorrect: false,
+                        enableSuggestions: false,
+                        textInputAction: TextInputAction.go,
+                        decoration: const InputDecoration(isDense: true, hintText: '输入路径，回车前往'),
+                        onSubmitted: (_) => _go(),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  IconButton(tooltip: '前往路径', icon: const Icon(Icons.arrow_forward, size: 18), onPressed: _loading || typed.isEmpty ? null : _go),
+                ])
+              : Row(children: [
+                  // Tapping past the last breadcrumb types a path, like an address bar. Reversed
+                  // so a long path starts scrolled to its end, the folder being picked.
+                  Expanded(
+                    child: GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTap: _loading ? null : _editPath,
+                      child: MouseRegion(
+                        cursor: SystemMouseCursors.text,
+                        child: Align(
+                          alignment: Alignment.centerLeft,
+                          child: ListView(scrollDirection: Axis.horizontal, reverse: true, shrinkWrap: true, children: [
+                            for (final (index, crumb) in crumbs.indexed.toList().reversed) ...[
+                              TextButton(
+                                onPressed: _loading || index == crumbs.length - 1 ? null : () => _load(crumb.path),
+                                style: TextButton.styleFrom(
+                                  padding: const EdgeInsets.symmetric(horizontal: 6),
+                                  minimumSize: const Size(0, 28),
+                                  backgroundColor: index == crumbs.length - 1 ? scheme.muted : null,
+                                  disabledForegroundColor: index == crumbs.length - 1 ? scheme.onSurface : null,
+                                ),
+                                child: Text(crumb.name),
+                              ),
+                              if (index > 0) Icon(Icons.chevron_right, size: 14, color: scheme.mutedForeground),
+                            ],
+                          ]),
+                        ),
+                      ),
+                    ),
+                  ),
+                  IconButton(tooltip: '输入路径', icon: Icon(Icons.edit_outlined, size: 16, color: scheme.mutedForeground), onPressed: _loading ? null : _editPath),
+                ]),
+        ),
         if (_error.isNotEmpty) Padding(padding: const EdgeInsets.only(top: 8), child: Text(_error, style: TextStyle(fontSize: 13, color: scheme.error))),
         const SizedBox(height: 12),
         Expanded(

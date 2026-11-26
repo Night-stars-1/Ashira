@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
-import { ArrowRight, ArrowUp, ChevronRight, Folder, Search } from '@lucide/vue'
+import { ArrowRight, ChevronRight, Folder, Pencil, Search } from '@lucide/vue'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
@@ -16,13 +16,28 @@ const parent = ref<string | null>(null)
 const entries = ref<BrowseEntry[]>([])
 const error = ref('')
 const loading = ref(false)
-/** The path field: the folder shown, or a path typed to jump to (Enter). */
+/** The path row: breadcrumbs, or while `editing` a field for typing a path to jump to. */
+const editing = ref(false)
 const typed = ref('')
+const pathInput = ref<{ $el: HTMLInputElement } | null>(null)
 /** Filters the folder's subfolders by name. */
 const query = ref('')
 const searchInput = ref<HTMLInputElement | null>(null)
 
-const folderName = computed(() => path.value.split(/[\\/]/).filter(Boolean).at(-1) || path.value || '目录')
+const crumbs = computed(() => {
+  const value = path.value
+  if (!value) return []
+  const sep = value.includes('\\') ? '\\' : '/'
+  const parts = value.split(/[\\/]/).filter(Boolean)
+  const items: { name: string; path: string }[] = []
+  let acc = ''
+  for (const part of parts) {
+    acc = !acc ? (part.endsWith(':') ? `${part}${sep}` : value.startsWith('/') ? `/${part}` : part) : `${acc.replace(/[\\/]$/, '')}${sep}${part}`
+    items.push({ name: part, path: acc })
+  }
+  return items
+})
+const folderName = computed(() => crumbs.value.at(-1)?.name || path.value || '目录')
 const shown = computed(() => {
   const needle = query.value.trim().toLowerCase()
   return needle ? entries.value.filter((entry) => entry.name.toLowerCase().includes(needle)) : entries.value
@@ -36,7 +51,7 @@ async function load(next: string) {
     path.value = listing.path
     parent.value = listing.parent
     entries.value = listing.entries
-    typed.value = listing.path
+    editing.value = false
     query.value = ''
   } catch (reason) {
     error.value = reason instanceof Error ? reason.message : '无法打开目录'
@@ -45,10 +60,20 @@ async function load(next: string) {
   }
 }
 
-/** Enter in the path field; a path that does not open leaves the folder shown as it was. */
+/** Swaps the breadcrumbs for the path field, with the path selected for typing over. */
+async function editPath() {
+  typed.value = path.value
+  editing.value = true
+  await nextTick()
+  pathInput.value?.$el.focus()
+  pathInput.value?.$el.select()
+}
+
+/** Enter in the path field; a path that does not open keeps the field and the folder shown. */
 function go() {
   const next = typed.value.trim()
-  if (next && next !== path.value) void load(next)
+  if (!next || next === path.value) editing.value = false
+  else void load(next)
 }
 
 /** Enter in the search field opens the only folder left. */
@@ -59,6 +84,7 @@ function openMatch() {
 watch(() => props.open, async (open) => {
   if (!open) return
   query.value = ''
+  editing.value = false
   await load(props.startPath || '')
   await nextTick()
   searchInput.value?.focus()
@@ -76,15 +102,32 @@ function start() {
       <DialogHeader>
         <DialogTitle>选择目录</DialogTitle>
       </DialogHeader>
-      <form class="flex min-w-0 shrink-0 items-center gap-1.5" @submit.prevent="go">
-        <Button type="button" size="icon-sm" variant="ghost" class="shrink-0" aria-label="上一级目录" title="上一级目录" :disabled="loading || !parent" @click="parent && load(parent)">
-          <ArrowUp />
-        </Button>
-        <Input v-model="typed" class="h-8 min-w-0 flex-1 font-mono text-sm md:text-xs" aria-label="目录路径" placeholder="输入路径，回车前往" spellcheck="false" autocomplete="off" @keydown.esc.stop="typed = path" />
-        <Button type="submit" size="icon-sm" variant="ghost" class="shrink-0" aria-label="前往路径" title="前往路径" :disabled="loading || !typed.trim() || typed.trim() === path">
+      <!-- The breadcrumbs; clicking past the last one (or the pencil) types a path instead. -->
+      <form v-if="editing" class="flex min-w-0 shrink-0 items-center gap-1.5" @submit.prevent="go">
+        <Input ref="pathInput" v-model="typed" class="h-8 min-w-0 flex-1 font-mono text-sm md:text-xs" aria-label="目录路径" placeholder="输入路径，回车前往" spellcheck="false" autocomplete="off" @keydown.esc.stop.prevent="editing = false" @blur="!loading && !error && (editing = false)" />
+        <Button type="submit" size="icon-sm" variant="ghost" class="shrink-0" aria-label="前往路径" title="前往路径" :disabled="loading || !typed.trim()" @mousedown.prevent>
           <ArrowRight />
         </Button>
       </form>
+      <div v-else class="flex min-w-0 shrink-0 items-center gap-1">
+        <div class="flex min-w-0 flex-1 cursor-text items-center gap-1 overflow-x-auto overflow-y-hidden py-0.5 text-sm sm:flex-wrap sm:overflow-visible" title="点击空白处输入路径" @click.self="editPath">
+          <Button
+            v-for="(crumb, index) in crumbs"
+            :key="crumb.path"
+            type="button"
+            size="sm"
+            class="h-8 max-w-40 shrink-0 truncate px-2"
+            :variant="index === crumbs.length - 1 ? 'secondary' : 'ghost'"
+            :disabled="loading || index === crumbs.length - 1"
+            @click="load(crumb.path)"
+          >
+            {{ crumb.name }}
+          </Button>
+        </div>
+        <Button type="button" size="icon-sm" variant="ghost" class="shrink-0 text-muted-foreground" aria-label="输入路径" title="输入路径" :disabled="loading" @click="editPath">
+          <Pencil />
+        </Button>
+      </div>
       <p v-if="error" role="alert" class="text-sm break-all text-destructive">{{ error }}</p>
       <div class="flex min-h-0 flex-col overflow-hidden rounded-lg border">
         <label class="flex shrink-0 items-center gap-2 border-b px-3">
