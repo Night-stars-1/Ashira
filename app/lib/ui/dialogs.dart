@@ -424,7 +424,11 @@ class _ProjectPickerState extends State<_ProjectPicker> {
                     ),
                   ),
                   const SizedBox(width: 4),
-                  IconButton(tooltip: '前往路径', icon: const Icon(Icons.arrow_forward, size: 18), onPressed: _loading || typed.isEmpty ? null : _go),
+                  // Part of the field's tap region: pressing it must not blur the field, which
+                  // would swap in the breadcrumbs and land the release on the pencil under it.
+                  TextFieldTapRegion(
+                    child: IconButton(tooltip: '前往路径', icon: const Icon(Icons.arrow_forward, size: 18), onPressed: _loading || typed.isEmpty ? null : _go),
+                  ),
                 ])
               : Row(children: [
                   // Tapping past the last breadcrumb types a path, like an address bar. Reversed
