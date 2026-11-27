@@ -4,6 +4,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:pasteboard/pasteboard.dart';
 
 import '../api/models.dart';
 import 'context_ring.dart';
@@ -15,11 +16,8 @@ typedef OutgoingImage = ({String mediaType, String data});
 
 const _maxImages = 4;
 const _well = OutlineInputBorder(borderRadius: BorderRadius.all(Radius.circular(10)), borderSide: BorderSide.none);
-const _maxImageBytes = 1500000; // 2,000,000 base64 characters in the API.
 const _maxTextBytes = 8 * 1024 * 1024; // the API's request body limit.
 const _types = {'png': 'image/png', 'jpg': 'image/jpeg', 'jpeg': 'image/jpeg', 'gif': 'image/gif', 'webp': 'image/webp'};
-/// Longest side of a gallery photo once picked; models downscale past this anyway.
-const _imageEdge = 1568.0;
 
 /// The image type from its leading bytes, which the server checks against what it is told.
 String? _sniff(Uint8List bytes) {
@@ -140,19 +138,17 @@ class _ComposerState extends State<Composer> {
     });
   }
 
-  /// Phones pick photos from the gallery. Camera photos run to several MB, past the 1.5 MB
-  /// a message image may be, so the picker scales them to a model-sized JPEG.
+  /// Phones pick original photos from the gallery.
   Future<void> _pickImages() async {
     setState(() => _attachError = '');
     final List<XFile> files;
     try {
-      files = await ImagePicker().pickMultiImage(limit: _maxImages - _images.length, maxWidth: _imageEdge, maxHeight: _imageEdge, imageQuality: 85);
+      files = await ImagePicker().pickMultiImage(limit: _maxImages - _images.length);
     } on PlatformException catch (error) {
       setState(() => _attachError = '无法打开图片：${error.message ?? error.code}');
       return;
     }
     for (final file in files) {
-      // The picker re-encodes scaled photos; the name may keep the original (e.g. `.heic`).
       _addImage(file.name, await file.readAsBytes(), mediaType: file.mimeType);
     }
     if (mounted) setState(() {});
@@ -170,10 +166,9 @@ class _ComposerState extends State<Composer> {
     }
     for (final file in picked) {
       final image = _types.containsKey((file.extension ?? '').replaceFirst('.', '').toLowerCase());
-      // Check the size before reading so an oversized file is never loaded.
-      final length = await file.length();
-      if (length != null && length > (image ? _maxImageBytes : _maxTextBytes)) {
-        _attachError = image ? '「${file.name}」超过单张 1.5 MB 的限制。' : '「${file.name}」超过 8 MB 的请求上限。';
+      // Images aren't subject to the text attachment limit.
+      if (!image && (await file.length() ?? 0) > _maxTextBytes) {
+        _attachError = '「${file.name}」超过 8 MB 的请求上限。';
         continue;
       }
       final bytes = await file.readAsBytes();
@@ -193,8 +188,6 @@ class _ComposerState extends State<Composer> {
       _attachError = '最多添加 $_maxImages 张图片。';
     } else if (type == null) {
       _attachError = '「$name」格式不支持，请选择 PNG、JPEG、GIF 或 WebP。';
-    } else if (bytes.length > _maxImageBytes) {
-      _attachError = '「$name」超过单张 1.5 MB 的限制。';
     } else {
       _images.add(_Attachment(name, type, bytes));
     }
@@ -218,10 +211,21 @@ class _ComposerState extends State<Composer> {
     _files.add(TextFile.of(name, text));
   }
 
-  /// Long pasted text goes in as a file card, like the web; short text pastes normally.
   Future<void> _paste() async {
+    if (!widget.enabled || _sending) return;
+    Uint8List? image;
+    try {
+      image = await Pasteboard.image;
+    } on Exception {
+      // Some platforms can't read clipboard images; ordinary text paste still works.
+    }
+    if (!mounted || !widget.enabled || _sending) return;
+    if (image != null && image.isNotEmpty) {
+      _pasteImage(image);
+      return;
+    }
     final text = (await Clipboard.getData(Clipboard.kTextPlain))?.text ?? '';
-    if (text.isEmpty || !mounted) return;
+    if (text.isEmpty || !mounted || !widget.enabled || _sending) return;
     if (text.length > _pasteChars || '\n'.allMatches(text).length >= _pasteLines) {
       setState(() => _files.add(TextFile.of('粘贴文本 ${++_pasteCount}.txt', text.replaceAll(RegExp(r'\r\n?'), '\n'))));
       return;
@@ -230,6 +234,33 @@ class _ComposerState extends State<Composer> {
     final start = value.selection.isValid ? value.selection.start : value.text.length;
     final end = value.selection.isValid ? value.selection.end : value.text.length;
     _text.value = TextEditingValue(text: value.text.replaceRange(start, end, text), selection: TextSelection.collapsed(offset: start + text.length));
+  }
+
+  void _pasteImage(Uint8List bytes, {String? mediaType}) {
+    if (!widget.enabled || _sending) return;
+    setState(() {
+      _attachError = '';
+      _addImage('剪贴板图片', bytes, mediaType: mediaType);
+    });
+  }
+
+  Widget _pasteMenu(BuildContext context, EditableTextState field) {
+    final items = field.contextMenuButtonItems;
+    final index = items.indexWhere((item) => item.type == ContextMenuButtonType.paste);
+    final paste = ContextMenuButtonItem(
+      type: ContextMenuButtonType.paste,
+      onPressed: () {
+        field.hideToolbar();
+        _paste();
+      },
+    );
+    // Flutter only offers its default Paste button for a text clipboard.
+    if (index < 0) {
+      items.add(paste);
+    } else {
+      items[index] = paste;
+    }
+    return AdaptiveTextSelectionToolbar.buttonItems(anchors: field.contextMenuAnchors, buttonItems: items);
   }
 
   /// Desktop: Enter sends, Shift+Enter inserts a newline. Phones use the send button.
@@ -297,7 +328,7 @@ class _ComposerState extends State<Composer> {
                     Focus(
                       onKeyEvent: desktop ? _onKey : null,
                       child: Actions(
-                        // Long pastes become file cards; Ctrl+V and the context menu both land here.
+                        // Override the keyboard paste action; the custom toolbar uses the same handler.
                         actions: {PasteTextIntent: CallbackAction<PasteTextIntent>(onInvoke: (_) => _paste())},
                         child: TextField(
                         controller: _text,
@@ -307,6 +338,15 @@ class _ComposerState extends State<Composer> {
                         maxLines: 8,
                         keyboardType: TextInputType.multiline,
                         textInputAction: TextInputAction.newline,
+                        contextMenuBuilder: _pasteMenu,
+                        contentInsertionConfiguration: ContentInsertionConfiguration(
+                          allowedMimeTypes: const ['image/png', 'image/jpeg', 'image/gif', 'image/webp'],
+                          onContentInserted: (content) {
+                            if (content.data case final bytes? when bytes.isNotEmpty) {
+                              _pasteImage(bytes, mediaType: content.mimeType);
+                            }
+                          },
+                        ),
                         style: const TextStyle(fontSize: 14, height: 1.43),
                         decoration: InputDecoration(
                           border: _well,
@@ -325,9 +365,9 @@ class _ComposerState extends State<Composer> {
                     const SizedBox(height: 6),
                     Row(children: [
                       if (desktop)
-                        IconButton(tooltip: '添加图片（单张不超过 1.5 MB）或文本文件', icon: const Icon(Icons.attach_file), onPressed: widget.enabled ? _pickFiles : null)
+                        IconButton(tooltip: '添加图片或文本文件', icon: const Icon(Icons.attach_file), onPressed: widget.enabled ? _pickFiles : null)
                       else ...[
-                        IconButton(tooltip: '添加图片（单张不超过 1.5 MB）', icon: const Icon(Icons.add_photo_alternate_outlined), onPressed: widget.enabled && _images.length < _maxImages ? _pickImages : null),
+                        IconButton(tooltip: '添加图片', icon: const Icon(Icons.add_photo_alternate_outlined), onPressed: widget.enabled && _images.length < _maxImages ? _pickImages : null),
                         IconButton(tooltip: '添加文本文件', icon: const Icon(Icons.attach_file), onPressed: widget.enabled ? _pickFiles : null),
                       ],
                       const SizedBox(width: 4),

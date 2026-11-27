@@ -91,7 +91,6 @@ const file = ref<HTMLInputElement | null>(null)
 const imageTypes: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp' }
 const allowedImageTypes = new Set(Object.values(imageTypes))
 const maxImages = 4
-const maxImageBytes = 1_500_000 // 2,000,000 base64 characters in the API.
 const images = ref<{ id: number; name: string; mediaType: string; data: string; url: string }[]>([])
 const readingImages = ref(false)
 const attachmentError = ref('')
@@ -228,10 +227,6 @@ async function addFiles(files: File[]) {
       }
       if (!allowedImageTypes.has(mediaType)) {
         attachmentError.value ||= `「${name}」格式不支持，请选择 PNG、JPEG、GIF 或 WebP。`
-        continue
-      }
-      if (item.size > maxImageBytes) {
-        attachmentError.value ||= `「${name}」超过单张 1.5 MB 的限制。`
         continue
       }
       try {
@@ -395,7 +390,7 @@ function removeText(index: number) {
           />
           <div class="flex items-center gap-2 px-1 pt-1">
             <input ref="file" type="file" multiple class="hidden" @change="onFiles" />
-            <Button type="button" size="icon-sm" variant="ghost" class="shrink-0 max-sm:size-9" aria-label="添加图片或文本文件" title="添加图片（单张不超过 1.5 MB）或文本文件" :disabled="sending || creating || readingImages || !connected" @click="file?.click()">
+            <Button type="button" size="icon-sm" variant="ghost" class="shrink-0 max-sm:size-9" aria-label="添加图片或文本文件" title="添加图片或文本文件" :disabled="sending || creating || readingImages || !connected" @click="file?.click()">
               <Paperclip />
             </Button>
             <Button type="button" size="sm" variant="outline" class="min-w-0 max-w-72 shrink max-sm:h-9" :title="model" :disabled="busy || creating || !connected" @click="emit('openModels')">

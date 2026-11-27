@@ -153,7 +153,7 @@ async fn accept(listener: TcpListener, hub: Arc<Hub>) -> Result<(), String> {
 }
 
 async fn handle(mut socket: TcpStream, hub: Arc<Hub>) -> Result<(), String> {
-    let (method, target, headers, body) = read_request(&mut socket).await?;
+    let (method, target, headers, length, mut body) = read_request_head(&mut socket).await?;
     if method == "OPTIONS" {
         return write_response(&mut socket, 204, "text/plain", b"").await;
     }
@@ -166,18 +166,33 @@ async fn handle(mut socket: TcpStream, hub: Arc<Hub>) -> Result<(), String> {
         let body = json!({"error": "需要有效的 API Token"}).to_string();
         return write_response(&mut socket, 401, "application/json", body.as_bytes()).await;
     }
+    // Authenticate before reading potentially large uploads. Only chat images may go over MAX_BODY.
+    let message_post = method == "POST" && matches!(session_path(path), Some((id, "messages")) if !id.is_empty());
+    if length > MAX_BODY && !message_post {
+        return write_json(&mut socket, 413, r#"{"error":"body is too large"}"#, false).await;
+    }
+    body.truncate(length);
+    let remaining = length - body.len();
+    if remaining != 0 {
+        (&mut socket).take(remaining as u64).read_to_end(&mut body).await.map_err(|e| e.to_string())?;
+        if body.len() != length { return Err("client closed before the request body was complete".into()); }
+    }
     if let Some(id) = path.strip_prefix("/v1/sessions/").and_then(|p| p.strip_suffix("/terminal")) {
         return terminal_upgrade(socket, &hub, &method, id, &headers, &body).await;
     }
-    let result = dispatch(&hub, &method, path, query, &body).await;
+    let result = dispatch(&hub, &method, path, query, body).await;
     let gzip = headers.iter().any(|(name, value)| name == "accept-encoding" && value.split(',').any(|coding| coding.trim().split(';').next() == Some("gzip")));
     match result {
         Ok(Response::Json { status, body }) => write_json(&mut socket, status, &body.to_string(), gzip).await,
         Ok(Response::Events(id)) => stream_events(&mut socket, &hub, &id).await,
         // A picture stored in a history never changes; the browser keeps it.
-        Ok(Response::Bytes { status, content_type, body, immutable }) => {
-            let extra = if immutable { "Cache-Control: private, max-age=31536000, immutable\r\n" } else { "" };
-            write_response_with(&mut socket, status, content_type, extra, &body).await
+        Ok(Response::Bytes { content_type, body }) => {
+            write_response_with(&mut socket, 200, content_type, "Cache-Control: private, max-age=31536000, immutable\r\n", &body).await
+        }
+        Ok(Response::ImageFile { content_type, len, file }) => {
+            write_response_head(&mut socket, 200, content_type, "", len).await?;
+            tokio::io::copy(&mut tokio::fs::File::from_std(file).take(len), &mut socket).await.map_err(|e| e.to_string())?;
+            socket.shutdown().await.map_err(|e| e.to_string())
         }
         Err(error) => {
             let status = if error.contains("还在进行") { 409 } else if error.contains("unknown") || error.contains("没有") { 404 } else { 400 };
@@ -263,23 +278,29 @@ async fn terminal_upgrade(mut socket: TcpStream, hub: &Hub, method: &str, id: &s
 enum Response {
     Json { status: u16, body: Value },
     Events(String),
-    /// An image for `<img>`: a workspace file (`GET .../raw`) or a picture stored in a
-    /// history, which never changes (`immutable`). Errors are JSON like elsewhere.
-    Bytes { status: u16, content_type: &'static str, body: Vec<u8>, immutable: bool },
+    /// A picture stored in a history, which never changes.
+    Bytes { content_type: &'static str, body: Vec<u8> },
+    ImageFile { content_type: &'static str, len: u64, file: std::fs::File },
 }
 
 fn image_response(result: Result<(&'static str, Vec<u8>), (u16, String)>) -> Response {
     match result {
-        Ok((content_type, body)) => Response::Bytes { status: 200, content_type, body, immutable: true },
+        Ok((content_type, body)) => Response::Bytes { content_type, body },
         Err((status, error)) => Response::Json { status, body: json!({"error": error}) },
     }
 }
 
-async fn dispatch(hub: &Arc<Hub>, method: &str, path: &str, query: &str, body: &[u8]) -> Result<Response, String> {
-    let json_body = if body.is_empty() { Value::Object(Default::default()) } else { serde_json::from_slice(body).map_err(|error| format!("invalid JSON: {error}"))? };
-    if let Some(rest) = path.strip_prefix("/v1/sessions/") {
-        let (id, action) = rest.split_once('/').unwrap_or((rest, ""));
-        return session_route(hub, method, id, action, query, &json_body).await;
+fn session_path(path: &str) -> Option<(&str, &str)> {
+    let rest = path.strip_prefix("/v1/sessions/")?;
+    Some(rest.split_once('/').unwrap_or((rest, "")))
+}
+
+async fn dispatch(hub: &Arc<Hub>, method: &str, path: &str, query: &str, body: Vec<u8>) -> Result<Response, String> {
+    let body_len = body.len();
+    let json_body = if body.is_empty() { Value::Object(Default::default()) } else { serde_json::from_slice(&body).map_err(|error| format!("invalid JSON: {error}"))? };
+    drop(body);
+    if let Some((id, action)) = session_path(path) {
+        return session_route(hub, method, id, action, query, json_body, body_len).await;
     }
     match (method, path) {
         ("GET", "/v1") => Ok(Response::Json { status: 200, body: status(hub).await }),
@@ -478,7 +499,7 @@ async fn dispatch(hub: &Arc<Hub>, method: &str, path: &str, query: &str, body: &
     }
 }
 
-async fn session_route(hub: &Arc<Hub>, method: &str, id: &str, action: &str, query: &str, body: &Value) -> Result<Response, String> {
+async fn session_route(hub: &Arc<Hub>, method: &str, id: &str, action: &str, query: &str, mut body: Value, body_len: usize) -> Result<Response, String> {
     let target = {
         let id = id.to_owned();
         tokio::task::spawn_blocking(move || session::locate(&id)).await.map_err(|error| error.to_string())??
@@ -491,11 +512,14 @@ async fn session_route(hub: &Arc<Hub>, method: &str, id: &str, action: &str, que
         }
         ("GET", "events") => return Ok(Response::Events(id.to_owned())),
         ("POST", "messages") => {
+            let (images, image_bytes) = message_images(body.get_mut("images"))?;
+            if body_len.saturating_sub(image_bytes) > MAX_BODY {
+                return Ok(Response::Json { status: 413, body: json!({"error": "message excluding image data is too large"}) });
+            }
             let text = body["text"].as_str().unwrap_or("");
-            let images = message_images(body.get("images"))?;
             let files = message_files(body.get("files"))?;
             if text.trim().is_empty() && images.is_empty() && files.is_empty() { return Err("text, an image, or a file is required".into()); }
-            let input = user_turn(text, &images, &files);
+            let input = user_turn(text, images, &files);
             // Typed while the reply runs: it joins that turn, read between tool rounds like the TUI's.
             if let Some(turn) = hub.steer(id, &input) {
                 return Ok(Response::Json { status: 202, body: json!({"sessionId": id, "turnId": turn, "steered": true}) });
@@ -547,8 +571,8 @@ async fn session_route(hub: &Arc<Hub>, method: &str, id: &str, action: &str, que
         }
         ("GET", "raw") => {
             let relative = path();
-            return match tokio::task::spawn_blocking(move || read_image(&target.cwd, &relative)).await.map_err(|error| error.to_string())? {
-                Ok((content_type, body)) => Ok(Response::Bytes { status: 200, content_type, body, immutable: false }),
+            return match tokio::task::spawn_blocking(move || open_image(&target.cwd, &relative)).await.map_err(|error| error.to_string())? {
+                Ok((content_type, len, file)) => Ok(Response::ImageFile { content_type, len, file }),
                 Err((status, error)) => Ok(Response::Json { status, body: json!({"error": error}) }),
             };
         }
@@ -564,7 +588,7 @@ async fn session_route(hub: &Arc<Hub>, method: &str, id: &str, action: &str, que
         ("POST", "file") => write_text(&target.cwd, body["path"].as_str().unwrap_or(""), body["text"].as_str().ok_or("text is required")?).await?,
         ("POST", action) => {
             let (turn, control) = action.strip_prefix("turns/").and_then(|s| s.split_once('/')).ok_or("unknown route")?;
-            hub.control(id, turn, control, body)?;
+            hub.control(id, turn, control, &body)?;
             json!({"ok": true})
         }
         _ => return Err("unknown route".into()),
@@ -782,11 +806,7 @@ async fn session_view(hub: &Hub, id: &str, target: session::Target, before: Opti
     Ok(with_statistics(body, stats))
 }
 
-fn user_turn(text: &str, images: &[(String, String)], files: &[(String, String)]) -> Value {
-    let mut content = Vec::new();
-    for (media_type, data) in images {
-        content.push(json!({"type": "image", "source": {"type": "base64", "media_type": media_type, "data": data}}));
-    }
+fn user_turn(text: &str, mut content: Vec<Value>, files: &[(String, String)]) -> Value {
     // Typed text first so the session title and the model see the request before the files.
     if !text.trim().is_empty() {
         content.push(json!({"type": "text", "text": text}));
@@ -794,10 +814,12 @@ fn user_turn(text: &str, images: &[(String, String)], files: &[(String, String)]
     for (name, body) in files {
         content.push(json!({"type": "text", "text": crate::attachment::wrap(name, body)}));
     }
-    json!({"role": "user", "content": content})
+    let mut message = json!({"role": "user"});
+    message["content"] = Value::Array(content);
+    message
 }
 
-/// `[{name, text}]`; bounded only by the request body size.
+/// `[{name, text}]`; bounded by the message size excluding images.
 fn message_files(value: Option<&Value>) -> Result<Vec<(String, String)>, String> {
     let Some(value) = value else { return Ok(Vec::new()) };
     let items = value.as_array().ok_or("files must be an array")?;
@@ -807,23 +829,31 @@ fn message_files(value: Option<&Value>) -> Result<Vec<(String, String)>, String>
     }).collect()
 }
 
-fn message_images(value: Option<&Value>) -> Result<Vec<(String, String)>, String> {
-    let Some(value) = value else { return Ok(Vec::new()) };
-    let items = value.as_array().ok_or("images must be an array")?;
+/// Takes the base64 strings directly from the request so large images are not copied here.
+fn message_images(value: Option<&mut Value>) -> Result<(Vec<Value>, usize), String> {
+    let Some(value) = value else { return Ok((Vec::new(), 0)) };
+    let items = value.as_array_mut().ok_or("images must be an array")?;
     if items.len() > 4 { return Err("at most 4 images".into()); }
     let mut images = Vec::with_capacity(items.len());
+    let mut image_bytes = 0;
     for item in items {
+        let data = item.get_mut("data").map(Value::take).and_then(|v| match v {
+            Value::String(data) if !data.is_empty() => Some(data),
+            _ => None,
+        }).ok_or("image data is required")?;
         let media_type = item.get("mediaType").and_then(Value::as_str).unwrap_or("");
         if !matches!(media_type, "image/png" | "image/jpeg" | "image/gif" | "image/webp") {
             return Err("image must be png, jpeg, gif, or webp".into());
         }
-        let data = item.get("data").and_then(Value::as_str).filter(|data| !data.is_empty()).ok_or("image data is required")?;
-        if data.len() > 2_000_000 || !data.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'=')) {
-            return Err("image is too large or not base64".into());
+        if !data.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'=')) {
+            return Err("image data must be base64".into());
         }
-        images.push((media_type.to_owned(), data.to_owned()));
+        image_bytes += data.len();
+        let mut image = json!({"type": "image", "source": {"type": "base64", "media_type": media_type}});
+        image["source"]["data"] = Value::String(data);
+        images.push(image);
     }
-    Ok(images)
+    Ok((images, image_bytes))
 }
 
 /// `images` is where stored pictures are fetched from: each is `{images}{n}`, numbered in
@@ -1291,16 +1321,15 @@ fn shown_path(cwd: &Path, path: &Path) -> String {
     path.strip_prefix(&root).unwrap_or(path).to_string_lossy().replace('\\', "/")
 }
 
-const MAX_IMAGE: u64 = 20 * 1024 * 1024;
-
-/// A workspace image's content type and bytes; `(status, message)` on failure.
-fn read_image(cwd: &Path, relative: &str) -> Result<(&'static str, Vec<u8>), (u16, String)> {
+/// Opens a workspace image for streaming without loading the whole file into memory.
+fn open_image(cwd: &Path, relative: &str) -> Result<(&'static str, u64, std::fs::File), (u16, String)> {
     let content_type = crate::image_gen::content_type(relative).ok_or((415, "只能读取 png、jpg、gif、webp 图片".to_owned()))?;
     let path = workspace_file(cwd, relative, false).map_err(|error| (if error.ends_with("was not found") { 404 } else { 400 }, error))?;
-    let meta = std::fs::metadata(&path).map_err(|error| (404, format!("{relative}: {error}")))?;
+    let failed = |error| (404, format!("{relative}: {error}"));
+    let meta = std::fs::metadata(&path).map_err(failed)?;
     if !meta.is_file() { return Err((404, format!("{relative} is not a file"))); }
-    if meta.len() > MAX_IMAGE { return Err((413, "image is too large".into())); }
-    std::fs::read(&path).map(|body| (content_type, body)).map_err(|error| (404, format!("{relative}: {error}")))
+    let file = std::fs::File::open(path).map_err(failed)?;
+    Ok((content_type, meta.len(), file))
 }
 
 impl Hub {
@@ -1579,15 +1608,18 @@ async fn write_response(socket: &mut TcpStream, status: u16, content_type: &str,
 
 /// `extra` is more header lines, each ending in `\r\n`.
 async fn write_response_with(socket: &mut TcpStream, status: u16, content_type: &str, extra: &str, body: &[u8]) -> Result<(), String> {
+    write_response_head(socket, status, content_type, extra, body.len() as u64).await?;
+    socket.write_all(body).await.map_err(|error| error.to_string())?;
+    socket.shutdown().await.map_err(|error| error.to_string())
+}
+
+async fn write_response_head(socket: &mut TcpStream, status: u16, content_type: &str, extra: &str, len: u64) -> Result<(), String> {
     let header = format!(
         "HTTP/1.1 {status} {}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\n{extra}Connection: close\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization\r\n\r\n",
         reason(status),
-        body.len()
+        len
     );
-    socket.write_all(header.as_bytes()).await.map_err(|error| error.to_string())?;
-    socket.write_all(body).await.map_err(|error| error.to_string())?;
-    socket.shutdown().await.map_err(|error| error.to_string())?;
-    Ok(())
+    socket.write_all(header.as_bytes()).await.map_err(|error| error.to_string())
 }
 
 /// JSON, gzipped when the client takes it and it is worth it: a session's history is
@@ -1620,7 +1652,7 @@ fn reason(status: u16) -> &'static str {
     }
 }
 
-async fn read_request(socket: &mut TcpStream) -> Result<(String, String, Vec<(String, String)>, Vec<u8>), String> {
+async fn read_request_head(socket: &mut TcpStream) -> Result<(String, String, Vec<(String, String)>, usize, Vec<u8>), String> {
     let mut buffer = Vec::new();
     let mut chunk = [0u8; 4096];
     let header_end = loop {
@@ -1641,15 +1673,8 @@ async fn read_request(socket: &mut TcpStream) -> Result<(String, String, Vec<(St
         }
     }
     let length = headers.iter().find(|(name, _)| name == "content-length").and_then(|(_, value)| value.parse::<usize>().ok()).unwrap_or(0);
-    if length > MAX_BODY { return Err("body is too large".into()); }
-    let mut body = buffer[header_end..].to_vec();
-    while body.len() < length {
-        let read = socket.read(&mut chunk).await.map_err(|error| error.to_string())?;
-        if read == 0 { break; }
-        body.extend_from_slice(&chunk[..read]);
-    }
-    body.truncate(length);
-    Ok((request[0].to_owned(), decode(&request[1].replace('+', " ")), headers, body))
+    buffer.drain(..header_end);
+    Ok((request[0].to_owned(), decode(&request[1].replace('+', " ")), headers, length, buffer))
 }
 
 async fn subagent(id: &str) -> Result<Value, String> {
@@ -1781,7 +1806,7 @@ mod tests {
     fn text_files_reach_the_model_whole_and_show_as_attachments() {
         let log = (1..=500).map(|n| format!("line {n}")).collect::<Vec<_>>().join("\n");
         let files = message_files(Some(&json!([{"name": "build.log", "text": log}]))).unwrap();
-        let message = user_turn("看看这个日志", &[], &files);
+        let message = user_turn("看看这个日志", Vec::new(), &files);
         // The model gets the request first, then the complete file.
         assert_eq!(message["content"][0]["text"], "看看这个日志");
         assert!(message["content"][1]["text"].as_str().unwrap().ends_with("line 500\n</file>"));
