@@ -57,6 +57,11 @@ function reasoningOpen(key: string, text: string, streaming = false) {
 function streaming(reply: Turn, partIndex: number) {
   return reply.live && !reply.answer.length && partIndex === reply.work.length - 1
 }
+/** The newest tool of the reply still running: 默认折叠工具输出 leaves it open, since a running
+ *  tool has no output yet and the last one's result is what the reader is waiting on. */
+function latestTool(reply: Turn, partIndex: number) {
+  return reply.live && reply.lastTool === partIndex
+}
 function toggleReasoning(key: string) {
   if (toggledReasoning.has(key)) toggledReasoning.delete(key)
   else toggledReasoning.add(key)
@@ -65,8 +70,9 @@ function toggleReasoning(key: string) {
 type Reply = Extract<Block, { kind: 'assistant' }>
 /** One reply between two user messages: every model request's parts, split into the
  *  work (thinking, tools and the text between them) and the answer after the last tool.
- *  `images` are the pictures `generate_image` saved; they are results, shown with the answer. */
-type Turn = { work: ReplyPart[]; answer: string[]; images: string[]; live: boolean; durationMs: number | null; steps: number }
+ *  `images` are the pictures `generate_image` saved; they are results, shown with the answer.
+ *  `lastTool` is the newest tool's index in `work` (-1 when none). */
+type Turn = { work: ReplyPart[]; answer: string[]; images: string[]; live: boolean; durationMs: number | null; steps: number; lastTool: number }
 type Row = { key: number; block: Exclude<Block, Reply> } | { key: number; reply: Turn }
 
 function turn(parts: ReplyPart[], live: boolean, durationMs: number | null): Turn {
@@ -77,7 +83,7 @@ function turn(parts: ReplyPart[], live: boolean, durationMs: number | null): Tur
   const work = [...parts.slice(0, lastTool + 1), ...tail.filter((part) => part.type === 'reasoning')]
   const answer = tail.flatMap((part) => part.type === 'text' && part.text ? [part.text] : [])
   const images = parts.flatMap((part) => part.type === 'tool' ? generatedImages(part) : [])
-  return { work, answer, images, live, durationMs, steps: work.filter((part) => part.type !== 'text').length }
+  return { work, answer, images, live, durationMs, steps: work.filter((part) => part.type !== 'text').length, lastTool }
 }
 
 // Consecutive assistant blocks (one per model request) form one reply.
@@ -294,7 +300,7 @@ watch(content, (body, _previous, onCleanup) => {
                   </button>
                   <p v-if="reasoningOpen(`${row.key}:${partIndex}`, part.text, streaming(row.reply, partIndex))" class="px-3 pb-2 italic whitespace-pre-wrap">{{ part.text }}</p>
                 </div>
-                <ToolOutput v-else-if="part.type === 'tool'" :tool="part" />
+                <ToolOutput v-else-if="part.type === 'tool'" :tool="part" :latest="latestTool(row.reply, partIndex)" />
                 <Markdown v-else-if="part.text" :text="part.text" />
               </template>
             </div>

@@ -275,7 +275,7 @@ watch(open, (value) => { if (value) void load() })
                 <label class="flex items-center gap-3 px-4 py-3.5">
                   <span class="min-w-0 flex-1">
                     <span class="block text-sm">默认折叠工具输出</span>
-                    <span class="block text-xs text-muted-foreground">工具运行结束后只显示标题行，点击展开；运行中、失败的工具和待办保持展开</span>
+                    <span class="block text-xs text-muted-foreground">工具只显示标题行，点击展开；回复进行中的最新一个工具、失败的工具和待办保持展开</span>
                   </span>
                   <Switch v-model="foldToolOutput" />
                 </label>

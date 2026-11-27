@@ -231,7 +231,7 @@ class _PendingMessage extends StatelessWidget {
 /// work (thinking, tools and the text between them) and the answer after the last tool.
 class _Turn {
   _Turn(this.key, List<ReplyPart> parts, {required this.live, required this.durationMs}) {
-    final lastTool = parts.lastIndexWhere((part) => part is ToolPart);
+    lastTool = parts.lastIndexWhere((part) => part is ToolPart);
     final tail = parts.sublist(lastTool + 1);
     // Thinking after the last tool still belongs to the work; only its text is the answer.
     work = [...parts.sublist(0, lastTool + 1), ...tail.where((part) => part is TextPart && part.reasoning)];
@@ -245,6 +245,9 @@ class _Turn {
   late final List<String> answer;
   /// Pictures `generate_image` saved: results, shown with the answer outside the fold.
   late final List<String> images;
+  /// The newest tool's index in [work] (-1 when none): the same as in the parts, since
+  /// every tool comes before the trailing thinking that joins the work.
+  late final int lastTool;
   int get steps => work.where((part) => part is ToolPart || (part is TextPart && part.reasoning)).length;
 }
 
@@ -435,7 +438,8 @@ class _TurnViewState extends State<_TurnView> {
                                 // The last part of a live reply with no answer yet is still being written.
                                 TextPart(reasoning: true, :final text) => _Reasoning(text, streaming: turn.live && turn.answer.isEmpty && index == turn.work.length - 1),
                                 TextPart(:final text) => Markdown(text),
-                                ToolPart() => ToolCard(part),
+                                // The running reply's newest tool stays open under 默认折叠工具输出.
+                                ToolPart() => ToolCard(part, latest: turn.live && index == turn.lastTool),
                               },
                             ),
                         ]),
@@ -683,10 +687,13 @@ List<String> generatedImages(ToolPart tool) => tool.name == 'generate_image' && 
 /// The web's ToolOutput: a badge with the tool's name and its summary, then the result
 /// (todo board, `ask_user` answers or raw/numbered output) under a divider. A `write`/`edit`
 /// card shows its `+`/`−` line counts instead; tapping the header opens the diff. With
-/// 默认折叠工具输出 on, a finished card shows only its header until tapped.
+/// 默认折叠工具输出 on, a card shows only its header until tapped, except [latest].
 class ToolCard extends StatefulWidget {
-  const ToolCard(this.tool, {super.key});
+  const ToolCard(this.tool, {this.latest = false, super.key});
   final ToolPart tool;
+  /// The newest tool of the reply still running, which 默认折叠工具输出 leaves open: a
+  /// running tool has no output yet, and the last one's result is what the reader awaits.
+  final bool latest;
   @override
   State<ToolCard> createState() => _ToolCardState();
 }
@@ -730,9 +737,9 @@ class _ToolCardState extends State<ToolCard> {
     // A binary or unreadable file has no counts and shows the text result instead.
     final change = !tool.error && tool.diff?.added != null ? tool.diff : null;
     final hasBody = images.isNotEmpty || tool.image != null || todo != null || asked != null || (tool.output.isNotEmpty && change == null);
-    // A running or failed tool and the todo board stay open; a write/edit diff already
-    // opens on demand, so it is left alone.
-    final foldable = _fold && hasBody && change == null && todo == null && tool.done && !tool.error;
+    // The running reply's newest tool, a failed tool and the todo board stay open; a
+    // write/edit diff already opens on demand, so it is left alone.
+    final foldable = _fold && hasBody && change == null && todo == null && !widget.latest && !tool.error;
     final bodyOpen = !foldable || (_opened ?? false);
     // `max-h-64` scroll area for the todo board and raw output; answers are short and show whole.
     Widget scrolled(Widget child) => ConstrainedBox(

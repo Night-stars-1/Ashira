@@ -357,7 +357,7 @@ class _SettingsState extends State<_Settings> {
             listenable: displayPrefs,
             builder: (context, _) => SettingsCard(children: [
               toggleRow('工具输出自动换行', '关闭后长行保持完整，左右滚动查看', displayPrefs.wrapToolOutput, displayPrefs.setWrapToolOutput),
-              toggleRow('默认折叠工具输出', '工具运行结束后只显示标题行，点击展开；运行中、失败的工具和待办保持展开', displayPrefs.foldToolOutput, displayPrefs.setFoldToolOutput),
+              toggleRow('默认折叠工具输出', '工具只显示标题行，点击展开；回复进行中的最新一个工具、失败的工具和待办保持展开', displayPrefs.foldToolOutput, displayPrefs.setFoldToolOutput),
             ]),
           ),
           const SizedBox(height: 16),

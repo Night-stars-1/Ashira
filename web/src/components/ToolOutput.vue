@@ -12,7 +12,8 @@ import { foldToolOutput, wrapToolOutput } from '@/lib/display'
 type TodoTask = { content: string; status: string; reason: string }
 type TodoPhase = { name: string; tasks: TodoTask[] }
 
-const props = defineProps<{ tool: ToolCard }>()
+/** `latest`: the newest tool of the reply still running, which 默认折叠工具输出 leaves open. */
+const props = defineProps<{ tool: ToolCard; latest?: boolean }>()
 const todo = computed(() => props.tool.name === 'todo' ? todoBoard(props.tool.output) : null)
 const asked = computed(() => props.tool.name === 'ask_user' ? askResult(props.tool.output) : null)
 const images = computed(() => generatedImages(props.tool))
@@ -23,9 +24,10 @@ const change = computed(() => !props.tool.error && props.tool.diff?.added != nul
 const changeOpen = ref(false)
 /** Whether the card has a body below its header that 默认折叠工具输出 can hide. */
 const hasBody = computed(() => Boolean(images.value.length || props.tool.image || todo.value || asked.value || (props.tool.output && !change.value)))
-/** 设置 → 通用 → 显示 → 默认折叠工具输出 folds finished tools; a running or failed one and the
- *  todo board stay open. A write/edit diff already opens on demand, so it is left alone. */
-const foldable = computed(() => foldToolOutput.value && hasBody.value && !change.value && !todo.value && props.tool.done && !props.tool.error)
+/** 设置 → 通用 → 显示 → 默认折叠工具输出 folds every tool but the running reply's newest one;
+ *  failed tools and the todo board stay open. A write/edit diff already opens on demand, so it
+ *  is left alone. */
+const foldable = computed(() => foldToolOutput.value && hasBody.value && !change.value && !todo.value && !props.latest && !props.tool.error)
 /** This card's own choice once its header is clicked; until then the setting decides. */
 const opened = ref<boolean | null>(null)
 const bodyOpen = computed(() => !foldable.value || (opened.value ?? false))
