@@ -6,7 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 /// The 逐回复明细 table's order: a column key and whether it runs ascending.
 typedef ReplySort = ({String key, bool ascending});
 
-const replySortKeys = ['number', 'input', 'output', 'cache', 'hit', 'rate', 'cost'];
+const replySortKeys = ['number', 'input', 'output', 'cache', 'hit', 'rate', 'firstOutputMs', 'firstTextMs', 'cost'];
 const defaultReplySort = (key: 'number', ascending: true);
 
 /// Device-local display preferences: 设置 → 通用, and layout the App remembers.

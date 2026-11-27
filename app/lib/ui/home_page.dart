@@ -171,9 +171,11 @@ class _HomePageState extends State<HomePage> {
           _terminalOpened = false;
         }
         final terminal = _terminal && hasSession;
-        final filesShown = wide && _filesOpen && hasSession;
+        final filesShown = wide && _filesOpen && (hasSession || state.loading);
         // The window buttons end whichever header sits in the top-right corner.
         final files = _files(windowButtons: filesShown);
+        // Loading clears the session ID. Reserve the same column without showing stale files.
+        final desktopFiles = files ?? (filesShown ? const _LoadingFilesPanel() : null);
         final header = WindowDrag(
           child: PanelHeader(
             padding: EdgeInsets.only(right: filesShown || !customFrame ? (wide ? 24 : 4) : 0),
@@ -314,14 +316,14 @@ class _HomePageState extends State<HomePage> {
                     Expanded(child: chat),
                     // Slides open and shut instead of popping; the panel keeps its width
                     // while the clip grows, so its contents do not reflow mid-animation.
-                    if (files != null)
+                    if (desktopFiles != null)
                       ClipRect(
                         child: AnimatedAlign(
                           duration: const Duration(milliseconds: 200),
                           curve: Curves.easeOutCubic,
                           alignment: Alignment.centerLeft,
                           widthFactor: filesShown ? 1 : 0,
-                          child: side(files, left: false),
+                          child: side(desktopFiles, left: false),
                         ),
                       ),
                   ])
@@ -330,6 +332,31 @@ class _HomePageState extends State<HomePage> {
         );
       },
     );
+  }
+}
+
+class _LoadingFilesPanel extends StatelessWidget {
+  const _LoadingFilesPanel();
+
+  @override
+  Widget build(BuildContext context) {
+    final muted = Theme.of(context).colorScheme.mutedForeground;
+    return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+      WindowDrag(
+        child: SizedBox(
+          height: 48,
+          child: Row(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+            Expanded(
+              child: Padding(
+                padding: const EdgeInsets.only(left: 12),
+                child: Align(alignment: Alignment.centerLeft, child: Text('正在加载文件…', style: TextStyle(fontSize: 12, color: muted))),
+              ),
+            ),
+            const WindowButtons(),
+          ]),
+        ),
+      ),
+    ]);
   }
 }
 

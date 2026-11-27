@@ -55,8 +55,8 @@ const since = computed(() => {
 })
 const rows = computed(() => (report.value?.buckets ?? []).filter((bucket) => bucket.hour + 1 > since.value))
 
-type Sums = { tokens: number; input: number; output: number; cacheRead: number; prompt: number; cost: number; unknown: number; requests: number; timedOutput: number; durationMs: number }
-const empty = (): Sums => ({ tokens: 0, input: 0, output: 0, cacheRead: 0, prompt: 0, cost: 0, unknown: 0, requests: 0, timedOutput: 0, durationMs: 0 })
+type Sums = { tokens: number; input: number; output: number; cacheRead: number; prompt: number; cost: number; unknown: number; requests: number; timedOutput: number; durationMs: number; firstOutputTotalMs: number; firstOutputSamples: number; firstTextTotalMs: number; firstTextSamples: number }
+const empty = (): Sums => ({ tokens: 0, input: 0, output: 0, cacheRead: 0, prompt: 0, cost: 0, unknown: 0, requests: 0, timedOutput: 0, durationMs: 0, firstOutputTotalMs: 0, firstOutputSamples: 0, firstTextTotalMs: 0, firstTextSamples: 0 })
 function add(sums: Sums, bucket: UsageBucket) {
   const prompt = bucket.input + bucket.cacheRead + bucket.cacheWrite
   sums.tokens += prompt + bucket.output
@@ -69,12 +69,17 @@ function add(sums: Sums, bucket: UsageBucket) {
   sums.requests += bucket.requests
   sums.timedOutput += bucket.timedOutput
   sums.durationMs += bucket.durationMs
+  sums.firstOutputTotalMs += bucket.firstOutputTotalMs
+  sums.firstOutputSamples += bucket.firstOutputSamples
+  sums.firstTextTotalMs += bucket.firstTextTotalMs
+  sums.firstTextSamples += bucket.firstTextSamples
 }
 /** Share of prompt tokens served from cache. */
 const cacheRate = (sums: Sums) => sums.prompt ? percent.format(sums.cacheRead / sums.prompt) : '—'
 const costLabel = (sums: Sums) => sums.unknown ? (sums.cost > 0 ? `≥ ${dollars.format(sums.cost)}` : '未知') : dollars.format(sums.cost)
 /** Average output speed over the requests that logged their generation time. */
 const tps = (sums: Sums) => sums.durationMs ? (sums.timedOutput * 1000 / sums.durationMs).toFixed(1) : '—'
+const averageLatency = (totalMs: number, samples: number) => samples ? `${(totalMs / samples / 1000).toFixed(3)} 秒` : '—'
 
 const totals = computed(() => {
   const all = empty()
@@ -184,6 +189,8 @@ const tooltip = (slot: Slot, at: number | Date) => render?.({ input: compact.for
               <TableHead class="text-right">缓存命中</TableHead>
               <TableHead class="text-right">请求</TableHead>
               <TableHead class="text-right" title="平均输出速度（tokens/秒）">TPS</TableHead>
+              <TableHead class="text-right" title="从模型请求开始到收到首个有内容的输出块，包括思考和工具调用">平均首输出块</TableHead>
+              <TableHead class="text-right" title="从模型请求开始到收到首段非空白正文；思考内容和工具调用不算正文">平均首段正文</TableHead>
               <TableHead class="text-right">费用</TableHead>
             </TableRow>
           </TableHeader>
@@ -194,6 +201,8 @@ const tooltip = (slot: Slot, at: number | Date) => render?.({ input: compact.for
               <TableCell class="text-right">{{ cacheRate(sums) }}</TableCell>
               <TableCell class="text-right">{{ tokens.format(sums.requests) }}</TableCell>
               <TableCell class="text-right tabular-nums" :title="sums.durationMs ? `${tokens.format(sums.timedOutput)} tokens / ${(sums.durationMs / 1000).toFixed(1)} 秒` : '没有带耗时的请求'">{{ tps(sums) }}</TableCell>
+              <TableCell class="text-right" :title="`有记录的请求：${sums.firstOutputSamples}`">{{ averageLatency(sums.firstOutputTotalMs, sums.firstOutputSamples) }}</TableCell>
+              <TableCell class="text-right" :title="`有记录的请求：${sums.firstTextSamples}`">{{ averageLatency(sums.firstTextTotalMs, sums.firstTextSamples) }}</TableCell>
               <TableCell class="text-right" :class="sums.unknown && !sums.cost ? 'text-muted-foreground' : ''">{{ costLabel(sums) }}</TableCell>
             </TableRow>
           </TableBody>

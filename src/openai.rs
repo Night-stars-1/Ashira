@@ -240,6 +240,7 @@ impl Decoder for Stream {
             self.text.push_str(t);
             on_text(StreamEvent::TextDelta(t));
         }
+        if d["refusal"].as_str().is_some_and(|text| !text.is_empty()) { on_text(StreamEvent::OutputChunk); }
         if d["tool_calls"].as_array().is_some_and(|calls| !calls.is_empty()) && self.reasoning_open {
             on_text(StreamEvent::ReasoningEnd);
             self.reasoning_open = false;
@@ -259,6 +260,9 @@ impl Decoder for Stream {
                 call.id = tc["id"].as_str().unwrap_or_default().to_owned();
             }
             let f = &tc["function"];
+            if ["name", "arguments"].into_iter().any(|key| f[key].as_str().is_some_and(|s| !s.is_empty())) {
+                on_text(StreamEvent::OutputChunk);
+            }
             if let Some(n) = f["name"].as_str() {
                 call.name.push_str(n);
             }
@@ -296,6 +300,6 @@ impl Decoder for Stream {
             let id = if c.id.is_empty() { format!("call_{i}") } else { c.id };
             content.push(json!({ "type": "tool_use", "id": id, "name": c.name, "input": parse_input(c.args) }));
         }
-        Ok(Response { content, usage: self.usage, usage_reported: self.usage_reported, duration_ms: 0, truncated: self.truncated })
+        Ok(Response { content, usage: self.usage, usage_reported: self.usage_reported, duration_ms: 0, first_output_ms: None, first_text_ms: None, truncated: self.truncated })
     }
 }

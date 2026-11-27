@@ -13,7 +13,8 @@ import type { ReplyMetrics } from '@/lib/api'
 const props = defineProps<{ blocks: Block[] }>()
 const choices = [
   { key: 'total', label: '总 Token' }, { key: 'output', label: '输出' },
-  { key: 'hit', label: '缓存命中' }, { key: 'rate', label: 'TPS' }, { key: 'cost', label: '费用' },
+  { key: 'hit', label: '缓存命中' }, { key: 'rate', label: 'TPS' },
+  { key: 'firstOutputMs', label: '首输出块耗时' }, { key: 'firstTextMs', label: '首段正文耗时' }, { key: 'cost', label: '费用' },
 ] as const
 type Metric = typeof choices[number]['key']
 const metric = ref<Metric>('total')
@@ -45,7 +46,8 @@ const percent = new Intl.NumberFormat('zh-CN', { style: 'percent', maximumFracti
 // The detail table's order; kept in this browser only.
 const columns = [
   { key: 'number', label: '回复' }, { key: 'input', label: '输入' }, { key: 'output', label: '输出' }, { key: 'cache', label: '缓存读 / 写' },
-  { key: 'hit', label: '缓存命中' }, { key: 'rate', label: 'TPS' }, { key: 'cost', label: '估算费用' },
+  { key: 'hit', label: '缓存命中' }, { key: 'rate', label: 'TPS' },
+  { key: 'firstOutputMs', label: '首输出块耗时' }, { key: 'firstTextMs', label: '首段正文耗时' }, { key: 'cost', label: '估算费用' },
 ] as const
 type Column = typeof columns[number]['key']
 type Sort = { key: Column; dir: 'asc' | 'desc' }
@@ -78,7 +80,7 @@ const sortedPage = computed(() => {
 
 function value(reply: ReplyMetrics | null | undefined, key: Metric): number | null {
   if (!reply) return null
-  if (key === 'rate' || key === 'cost') return reply[key]
+  if (key === 'rate' || key === 'cost' || key === 'firstOutputMs' || key === 'firstTextMs') return reply[key]
   if (!reply.usage) return null
   const { input, output, cacheRead, cacheWrite } = reply.usage
   const prompt = input + cacheRead + cacheWrite
@@ -92,22 +94,31 @@ function format(amount: number | null, key: Metric, compact = false) {
   if (key === 'cost') return dollars.format(amount)
   if (key === 'hit') return percent.format(amount)
   if (key === 'rate') return `${amount.toFixed(1)}${compact ? '' : ' tok/s'}`
+  if (key === 'firstOutputMs' || key === 'firstTextMs') return `${(amount / 1000).toFixed(3)} 秒`
   return (compact ? short : tokens).format(amount)
 }
 
-type Point = { number: number; value: number | null }
-const data = computed<Point[]>(() => page.value.map((row) => ({ number: row.number, value: value(row.metrics, metric.value) })))
+type Point = { number: number; value: number }
+// Unovis' area treats missing values as zero. Only plot measured replies.
+const data = computed<Point[]>(() => page.value.flatMap((row) => {
+  const amount = value(row.metrics, metric.value)
+  return amount === null ? [] : [{ number: row.number, value: amount }]
+}))
+const xDomain = computed<[number, number]>(() => {
+  const [from, to] = range.value
+  return [from, from === to ? to + 1 : to]
+})
 /** Every reply, for the range picker under the chart. */
 const overview = computed(() => replies.value.map((row) => value(row.metrics, metric.value)))
-const hasData = computed(() => data.value.some((point) => point.value !== null))
+const hasData = computed(() => data.value.length > 0)
 const label = computed(() => choices.find((choice) => choice.key === metric.value)!.label)
 const config = computed<ChartConfig>(() => ({ value: { label: label.value, color: 'var(--color-sky-500)' } }))
 
 const x = (point: Point) => point.number
-const y = (point: Point) => point.value ?? undefined
+const y = (point: Point) => point.value
 /** Whole reply numbers only; a short page would otherwise get fractional ticks. */
 const xTicks = computed(() => {
-  const numbers = data.value.map((point) => point.number)
+  const numbers = page.value.map((point) => point.number)
   if (numbers.length <= 6) return numbers
   const step = Math.ceil(numbers.length / 6)
   return numbers.filter((_, index) => index % step === 0 || index === numbers.length - 1)
@@ -134,10 +145,10 @@ const tooltipTemplate = computed(() => {
     <template v-else>
       <div class="rounded-lg border p-3">
         <ChartContainer v-if="hasData" :config="config" class="aspect-auto h-44 w-full" cursor role="img" :aria-label="`逐回复${label}折线图`">
-          <VisXYContainer :data="data" :margin="{ left: 4, right: 12, top: 8 }" :y-domain="metric === 'hit' ? [0, 1] : [0, undefined]">
-            <VisArea :x="x" :y="y" color="var(--color-value)" :opacity="0.15" :curve-type="CurveType.MonotoneX" />
+          <VisXYContainer :data="data" :margin="{ left: 4, right: 12, top: 8 }" :x-domain="xDomain" :y-domain="metric === 'hit' ? [0, 1] : [0, undefined]">
+            <VisArea v-if="data.length > 1" :x="x" :y="y" color="var(--color-value)" :opacity="0.15" :curve-type="CurveType.MonotoneX" />
             <VisLine :x="x" :y="y" color="var(--color-value)" :line-width="2" :curve-type="CurveType.MonotoneX" />
-            <!-- A lone reply has no line; the dot keeps it visible. -->
+            <!-- A lone measurement has no line; the dot keeps it visible. -->
             <VisScatter v-if="data.length === 1" :x="x" :y="y" color="var(--color-value)" :size="8" />
             <VisAxis type="x" :x="x" :tick-values="xTicks" :tick-format="(number: number) => `#${number}`" :grid-line="false" :domain-line="false" :tick-line="false" />
             <VisAxis type="y" :num-ticks="3" :tick-format="(amount: number) => format(amount, metric, true)" :domain-line="false" :tick-line="false" />
@@ -174,6 +185,8 @@ const tooltipTemplate = computed(() => {
                 <td class="px-2">{{ row.metrics?.usage ? `${tokens.format(row.metrics.usage.cacheRead)} / ${tokens.format(row.metrics.usage.cacheWrite)}` : '—' }}</td>
                 <td class="px-2">{{ format(value(row.metrics, 'hit'), 'hit') }}</td>
                 <td class="px-2">{{ format(value(row.metrics, 'rate'), 'rate', true) }}</td>
+                <td class="px-2">{{ format(value(row.metrics, 'firstOutputMs'), 'firstOutputMs') }}</td>
+                <td class="px-2">{{ format(value(row.metrics, 'firstTextMs'), 'firstTextMs') }}</td>
                 <td class="px-3">{{ format(value(row.metrics, 'cost'), 'cost') }}</td>
               </tr>
             </tbody>

@@ -1007,7 +1007,7 @@ fn project_assistant(blocks: &mut Vec<Value>, message: &Value, stats: Option<&se
     let mut reply = json!({"kind": "assistant", "parts": parts, "live": false});
     if let Some(stats) = stats {
         let rate = stats.usage.zip(stats.duration_ms).and_then(|(usage, time)| crate::stats::output_rate(usage, time));
-        reply["metrics"] = json!({"model": stats.model, "usage": stats.usage.map(usage_json), "rate": rate, "cost": stats.cost, "durationMs": stats.duration_ms});
+        reply["metrics"] = json!({"model": stats.model, "usage": stats.usage.map(usage_json), "rate": rate, "cost": stats.cost, "durationMs": stats.duration_ms, "firstOutputMs": stats.first_output_ms, "firstTextMs": stats.first_text_ms});
     }
     blocks.push(reply);
 }

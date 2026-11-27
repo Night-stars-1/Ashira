@@ -86,8 +86,8 @@ export type UsageStatistics = {
 }
 
 /** One UTC hour of one model across all sessions; `hour` is unix seconds / 3600. `timedOutput`
- *  and `durationMs` cover the requests that logged a duration, for TPS. */
-export type UsageBucket = { hour: number; model: string; input: number; output: number; cacheRead: number; cacheWrite: number; cost: number; unknown: number; requests: number; timedOutput: number; durationMs: number }
+ *  and `durationMs` cover timed output for TPS; each latency has its own sample count. */
+export type UsageBucket = { hour: number; model: string; input: number; output: number; cacheRead: number; cacheWrite: number; cost: number; unknown: number; requests: number; timedOutput: number; durationMs: number; firstOutputTotalMs: number; firstOutputSamples: number; firstTextTotalMs: number; firstTextSamples: number }
 export type UsageReport = { sessions: number; buckets: UsageBucket[] }
 
 export type ReplyMetrics = {
@@ -96,6 +96,8 @@ export type ReplyMetrics = {
   rate: number | null
   cost: number | null
   durationMs: number | null
+  firstOutputMs: number | null
+  firstTextMs: number | null
 }
 
 export type ApprovalMode = 'manual' | 'auto' | 'full'
@@ -322,6 +324,8 @@ export function parseReplyMetrics(data: unknown): ReplyMetrics | null {
     model: text(value.model) || null,
     usage: usage && { input: number(usage.input), output: number(usage.output), cacheRead: number(usage.cacheRead), cacheWrite: number(usage.cacheWrite) },
     rate: metric(value.rate), cost: metric(value.cost), durationMs: metric(value.durationMs),
+    firstOutputMs: metric(value.firstOutputMs),
+    firstTextMs: metric(value.firstTextMs),
   }
 }
 
@@ -606,7 +610,7 @@ export const api = {
     const buckets = Array.isArray(body.buckets) ? body.buckets.flatMap((item): UsageBucket[] => {
       if (!item || typeof item !== 'object') return []
       const row = record(item)
-      return [{ hour: number(row.hour), model: text(row.model) || '未知模型', input: number(row.input), output: number(row.output), cacheRead: number(row.cacheRead), cacheWrite: number(row.cacheWrite), cost: number(row.cost), unknown: number(row.unknown), requests: number(row.requests), timedOutput: number(row.timedOutput), durationMs: number(row.durationMs) }]
+      return [{ hour: number(row.hour), model: text(row.model) || '未知模型', input: number(row.input), output: number(row.output), cacheRead: number(row.cacheRead), cacheWrite: number(row.cacheWrite), cost: number(row.cost), unknown: number(row.unknown), requests: number(row.requests), timedOutput: number(row.timedOutput), durationMs: number(row.durationMs), firstOutputTotalMs: number(row.firstOutputTotalMs), firstOutputSamples: number(row.firstOutputSamples), firstTextTotalMs: number(row.firstTextTotalMs), firstTextSamples: number(row.firstTextSamples) }]
     }) : []
     return { sessions: number(body.sessions), buckets }
   },

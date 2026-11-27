@@ -385,7 +385,7 @@ class SessionNode {
 }
 
 class ReplyMetrics {
-  const ReplyMetrics({this.model, this.usage, this.rate, this.cost, this.durationMs});
+  const ReplyMetrics({this.model, this.usage, this.rate, this.cost, this.durationMs, this.firstOutputMs, this.firstTextMs});
   static ReplyMetrics? fromJson(Object? json) {
     if (json is! Map) return null;
     final m = asMap(json);
@@ -395,11 +395,13 @@ class ReplyMetrics {
       rate: metric(m['rate']),
       cost: metric(m['cost']),
       durationMs: metric(m['durationMs']),
+      firstOutputMs: metric(m['firstOutputMs']),
+      firstTextMs: metric(m['firstTextMs']),
     );
   }
   final String? model;
   final Usage? usage;
-  final double? rate, cost, durationMs;
+  final double? rate, cost, durationMs, firstOutputMs, firstTextMs;
 }
 
 sealed class ReplyPart {}
@@ -769,12 +771,14 @@ class ProviderForm {
 /// One UTC hour of one model across all sessions; `hour` is unix seconds / 3600.
 /// [timedOutput] and [durationMs] cover the requests that logged a duration, for TPS.
 class UsageBucket {
-  const UsageBucket({required this.hour, required this.model, required this.usage, required this.cost, required this.unknown, required this.requests, this.timedOutput = 0, this.durationMs = 0});
+  const UsageBucket({required this.hour, required this.model, required this.usage, required this.cost, required this.unknown, required this.requests, this.timedOutput = 0, this.durationMs = 0, this.firstOutputTotalMs = 0, this.firstOutputSamples = 0, this.firstTextTotalMs = 0, this.firstTextSamples = 0});
   final int hour;
   final String model;
   final Usage usage;
   final double cost;
   final int unknown, requests, timedOutput, durationMs;
+  final int firstOutputTotalMs, firstOutputSamples;
+  final int firstTextTotalMs, firstTextSamples;
 }
 
 /// `GET /v1/usage`.
@@ -795,6 +799,10 @@ class UsageReport {
             requests: int0(asMap(raw)['requests']),
             timedOutput: int0(asMap(raw)['timedOutput']),
             durationMs: int0(asMap(raw)['durationMs']),
+            firstOutputTotalMs: int0(asMap(raw)['firstOutputTotalMs']),
+            firstOutputSamples: int0(asMap(raw)['firstOutputSamples']),
+            firstTextTotalMs: int0(asMap(raw)['firstTextTotalMs']),
+            firstTextSamples: int0(asMap(raw)['firstTextSamples']),
           ),
       ],
     );

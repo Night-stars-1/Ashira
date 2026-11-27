@@ -187,6 +187,18 @@ impl Stream {
         }
     }
 
+    // Some gateways return text only at item or response completion.
+    fn emit_final_text(&mut self, i: usize, item: &Value, emit: &mut (dyn FnMut(StreamEvent<'_>) + Send)) {
+        if item["type"] != "message" || self.text.get(i).is_some_and(|text| !text.trim().is_empty()) { return; }
+        let text = message_text(item);
+        if text.trim().is_empty() { return; }
+        self.text.resize_with(self.text.len().max(i + 1), String::new);
+        self.end_summary(emit);
+        let received = &mut self.text[i];
+        emit(StreamEvent::TextDelta(text.strip_prefix(received.as_str()).unwrap_or(&text)));
+        *received = text;
+    }
+
     fn complete(&mut self, resp: &Value) {
         if let Some(out) = resp["output"].as_array().filter(|o| !o.is_empty()) {
             let n = out.len().max(self.items.len());
@@ -212,6 +224,16 @@ fn message_text(item: &Value) -> String {
     parts.filter(|p| p["type"] == "output_text").filter_map(|p| p["text"].as_str()).collect()
 }
 
+fn has_non_text_output(item: &Value) -> bool {
+    let present = |field: &Value| field.as_str().is_some_and(|value| !value.is_empty());
+    match item["type"].as_str() {
+        Some("function_call") => present(&item["name"]) || present(&item["arguments"]),
+        Some("reasoning") => present(&item["encrypted_content"]),
+        Some("message") => item["content"].as_array().into_iter().flatten().any(|part| part["type"] == "refusal" && present(&part["refusal"])),
+        _ => false,
+    }
+}
+
 impl Decoder for Stream {
     fn handle(&mut self, data: &str, on_text: &mut (dyn FnMut(StreamEvent<'_>) + Send)) -> Result<(), String> {
         if data.trim() == "[DONE]" {
@@ -224,6 +246,7 @@ impl Decoder for Stream {
             "response.output_item.added" => {
                 self.end_summary(on_text);
                 let i = self.slot(&ev);
+                if has_non_text_output(&ev["item"]) { on_text(StreamEvent::OutputChunk); }
                 self.items[i] = ev["item"].clone();
             }
             "response.reasoning_summary_text.delta" | "response.reasoning_text.delta" => {
@@ -256,24 +279,27 @@ impl Decoder for Stream {
             "response.function_call_arguments.delta" => {
                 self.end_summary(on_text);
                 let i = self.slot(&ev);
-                self.args[i].push_str(ev["delta"].as_str().unwrap_or_default());
+                let delta = ev["delta"].as_str().unwrap_or_default();
+                if !delta.is_empty() { on_text(StreamEvent::OutputChunk); }
+                self.args[i].push_str(delta);
+            }
+            "response.refusal.delta" => {
+                if ev["delta"].as_str().is_some_and(|delta| !delta.is_empty()) { on_text(StreamEvent::OutputChunk); }
             }
             "response.output_item.done" => {
                 let i = self.slot(&ev);
                 let item = ev["item"].clone();
+                if has_non_text_output(&item) { on_text(StreamEvent::OutputChunk); }
                 self.summary_item(i, &item, on_text);
                 self.end_summary(on_text);
-                // Gateways that skip text deltas still get their text shown.
-                if item["type"] == "message" && self.text[i].is_empty() {
-                    let t = message_text(&item);
-                    on_text(StreamEvent::TextDelta(&t));
-                    self.text[i] = t;
-                }
+                self.emit_final_text(i, &item, on_text);
                 self.items[i] = item;
             }
             "response.completed" | "response.incomplete" => {
                 for (i, item) in ev["response"]["output"].as_array().into_iter().flatten().enumerate() {
+                    if has_non_text_output(item) { on_text(StreamEvent::OutputChunk); }
                     self.summary_item(i, item, on_text);
+                    self.emit_final_text(i, item, on_text);
                 }
                 self.end_summary(on_text);
                 self.complete(&ev["response"]);
@@ -326,6 +352,6 @@ impl Decoder for Stream {
                 _ => {}
             }
         }
-        Ok(Response { content, usage: self.usage, usage_reported: self.usage_reported, duration_ms: 0, truncated: self.truncated })
+        Ok(Response { content, usage: self.usage, usage_reported: self.usage_reported, duration_ms: 0, first_output_ms: None, first_text_ms: None, truncated: self.truncated })
     }
 }

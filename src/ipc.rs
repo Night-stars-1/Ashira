@@ -247,7 +247,7 @@ pub async fn run_worker(shared: Arc<crate::agent::Shared>, run: crate::subagents
                             let request_id = params["id"].as_str()?.to_owned();
                             let model = params["model"].as_str()?.to_owned();
                             let kind = serde_json::from_value(params["kind"].clone()).ok()?;
-                            Some(crate::stats::RequestStats { id: request_id, model, kind, usage: None, cost: None, duration_ms: 0, child: true })
+                            Some(crate::stats::RequestStats { id: request_id, model, kind, usage: None, cost: None, duration_ms: 0, first_text_ms: None, first_output_ms: None, child: true })
                         })();
                         let result = if let Some(record) = parsed {
                             pending_stats.insert(record.id.clone(), (record, std::time::Instant::now()));

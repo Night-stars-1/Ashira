@@ -55,6 +55,10 @@ pub struct Response {
     pub usage: Usage,
     pub usage_reported: bool,
     pub duration_ms: u64,
+    /// Milliseconds from request start to the first non-empty provider output.
+    pub first_output_ms: Option<u64>,
+    /// Milliseconds from request start to the first non-whitespace text delta.
+    pub first_text_ms: Option<u64>,
     /// The output stopped at the token limit (`max_tokens`, `length`, `max_output_tokens`):
     /// whatever it was writing, text or a tool call, is cut off.
     pub truncated: bool,
@@ -64,6 +68,8 @@ pub enum StreamEvent<'a> {
     TextDelta(&'a str),
     ReasoningDelta(&'a str),
     ReasoningEnd,
+    /// Output with no user-visible text delta, e.g. tool names, arguments or opaque reasoning.
+    OutputChunk,
 }
 
 /// One SSE event stream decoder per wire format.
@@ -346,12 +352,29 @@ impl Client {
             let text = resp.text().await.unwrap_or_default();
             return Err(format!("API {status}: {}", error_message(&text)));
         }
+        let (mut first_output_ms, mut first_text_ms) = (None, None);
+        let mut observe = |event: StreamEvent<'_>| {
+            let first_text = first_text_ms.is_none() && matches!(&event, StreamEvent::TextDelta(text) if !text.trim().is_empty());
+            let first_output = first_output_ms.is_none() && match &event {
+                StreamEvent::TextDelta(text) | StreamEvent::ReasoningDelta(text) => !text.is_empty(),
+                StreamEvent::OutputChunk => true,
+                StreamEvent::ReasoningEnd => false,
+            };
+            if first_output || first_text {
+                let elapsed = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
+                if first_output { first_output_ms = Some(elapsed); }
+                if first_text { first_text_ms = Some(elapsed); }
+            }
+            if !matches!(event, StreamEvent::OutputChunk) { on_text(event); }
+        };
         let mut response = match cfg.api {
-            Api::AnthropicMessages => read_sse(resp, AnthropicStream::default(), cancel, &mut on_text).await,
-            Api::OpenaiCompletions => read_sse(resp, openai::Stream::default(), cancel, &mut on_text).await,
-            Api::OpenaiResponses => read_sse(resp, responses::Stream::new(&source), cancel, &mut on_text).await,
+            Api::AnthropicMessages => read_sse(resp, AnthropicStream::default(), cancel, &mut observe).await,
+            Api::OpenaiCompletions => read_sse(resp, openai::Stream::default(), cancel, &mut observe).await,
+            Api::OpenaiResponses => read_sse(resp, responses::Stream::new(&source), cancel, &mut observe).await,
         }?;
         response.duration_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
+        response.first_output_ms = first_output_ms;
+        response.first_text_ms = first_text_ms;
         Ok(response)
     }
 }
@@ -459,6 +482,7 @@ impl Decoder for AnthropicStream {
                 }
                 let mut block = ev["content_block"].clone();
                 if block["type"] == "tool_use" {
+                    if block["name"].as_str().is_some_and(|name| !name.is_empty()) { on_text(StreamEvent::OutputChunk); }
                     block["input"] = json!({});
                 }
                 if block["type"] == "thinking"
@@ -466,6 +490,11 @@ impl Decoder for AnthropicStream {
                 {
                     on_text(StreamEvent::ReasoningDelta(thinking));
                     self.reasoning = true;
+                }
+                if block["type"] == "text" && let Some(text) = block["text"].as_str().filter(|s| !s.is_empty()) {
+                    on_text(StreamEvent::TextDelta(text));
+                } else if block["type"] == "redacted_thinking" && block["data"].as_str().is_some_and(|data| !data.is_empty()) {
+                    on_text(StreamEvent::OutputChunk);
                 }
                 if self.content.len() <= idx {
                     self.content.resize(idx + 1, Value::Null);
@@ -491,7 +520,9 @@ impl Decoder for AnthropicStream {
                             on_text(StreamEvent::ReasoningEnd);
                             self.reasoning = false;
                         }
-                        self.json[idx].push_str(s("partial_json"));
+                        let data = s("partial_json");
+                        if !data.is_empty() { on_text(StreamEvent::OutputChunk); }
+                        self.json[idx].push_str(data);
                     }
                     "thinking_delta" if block["type"] == "thinking" => {
                         let text = s("thinking");
@@ -545,7 +576,7 @@ impl Decoder for AnthropicStream {
             return Err("stream ended before message_stop".into());
         }
         self.content.retain(|b| !b.is_null());
-        Ok(Response { content: self.content, usage: self.usage, usage_reported: self.input_reported && self.output_reported, duration_ms: 0, truncated: self.truncated })
+        Ok(Response { content: self.content, usage: self.usage, usage_reported: self.input_reported && self.output_reported, duration_ms: 0, first_output_ms: None, first_text_ms: None, truncated: self.truncated })
     }
 }
 

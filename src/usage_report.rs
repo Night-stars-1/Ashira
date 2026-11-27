@@ -25,10 +25,14 @@ struct Bucket {
     /// legacy per-turn records have no time and stay out of both.
     timed_output: u64,
     duration_ms: u64,
+    first_text_total_ms: u64,
+    first_text_samples: u64,
+    first_output_total_ms: u64,
+    first_output_samples: u64,
 }
 
-/// `{buckets: [{hour, model, input, output, cacheRead, cacheWrite, cost, unknown, requests, timedOutput, durationMs}], sessions}`;
-/// `hour` is unix seconds / 3600.
+/// `buckets` groups requests by UTC hour (`hour` is Unix seconds / 3600) and model.
+/// Each latency has an independent sum and sample count, excluding missing measurements.
 pub fn report(registry: &Registry) -> Value {
     let files = session::all_files();
     let mut buckets = BTreeMap::<(u64, String), Bucket>::new();
@@ -41,6 +45,8 @@ pub fn report(registry: &Registry) -> Value {
         "input": b.usage.input, "output": b.usage.output, "cacheRead": b.usage.cache_read, "cacheWrite": b.usage.cache_write,
         "cost": b.cost, "unknown": b.unknown, "requests": b.requests,
         "timedOutput": b.timed_output, "durationMs": b.duration_ms,
+        "firstTextTotalMs": b.first_text_total_ms, "firstTextSamples": b.first_text_samples,
+        "firstOutputTotalMs": b.first_output_total_ms, "firstOutputSamples": b.first_output_samples,
     })).collect();
     json!({"buckets": rows, "sessions": sessions})
 }
@@ -81,6 +87,14 @@ fn scan(path: &Path, registry: &Registry, buckets: &mut BTreeMap<(u64, String), 
                 if let Some(usage) = stats.usage.filter(|usage| usage.output > 0 && stats.duration_ms > 0) {
                     bucket.timed_output += usage.output;
                     bucket.duration_ms += stats.duration_ms;
+                }
+                if let Some(ms) = stats.first_text_ms {
+                    bucket.first_text_total_ms += ms;
+                    bucket.first_text_samples += 1;
+                }
+                if let Some(ms) = stats.first_output_ms {
+                    bucket.first_output_total_ms += ms;
+                    bucket.first_output_samples += 1;
                 }
                 any = true;
             }
@@ -125,6 +139,8 @@ mod tests {
         let path = dir.join("s.jsonl");
         let stats = |id: &str, model: &str, input: u64, cost: Option<f64>, at: Option<u64>| {
             let mut record = json!({"type": "request_stats", "stats": {"id": id, "model": model, "kind": "Chat", "usage": {"input": input, "output": 1, "cache_read": 0, "cache_write": 0}, "cost": cost, "duration_ms": 1, "child": false}});
+            if id == "1" { record["stats"]["first_text_ms"] = json!(240); }
+            if id == "2" { record["stats"]["first_output_ms"] = json!(150); }
             if let Some(at) = at { record["at"] = json!(at); }
             record.to_string()
         };
@@ -144,6 +160,8 @@ mod tests {
         let a = &buckets[&(5, "p/a".to_owned())];
         assert_eq!((a.usage.input, a.requests, a.cost, a.unknown), (30, 2, 0.5, 1));
         assert_eq!((a.timed_output, a.duration_ms), (2, 2));
+        assert_eq!((a.first_text_total_ms, a.first_text_samples), (240, 1));
+        assert_eq!((a.first_output_total_ms, a.first_output_samples), (150, 1));
         let b = &buckets[&(2, "p/b".to_owned())];
         assert_eq!((b.usage.input, b.requests, b.cost), (30, 1, 1.0));
         assert_eq!(buckets.len(), 2);
@@ -157,6 +175,7 @@ mod tests {
         assert_eq!((c.usage.input, c.usage.output, c.unknown), (4, 2, 1));
         // No request times before the ledger, so no TPS either.
         assert_eq!((c.timed_output, c.duration_ms), (0, 0));
+        assert_eq!(c.first_text_samples, 0);
         std::fs::remove_dir_all(dir).unwrap();
     }
 

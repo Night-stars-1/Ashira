@@ -28,7 +28,7 @@ pub struct Snapshot { pub identity: Arc<Identity>, pub task: Arc<str>, pub model
 #[derive(Clone)]
 /// `output`: a background command's output as its card shows it (capped like a tool result); empty for agents.
 pub struct Completion { pub owner: u64, pub identity: Arc<Identity>, pub status: Status, pub elapsed_ms: u64, pub error: Option<Arc<str>>, pub generation: u64, pub output: Arc<str> }
-struct Job { snapshot: Snapshot, started: Instant, cancel: CancellationToken, model: Arc<Model>, context: Arc<str>, report: PathBuf, finishing: bool, inbox: VecDeque<PeerMessage> }
+struct Job { snapshot: Snapshot, started: Instant, cancel: CancellationToken, model: Arc<Model>, context: Arc<str>, report: PathBuf, finishing: bool, inbox: VecDeque<PeerMessage>, persistent: bool }
 struct Receipt { from: String, to: String, status: &'static str }
 struct State { owner: u64, jobs: Vec<Job>, pending: VecDeque<Value>, root_inbox: VecDeque<PeerMessage>, receipts: HashMap<String, Receipt>, launches: VecDeque<RunLease>, suppressed: bool, suppressed_through: Option<u64>, retired: bool, handles: Vec<tokio::task::JoinHandle<()>> }
 pub struct Manager { state: Mutex<State>, notify: Notify, slots: Arc<Semaphore>, root: CancellationToken, events: tokio::sync::mpsc::UnboundedSender<Event> }
@@ -71,6 +71,7 @@ impl Manager {
         (counts, visible)
     }
     pub fn active_count(&self) -> usize { let s = self.state.lock().unwrap(); if s.retired { 0 } else { s.jobs.iter().filter(|j| j.snapshot.status.active()).count() } }
+    pub(crate) fn active_task_count(&self) -> usize { let s = self.state.lock().unwrap(); if s.retired { 0 } else { s.jobs.iter().filter(|j| !j.persistent && j.snapshot.status.active()).count() } }
     pub fn cancel(&self, id: &str) -> Result<(), String> {
         let mut s = self.state.lock().unwrap();
         if s.retired { return Err(format!("unknown job `{id}`")); }
@@ -94,10 +95,10 @@ impl Manager {
         self.changed(); Ok(())
     }
     pub async fn transcript(&self, id: &str) -> Result<String, String> { let path = { let s = self.state.lock().unwrap(); if s.retired { return Err(format!("unknown job `{id}`")); } s.jobs.iter().find(|j| j.snapshot.identity.id == id).map(|j| j.snapshot.transcript.clone()).ok_or_else(|| format!("unknown job `{id}`"))? }; tokio::fs::read_to_string(path.as_ref()).await.map_err(|e| e.to_string()) }
-    pub(crate) fn create(&self, owner: u64, name: String, role: Role, task: String, context: Arc<str>, model: Arc<Model>) -> Result<Arc<Identity>, String> { let mut s = self.state.lock().unwrap(); if s.owner != owner { return Err("stale owner".into()); } s.retired = false; let id = unique(); let identity = Arc::new(Identity { id: id.clone(), name, role }); let dir = session::home().join("subagents").join(&id); let transcript = Arc::new(dir.join("transcript.txt")); let task: Arc<str> = task.into(); let cancel = self.root.child_token(); let snapshot = Snapshot { identity: identity.clone(), task: task.clone(), model: Arc::from(model.client.name()), activity: Arc::from("queued"), status: Status::Queued, elapsed_ms: 0, transcript: transcript.clone(), error: None, generation: 1, worker_pid: None, pending_messages: 0, closed: false }; let endpoint = Endpoint { owner, id, generation: 1 }; s.launches.push_back(RunLease { endpoint, identity: identity.clone(), model: model.clone(), context: context.clone(), task, transcript, cancel: cancel.clone(), resume: false }); s.jobs.push(Job { snapshot, started: Instant::now(), cancel, model, context, report: dir.join("report-1.txt"), finishing: false, inbox: VecDeque::new() }); drop(s); self.changed(); Ok(identity) }
+    pub(crate) fn create(&self, owner: u64, name: String, role: Role, task: String, context: Arc<str>, model: Arc<Model>) -> Result<Arc<Identity>, String> { let mut s = self.state.lock().unwrap(); if s.owner != owner { return Err("stale owner".into()); } s.retired = false; let id = unique(); let identity = Arc::new(Identity { id: id.clone(), name, role }); let dir = session::home().join("subagents").join(&id); let transcript = Arc::new(dir.join("transcript.txt")); let task: Arc<str> = task.into(); let cancel = self.root.child_token(); let snapshot = Snapshot { identity: identity.clone(), task: task.clone(), model: Arc::from(model.client.name()), activity: Arc::from("queued"), status: Status::Queued, elapsed_ms: 0, transcript: transcript.clone(), error: None, generation: 1, worker_pid: None, pending_messages: 0, closed: false }; let endpoint = Endpoint { owner, id, generation: 1 }; s.launches.push_back(RunLease { endpoint, identity: identity.clone(), model: model.clone(), context: context.clone(), task, transcript, cancel: cancel.clone(), resume: false }); s.jobs.push(Job { snapshot, started: Instant::now(), cancel, model, context, report: dir.join("report-1.txt"), finishing: false, inbox: VecDeque::new(), persistent: false }); drop(s); self.changed(); Ok(identity) }
     /// A running background shell command: the caller drives it and calls `finish` with the
     /// lease. `log` is where its output streams (shown as the job's transcript).
-    pub(crate) fn create_shell(&self, owner: u64, name: String, command: String, model: Arc<Model>) -> Result<(RunLease, PathBuf), String> {
+    pub(crate) fn create_shell(&self, owner: u64, name: String, command: String, model: Arc<Model>, persistent: bool) -> Result<(RunLease, PathBuf), String> {
         let mut s = self.state.lock().unwrap();
         if s.owner != owner || s.retired { return Err("stale owner".into()); }
         let id = unique();
@@ -109,7 +110,7 @@ impl Manager {
         let cancel = self.root.child_token();
         let snapshot = Snapshot { identity: identity.clone(), task: task.clone(), model: Arc::from("bash"), activity: Arc::from("running"), status: Status::Running, elapsed_ms: 0, transcript: transcript.clone(), error: None, generation: 1, worker_pid: None, pending_messages: 0, closed: false };
         let lease = RunLease { endpoint: Endpoint { owner, id, generation: 1 }, identity, model: model.clone(), context: Arc::from(""), task, transcript, cancel: cancel.clone(), resume: false };
-        s.jobs.push(Job { snapshot, started: Instant::now(), cancel, model, context: lease.context.clone(), report: dir.join("report-1.txt"), finishing: false, inbox: VecDeque::new() });
+        s.jobs.push(Job { snapshot, started: Instant::now(), cancel, model, context: lease.context.clone(), report: dir.join("report-1.txt"), finishing: false, inbox: VecDeque::new(), persistent });
         drop(s);
         self.changed();
         Ok((lease, log))
@@ -131,7 +132,7 @@ impl Manager {
                 if !s.jobs.iter().any(|j| j.snapshot.identity.id == *id) { return Err(format!("unknown job `{id}`")); }
             }
         }
-        Ok(s.jobs.iter().filter(|j| ids.is_none_or(|ids| ids.contains(&j.snapshot.identity.id))).map(|j| json!({"id":j.snapshot.identity.id,"name":j.snapshot.identity.name,"agent":j.snapshot.identity.role.as_str(),"model":j.snapshot.model.as_ref(),"status":j.snapshot.status.as_str(),"generation":j.snapshot.generation,"worker_pid":j.snapshot.worker_pid,"pending_messages":j.inbox.len(),"closed":j.snapshot.closed,"transcript":j.snapshot.transcript.as_ref(),"report_path":j.report})).collect())
+        Ok(s.jobs.iter().filter(|j| ids.is_none_or(|ids| ids.contains(&j.snapshot.identity.id))).map(|j| json!({"id":j.snapshot.identity.id,"name":j.snapshot.identity.name,"agent":j.snapshot.identity.role.as_str(),"model":j.snapshot.model.as_ref(),"status":j.snapshot.status.as_str(),"generation":j.snapshot.generation,"worker_pid":j.snapshot.worker_pid,"pending_messages":j.inbox.len(),"closed":j.snapshot.closed,"transcript":j.snapshot.transcript.as_ref(),"report_path":j.report,"persistent":j.persistent})).collect())
     }
     pub(crate) async fn wait(&self, e: &Endpoint, ids: Option<&[String]>, cancel: &CancellationToken) -> Result<Vec<Value>, String> {
         loop {
@@ -146,7 +147,7 @@ impl Manager {
                 (s.pending.iter().any(|v| ids.is_none_or(|ids| v["id"].as_str().is_some_and(|id| ids.iter().any(|i| i == id)))),
                  if e.id == "parent" { !s.root_inbox.is_empty() } else { s.jobs.iter().find(|j| j.snapshot.identity.id == e.id).is_some_and(|j| !j.inbox.is_empty()) })
             };
-            let active = jobs.iter().any(|j| matches!(j["status"].as_str(), Some("queued" | "running" | "waiting_approval" | "waiting_message" | "cancelling")));
+            let active = jobs.iter().any(|j| (ids.is_some() || j["persistent"] != true) && matches!(j["status"].as_str(), Some("queued" | "running" | "waiting_approval" | "waiting_message" | "cancelling")));
             let settled = jobs.iter().any(|j| matches!(j["status"].as_str(), Some("completed" | "failed" | "cancelled")));
             if mail || (e.id == "parent" && (pending || !active)) || (e.id != "parent" && ids.is_some() && (settled || !active)) { return Ok(jobs); }
             tokio::select! { _ = cancel.cancelled() => return Err("cancelled".into()), _ = &mut notified => {} }

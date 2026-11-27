@@ -64,7 +64,7 @@ pub fn definitions(role: Option<crate::subagents::Role>, mcp: &[Value], plugins:
     let mut tools = vec![
         json!({
             "name": "bash",
-            "description": "Run a command in the working directory with the shell named in the system prompt, as `<shell> -c <command>`, and return combined stdout/stderr. Each call starts fresh in the working directory, so a `cd` does not carry over to the next call. The command is POSIX shell (bash) syntax on every platform, Windows included: use forward slashes or quoted paths, `$VAR` not `%VAR%` or `$env:VAR`. To call PowerShell or cmd, wrap the script in single quotes so the shell passes `$` through untouched, e.g. `powershell.exe -NoProfile -Command 'Get-Process | Where-Object { $_.CPU -gt 10 }'`; for a longer script, feed it from a quoted heredoc (`powershell.exe -NoProfile -Command - <<'EOF'`). Use `read`, `grep`, `glob` and `edit` rather than cat, find, grep or sed for files. Long output keeps its start and end and names a file holding the full text, so do not pipe through head or tail by habit. A command still running after 60 seconds moves to the background as a job (`background: true` does that at once): the call returns a job receipt, the result arrives later as subagent-results data, and `wait`, `task_status` and `task_cancel` work on it; never poll it with sleep. Use that for builds, test suites and other long commands instead of `&`. Servers and watchers that never exit still need `cmd > log.txt 2>&1 &`.",
+            "description": "Run a command in the working directory with the shell named in the system prompt, as `<shell> -c <command>`, and return combined stdout/stderr. Each call starts fresh in the working directory, so a `cd` does not carry over to the next call. The command is POSIX shell (bash) syntax on every platform, Windows included: use forward slashes or quoted paths, `$VAR` not `%VAR%` or `$env:VAR`. To call PowerShell or cmd, wrap the script in single quotes so the shell passes `$` through untouched, e.g. `powershell.exe -NoProfile -Command 'Get-Process | Where-Object { $_.CPU -gt 10 }'`; for a longer script, feed it from a quoted heredoc (`powershell.exe -NoProfile -Command - <<'EOF'`). Use `read`, `grep`, `glob` and `edit` rather than cat, find, grep or sed for files. Long output keeps its start and end and names a file holding the full text, so do not pipe through head or tail by habit. A command still running after 60 seconds moves to the background as a job (`background: true` does that at once): the call returns a job receipt, the result arrives later as subagent-results data, and `wait`, `task_status` and `task_cancel` work on it; never poll it with sleep. Use that for builds, test suites and other commands expected to finish instead of `&`.",
             "input_schema": {
                 "type": "object",
                 "properties": {
@@ -132,6 +132,12 @@ pub fn definitions(role: Option<crate::subagents::Role>, mcp: &[Value], plugins:
             }
         }),
     ];
+    if role.is_none() && interactive {
+        tools[0]["input_schema"]["properties"]["persistent"] = json!({
+            "type": "boolean",
+            "description": "Set true when starting a development server or watcher meant to stay running. Starts a managed background service immediately, without the one-hour limit or idle warnings. Run the server in the foreground of the command; do not append &. Check readiness using its transcript or service endpoint, not wait. Stop it with task_cancel using its job ID. Do not use for builds or tests.",
+        });
+    }
     tools.extend([json!({
         "name": "glob", "description": "Find local paths matching a glob pattern, respecting ignore files. `*.rs` matches at any depth; `src/*.rs` only direct children of src; `src/**/*.rs` recurses. Results are bounded.",
         "input_schema": { "type": "object", "properties": {
@@ -201,7 +207,7 @@ pub fn definitions(role: Option<crate::subagents::Role>, mcp: &[Value], plugins:
         })]);
     }
     tools.push(json!({
-        "name": "wait", "description": "Wait for incoming messages or selected jobs, only when you are blocked on them and have nothing else to do. Results and messages arrive on their own; never poll. When one result arrives while others still run, act on it before waiting again. Does not consume messages or completions; message receipts become delivered only after history persistence.",
+        "name": "wait", "description": "Wait for incoming messages or selected jobs, only when you are blocked on them and have nothing else to do. Without IDs, persistent services do not keep this wait open. Results and messages arrive on their own; never poll. When one result arrives while others still run, act on it before waiting again. Does not consume messages or completions; message receipts become delivered only after history persistence.",
         "input_schema": {"type": "object", "properties": {"ids": {"type": "array", "items": {"type": "string"}}}}
     }));
     if image { tools.push(crate::image_gen::definition()); }
@@ -463,6 +469,8 @@ pub struct Running {
     tree: Tree,
     stdout: tokio::process::ChildStdout,
     output: Vec<u8>,
+    persistent: bool,
+    output_capped: bool,
 }
 
 /// What `bash` ended with: a result, or a command still running that the caller moves
@@ -474,9 +482,10 @@ pub enum Bash {
 
 /// Runs in `cwd`, the session's directory; the process itself may serve several sessions.
 /// With `may_background`, a command still running after `FOREGROUND` (or at once with
-/// `background: true`) is handed back instead of killed at its timeout.
+/// `background: true` or `persistent: true`) is handed back instead of killed at its timeout.
 pub async fn bash(input: &Value, cancel: &CancellationToken, cwd: &Path, may_background: bool) -> Bash {
     let Some(cmd) = input["command"].as_str() else { return Bash::Done(Output::err("missing `command`")) };
+    let persistent = may_background && input["persistent"].as_bool() == Some(true);
     let timeout = Duration::from_secs(input["timeout"].as_u64().unwrap_or(120).clamp(1, 600));
     let background = may_background && input["background"].as_bool() == Some(true);
     // A timeout shorter than the foreground wait means "give up then", as before; otherwise
@@ -486,6 +495,10 @@ pub async fn bash(input: &Value, cancel: &CancellationToken, cwd: &Path, may_bac
     let wait = if background { Duration::ZERO } else if movable { FOREGROUND } else { timeout };
     let deadline = tokio::time::Instant::now() + wait;
     let mut running = match start(cmd, cwd, cancel).await { Ok(running) => running, Err(error) => return Bash::Done(Output::err(error)) };
+    if persistent {
+        running.persistent = true;
+        return if cancel.is_cancelled() { Bash::Done(running.kill("cancelled by user").await) } else { Bash::Background(running) };
+    }
     match running.run_until(deadline, cancel).await {
         Some(output) => Bash::Done(output),
         None if cancel.is_cancelled() => Bash::Done(running.kill("cancelled by user").await),
@@ -524,30 +537,37 @@ async fn start(cmd: &str, cwd: &Path, cancel: &CancellationToken) -> Result<Runn
         return Err(format!("[{error}]"));
     }
     let stdout = child.stdout.take().expect("piped stdout");
-    Ok(Running { child, tree, stdout, output: Vec::new() })
+    Ok(Running { child, tree, stdout, output: Vec::new(), persistent: false, output_capped: false })
 }
 
 impl Running {
     /// Collects output until the command exits (`Some`), or `deadline` or `cancel` comes
     /// first (`None`, still running, output kept). `on_output` sees each new chunk.
     pub async fn run_until(&mut self, deadline: tokio::time::Instant, cancel: &CancellationToken) -> Option<Output> {
-        self.run_until_with(deadline, cancel, |_| {}).await
+        self.run_until_with(Some(deadline), cancel, |_| {}).await
     }
 
     /// The command has finished when its shell exits, not when its output closes: a
     /// daemon it started (`gradlew` starts one) inherits the pipe and keeps it open for
     /// hours. After the exit, output still in the pipe is read for a moment, then left.
-    pub async fn run_until_with(&mut self, deadline: tokio::time::Instant, cancel: &CancellationToken, mut on_output: impl FnMut(&[u8])) -> Option<Output> {
+    pub async fn run_until_with(&mut self, deadline: Option<tokio::time::Instant>, cancel: &CancellationToken, mut on_output: impl FnMut(&[u8])) -> Option<Output> {
+        let timeout = async {
+            match deadline {
+                Some(deadline) => tokio::time::sleep_until(deadline).await,
+                None => std::future::pending::<()>().await,
+            }
+        };
+        tokio::pin!(timeout);
         let mut chunk = [0u8; 8192];
         let mut open = true;
         let status = loop {
             tokio::select! {
                 read = self.stdout.read(&mut chunk), if open => match read {
                     Ok(0) | Err(_) => open = false,
-                    Ok(n) => { self.output.extend_from_slice(&chunk[..n]); on_output(&chunk[..n]); }
+                    Ok(n) => { self.capture(&chunk[..n]); on_output(&chunk[..n]); }
                 },
                 status = self.child.wait() => break status,
-                _ = tokio::time::sleep_until(deadline) => return None,
+                _ = &mut timeout => return None,
                 _ = cancel.cancelled() => return None,
             }
         };
@@ -557,7 +577,7 @@ impl Running {
             tokio::select! {
                 read = self.stdout.read(&mut chunk) => match read {
                     Ok(0) | Err(_) => open = false,
-                    Ok(n) => { self.output.extend_from_slice(&chunk[..n]); on_output(&chunk[..n]); }
+                    Ok(n) => { self.capture(&chunk[..n]); on_output(&chunk[..n]); }
                 },
                 _ = tokio::time::sleep_until(drain) => break,
             }
@@ -577,8 +597,20 @@ impl Running {
         Output::err(format!("{}\n[{why}]", self.text()))
     }
 
+    pub(crate) fn persistent(&self) -> bool { self.persistent }
+
+    // Services can run indefinitely. Keep a bounded preview in memory; the caller streams
+    // the full output into the job transcript.
+    fn capture(&mut self, chunk: &[u8]) {
+        let n = if self.persistent { chunk.len().min((LIMIT / 2).saturating_sub(self.output.len())) } else { chunk.len() };
+        self.output.extend_from_slice(&chunk[..n]);
+        self.output_capped |= n < chunk.len();
+    }
+
     pub fn text(&self) -> String {
-        decode_output(&self.output)
+        let mut text = decode_output(&self.output);
+        if self.output_capped { text.push_str("\n[Output preview capped; see the job transcript for the full log.]"); }
+        text
     }
 
     /// CPU time the command's processes have used; see [`Tree::cpu_time`].

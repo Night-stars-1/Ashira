@@ -17,6 +17,8 @@ const outputColor = Color(0xFFF59E0B);
 /// Sums of usage buckets; `prompt` is every input token (uncached + cache read + cache write).
 class UsageSums {
   int input = 0, output = 0, cacheRead = 0, cacheWrite = 0, unknown = 0, requests = 0, timedOutput = 0, durationMs = 0;
+  int firstOutputTotalMs = 0, firstOutputSamples = 0;
+  int firstTextTotalMs = 0, firstTextSamples = 0;
   double cost = 0;
   int get prompt => input + cacheRead + cacheWrite;
   int get tokens => prompt + output;
@@ -31,6 +33,10 @@ class UsageSums {
     requests += bucket.requests;
     timedOutput += bucket.timedOutput;
     durationMs += bucket.durationMs;
+    firstOutputTotalMs += bucket.firstOutputTotalMs;
+    firstOutputSamples += bucket.firstOutputSamples;
+    firstTextTotalMs += bucket.firstTextTotalMs;
+    firstTextSamples += bucket.firstTextSamples;
   }
 }
 
@@ -42,6 +48,8 @@ String costLabel(double cost, bool unknown) => !unknown ? dollars(cost) : cost >
 
 /// Average output speed over the requests that logged their generation time.
 String tpsLabel(UsageSums sums) => sums.durationMs == 0 ? '—' : (sums.timedOutput * 1000 / sums.durationMs).toStringAsFixed(1);
+
+String _averageLatency(int totalMs, int samples) => samples == 0 ? '—' : '${(totalMs / samples / 1000).toStringAsFixed(3)} 秒';
 
 String _trim(double value) => value.toStringAsFixed(1).replaceFirst(RegExp(r'\.0$'), '');
 String _pad(int value) => value.toString().padLeft(2, '0');
@@ -169,7 +177,7 @@ class _UsageSettingsState extends State<UsageSettings> {
           child: _ModelTable(rows: [
             for (final MapEntry(key: model, value: sums) in models)
               (
-                cells: [model, wan(sums.tokens), cacheRate(sums.cacheRead, sums.prompt), tokens(sums.requests), tpsLabel(sums), costLabel(sums.cost, sums.unknown > 0)],
+                cells: [model, wan(sums.tokens), cacheRate(sums.cacheRead, sums.prompt), tokens(sums.requests), tpsLabel(sums), _averageLatency(sums.firstOutputTotalMs, sums.firstOutputSamples), _averageLatency(sums.firstTextTotalMs, sums.firstTextSamples), costLabel(sums.cost, sums.unknown > 0)],
                 tooltip: '输入 ${tokens(sums.prompt)} · 输出 ${tokens(sums.output)}',
               ),
           ]),
@@ -449,7 +457,7 @@ class _ModelTable extends StatelessWidget {
   const _ModelTable({required this.rows});
   final List<({List<String> cells, String tooltip})> rows;
 
-  static const _header = ['模型', 'Token', '缓存命中', '请求', 'TPS', '费用'];
+  static const _header = ['模型', 'Token', '缓存命中', '请求', 'TPS', '平均首输出块', '平均首段正文', '费用'];
 
   @override
   Widget build(BuildContext context) {

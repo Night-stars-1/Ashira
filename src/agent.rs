@@ -422,7 +422,7 @@ impl Shared {
 
     pub(crate) fn try_set_approval_mode(&self, mode: ApprovalMode) -> bool {
         let turn = self.parent_turn.lock().unwrap();
-        if turn.is_some() || self.subagents.active_count() > 0 { return false; }
+        if turn.is_some() || self.subagents.active_task_count() > 0 { return false; }
         self.set_approval_mode(mode);
         true
     }
@@ -743,10 +743,13 @@ impl Agent {
 
     fn request_record(&self, id: String, client: &Client, kind: crate::stats::Kind, result: &Result<api::Response, String>, started: std::time::Instant) -> crate::stats::RequestStats {
         let usage = result.as_ref().ok().filter(|r| r.usage_reported).map(|r| r.usage);
+        let chat = result.as_ref().ok().filter(|_| matches!(kind, crate::stats::Kind::Chat));
         crate::stats::RequestStats {
             id, model: client.name().to_owned(), kind, usage,
             cost: usage.and_then(|u| client.estimate_cost(u)),
             duration_ms: result.as_ref().map(|r| r.duration_ms).unwrap_or_else(|_| started.elapsed().as_millis().min(u64::MAX as u128) as u64),
+            first_text_ms: chat.and_then(|r| r.first_text_ms),
+            first_output_ms: chat.and_then(|r| r.first_output_ms),
             child: self.identity.is_some(),
         }
     }
@@ -784,6 +787,8 @@ impl Agent {
             id: request_id, model: client.name().to_owned(), kind: crate::stats::Kind::Image, usage,
             cost: usage.and_then(|u| client.estimate_cost(u)),
             duration_ms: started.elapsed().as_millis().min(u64::MAX as u128) as u64,
+            first_text_ms: None,
+            first_output_ms: None,
             child: self.identity.is_some(),
         };
         if let Err(error) = self.record_request(&record).await { return Output::err(error); }
@@ -1154,6 +1159,8 @@ impl Agent {
                     id: request_id, model: client.name().to_owned(), kind: crate::stats::Kind::Title, usage,
                     cost: usage.and_then(|u| client.estimate_cost(u)),
                     duration_ms: response.as_ref().map(|r| r.duration_ms).unwrap_or_else(|_| started.elapsed().as_millis() as u64),
+                    first_text_ms: None,
+                    first_output_ms: None,
                     child: false,
                 };
                 if let Some(scope) = &scope { shared.record_statistics(scope, &record); }
@@ -1277,6 +1284,9 @@ impl Agent {
                 }
             }
             "bash" => {
+                if input["persistent"].as_bool() == Some(true) && (!self.shared.interactive || self.identity.is_some()) {
+                    return Output::err("persistent services require an interactive main session");
+                }
                 if let Some(cmd) = input["command"].as_str()
                     && let Err(denied) = self.approve_shell(cmd, call, cancel).await
                 {
@@ -1355,11 +1365,12 @@ impl Agent {
         let name = input.get("i").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty())
             .map(|s| s.chars().take(80).collect())
             .unwrap_or_else(|| command.lines().next().unwrap_or("bash").chars().take(80).collect::<String>());
+        let persistent = running.persistent();
         let so_far = running.text();
         let Some(model) = self.shared.model() else { return Output::err("no active model") };
         let (lease, log) = {
             let _gate = self.shared.launch.lock().unwrap();
-            match self.shared.subagents.create_shell(self.shared.subagents.owner(), name, command.to_owned(), model) {
+            match self.shared.subagents.create_shell(self.shared.subagents.owner(), name, command.to_owned(), model, persistent) {
                 Ok(created) => created,
                 Err(error) => return Output::err(error),
             }
@@ -1370,30 +1381,32 @@ impl Agent {
             if let Some(dir) = log.parent() { let _ = tokio::fs::create_dir_all(dir).await; }
             let mut file = std::fs::File::create(&log).ok();
             if let Some(file) = &mut file { let _ = std::io::Write::write_all(file, running.text().as_bytes()); }
-            let deadline = tokio::time::Instant::now() + tools::BACKGROUND_LIMIT;
+            let deadline = (!persistent).then(|| tokio::time::Instant::now() + tools::BACKGROUND_LIMIT);
             // Look in on the command every `STALL_CHECK`: no new output and (almost) no CPU
             // across its whole process tree since the last look means nothing is working on
             // it, so the main agent hears once that it looks stuck and can decide.
-            let mut seen = (running.text().len(), running.cpu_time());
+            let mut seen = deadline.map(|_| (running.text().len(), running.cpu_time()));
             let mut warned = false;
             let finished = loop {
-                let check = (tokio::time::Instant::now() + STALL_CHECK).min(deadline);
+                let check = deadline.map(|deadline| (tokio::time::Instant::now() + STALL_CHECK).min(deadline));
                 let at_check = running.run_until_with(check, &lease.cancel, |chunk| {
                     if let Some(file) = &mut file { let _ = std::io::Write::write_all(file, chunk); }
                 }).await;
+                let Some(deadline) = deadline else { break at_check; };
                 if at_check.is_some() || lease.cancel.is_cancelled() || tokio::time::Instant::now() >= deadline { break at_check; }
                 let now = (running.text().len(), running.cpu_time());
-                let idle = now.0 == seen.0 && match (seen.1, now.1) { (Some(before), Some(after)) => after.saturating_sub(before) < STALL_CPU, _ => false };
+                let idle = seen.is_some_and(|(len, cpu)| now.0 == len && match (cpu, now.1) { (Some(before), Some(after)) => after.saturating_sub(before) < STALL_CPU, _ => false });
                 if idle && !warned {
                     let body = format!("Background command {} has printed nothing new and its processes have used almost no CPU for {} minutes; it may be stuck. Check its output with read on its transcript or task_status, and use task_cancel if it is not making progress.", lease.identity.id, STALL_CHECK.as_secs() / 60);
                     let _ = manager.send_message(&lease.endpoint, "parent", &body);
                 }
                 warned = idle;
-                seen = now;
+                seen = Some(now);
             };
             // A failed command is still a finished job: its output, with the exit code, is the
             // report. Cancelled and timed-out ones keep what they printed and say why they ended.
             let result = match finished {
+                Some(output) if persistent && output.is_error => Err(output.text),
                 Some(output) => Ok(output.text),
                 None => {
                     let why = if lease.cancel.is_cancelled() { "cancelled".to_owned() } else { format!("timed out after {}s in the background", tools::BACKGROUND_LIMIT.as_secs()) };
@@ -1409,7 +1422,8 @@ impl Agent {
         Output::ok(json!({
             "job": id,
             "status": "running",
-            "note": "Still running, moved to the background. Its output arrives later as subagent-results data; use wait, task_status or task_cancel with this id.",
+            "persistent": persistent,
+            "note": if persistent { "Persistent service started without a timeout. Check readiness via the transcript or endpoint, and stop it with task_cancel using this job ID." } else { "Still running, moved to the background. Its output arrives later as subagent-results data; use wait, task_status or task_cancel with this id." },
             "output_so_far": shown,
         }).to_string())
     }

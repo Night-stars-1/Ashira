@@ -2604,7 +2604,7 @@ impl Ui {
 
     fn busy_line(&self) -> Option<Line<'static>> {
         let Some((t, label)) = self.busy.as_ref() else {
-            if self.shared.subagents.active_count() == 0 { return None; }
+            if self.shared.subagents.active_task_count() == 0 { return None; }
             let label = if self.shared.subagents.auto_resume_suppressed() { "后台任务仍在运行 · 自动续答已暂停" } else { "等待后台任务" };
             return Some(Line::styled(format!("  {label}"), DIM));
         };
@@ -3005,7 +3005,7 @@ impl Ui {
         self.shared.interrupt();
         if let Some(c) = &self.cancel { c.cancel(); }
         self.queued.clear();
-        if self.shared.subagents.active_count() > 0 {
+        if self.shared.subagents.active_task_count() > 0 {
             self.commit_note("子代理仍在运行；自动续答已暂停", DIM);
         }
     }

@@ -36,6 +36,7 @@ class _FilesPanelState extends State<FilesPanel> {
   /// Desktop context menu: [_menuDir] is the folder its 「新建」 items create in;
   /// [_hitDir] is the one the right click landed on, before the menu opens.
   final _menu = MenuController();
+  final _menuFocus = FocusNode(skipTraversal: true);
   String _menuDir = '';
   String? _hitDir;
   final Map<String, String> _failed = {};
@@ -44,6 +45,12 @@ class _FilesPanelState extends State<FilesPanel> {
   void initState() {
     super.initState();
     _load('');
+  }
+
+  @override
+  void dispose() {
+    _menuFocus.dispose();
+    super.dispose();
   }
 
   Future<void> _load(String path) async {
@@ -101,7 +108,9 @@ class _FilesPanelState extends State<FilesPanel> {
   /// Pointer events, not a tap recognizer: the rows' InkWells would win the gesture arena.
   Offset? _rightDown;
   void _pointerDown(PointerDownEvent event) {
-    if (event.kind == PointerDeviceKind.mouse && event.buttons == kSecondaryMouseButton) _rightDown = event.localPosition;
+    if (!_menu.isOpen && event.kind == PointerDeviceKind.mouse && event.buttons == kSecondaryMouseButton) {
+      _rightDown = event.localPosition;
+    }
   }
 
   void _pointerUp(PointerUpEvent event) {
@@ -219,13 +228,8 @@ class _FilesPanelState extends State<FilesPanel> {
         Expanded(
           child: RefreshIndicator(
             onRefresh: _refresh,
-            child: MenuAnchor(
-              controller: _menu,
-              menuChildren: [
-                MenuItemButton(leadingIcon: const Icon(Icons.note_add_outlined, size: 16), onPressed: () => _create(directory: false, parent: _menuDir), child: const Text('新建文件', style: TextStyle(fontSize: 13))),
-                MenuItemButton(leadingIcon: const Icon(Icons.create_new_folder_outlined, size: 16), onPressed: () => _create(directory: true, parent: _menuDir), child: const Text('新建文件夹', style: TextStyle(fontSize: 13))),
-              ],
-              child: Listener(
+            child: Stack(fit: StackFit.expand, children: [
+              Listener(
                 // Opaque so blank space below the rows takes a right click too.
                 behavior: HitTestBehavior.opaque,
                 onPointerDown: isDesktop ? _pointerDown : null,
@@ -236,7 +240,23 @@ class _FilesPanelState extends State<FilesPanel> {
                   itemBuilder: (_, index) => rows[index],
                 ),
               ),
-            ),
+              // Keep the anchor at the list's origin for pointer coordinates, but do not
+              // wrap the list: Flutter treats clicks on the anchor as inside the menu.
+              if (isDesktop)
+                Positioned(
+                  top: 0,
+                  left: 0,
+                  child: MenuAnchor(
+                    controller: _menu,
+                    childFocusNode: _menuFocus,
+                    menuChildren: [
+                      MenuItemButton(leadingIcon: const Icon(Icons.note_add_outlined, size: 16), onPressed: () => _create(directory: false, parent: _menuDir), child: const Text('新建文件', style: TextStyle(fontSize: 13))),
+                      MenuItemButton(leadingIcon: const Icon(Icons.create_new_folder_outlined, size: 16), onPressed: () => _create(directory: true, parent: _menuDir), child: const Text('新建文件夹', style: TextStyle(fontSize: 13))),
+                    ],
+                    child: Focus(focusNode: _menuFocus, child: const SizedBox.shrink()),
+                  ),
+                ),
+            ]),
           ),
         ),
       ]),

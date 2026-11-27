@@ -58,7 +58,7 @@ class _SessionUsage extends StatelessWidget {
   }
 }
 
-const _metrics = [('total', '总 Token'), ('output', '输出'), ('hit', '缓存命中'), ('rate', 'TPS'), ('cost', '费用')];
+const _metrics = [('total', '总 Token'), ('output', '输出'), ('hit', '缓存命中'), ('rate', 'TPS'), ('firstOutputMs', '首输出块耗时'), ('firstTextMs', '首段正文耗时'), ('cost', '费用')];
 /// Replies the chart shows by default: the latest ones, until the range is moved.
 const _defaultSpan = 30;
 
@@ -67,6 +67,8 @@ double? _value(ReplyMetrics? reply, String metric) {
   if (reply == null) return null;
   if (metric == 'rate') return reply.rate;
   if (metric == 'cost') return reply.cost;
+  if (metric == 'firstOutputMs') return reply.firstOutputMs;
+  if (metric == 'firstTextMs') return reply.firstTextMs;
   final usage = reply.usage;
   if (usage == null) return null;
   // Share of this reply's prompt read from cache.
@@ -102,6 +104,7 @@ String _format(double? amount, String metric, {bool short = false}) {
     'cost' => dollars(amount),
     'hit' => '${(amount * 100).toStringAsFixed(1).replaceFirst(RegExp(r'\.0$'), '')}%',
     'rate' => short ? amount.toStringAsFixed(1) : '${amount.toStringAsFixed(1)} tok/s',
+    'firstOutputMs' || 'firstTextMs' => '${(amount / 1000).toStringAsFixed(3)} 秒',
     _ => short ? wan(amount) : tokens(amount),
   };
 }
@@ -213,6 +216,8 @@ class _ReplyTrendState extends State<_ReplyTrend> {
                           reply.metrics?.usage == null ? '—' : '${tokens(reply.metrics!.usage!.cacheRead)} / ${tokens(reply.metrics!.usage!.cacheWrite)}',
                           _format(_value(reply.metrics, 'hit'), 'hit'),
                           _format(_value(reply.metrics, 'rate'), 'rate', short: true),
+                          _format(_value(reply.metrics, 'firstOutputMs'), 'firstOutputMs'),
+                          _format(_value(reply.metrics, 'firstTextMs'), 'firstTextMs'),
                           _format(_value(reply.metrics, 'cost'), 'cost'),
                         ],
                     ],
@@ -467,8 +472,8 @@ class _TrendChart extends StatelessWidget {
               preventCurveOverShooting: true,
               color: inputColor,
               barWidth: 2,
-              // A lone reply has no line; the dot keeps it visible.
-              dotData: FlDotData(show: points.length == 1),
+              // Show isolated measurements when missing replies break the line.
+              dotData: FlDotData(show: points.length == 1 || points.any((point) => point.value == null)),
               belowBarData: BarAreaData(show: true, color: inputColor.withValues(alpha: .15)),
             ),
           ],
@@ -488,7 +493,7 @@ class _ReplyTable extends StatelessWidget {
   final ReplySort sort;
   final ValueChanged<String> onSort;
 
-  static const _header = ['回复', '输入', '输出', '缓存读 / 写', '缓存命中', 'TPS', '估算费用'];
+  static const _header = ['回复', '输入', '输出', '缓存读 / 写', '缓存命中', 'TPS', '首输出块耗时', '首段正文耗时', '估算费用'];
   /// The arrow beside the sorted column's name, and the gap before it.
   static const _arrow = 14.0;
 
