@@ -344,7 +344,10 @@ class _TurnViewState extends State<_TurnView> {
   /// The header stays at the top of the list while the rest of its open card is in view:
   /// moved down by as much as the card has scrolled above the top, never past the card's end.
   /// Worked out from the scroll offset, which is already the new one when the list scrolls;
-  /// painted positions would still be the last frame's.
+  /// painted positions would still be the last frame's. `_header` keys the Transform itself,
+  /// whose own place excludes the offset it applies, so calling this again before the header
+  /// rebuilds (a scroll, a list relayout and the build can all do so in one frame) gives the
+  /// same answer instead of drifting.
   void _follow() {
     final position = _position;
     final card = _card.currentContext?.findRenderObject() as RenderBox?;
@@ -354,8 +357,8 @@ class _TurnViewState extends State<_TurnView> {
       _stuck.value = 0;
       return;
     }
-    // The header's place in the card before it is moved: inside the card's border.
-    final inset = MatrixUtils.transformPoint(header.getTransformTo(card), Offset.zero).dy - _stuck.value;
+    // The header's unmoved place in the card: inside the card's border.
+    final inset = MatrixUtils.transformPoint(header.getTransformTo(card), Offset.zero).dy;
     final top = viewport.getOffsetToReveal(card, 0).offset - position.pixels + inset;
     _stuck.value = (-top).clamp(0, (card.size.height - 2 * inset - header.size.height).clamp(0, double.infinity));
   }
@@ -384,6 +387,7 @@ class _TurnViewState extends State<_TurnView> {
     final header = ValueListenableBuilder<double>(
       valueListenable: _stuck,
       builder: (context, stuck, child) => Transform.translate(
+        key: _header,
         offset: Offset(0, stuck),
         // A Material, not a painted box: the tap ripple draws on it, above the work below.
         child: Material(
@@ -394,7 +398,6 @@ class _TurnViewState extends State<_TurnView> {
         ),
       ),
       child: InkWell(
-        key: _header,
         onTap: _toggle,
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
