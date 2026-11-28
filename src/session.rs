@@ -54,13 +54,12 @@ pub struct ReplyStats {
     pub usage: Option<Usage>,
     pub cost: Option<f64>,
     pub duration_ms: Option<u64>,
-    pub first_text_ms: Option<u64>,
     pub first_output_ms: Option<u64>,
 }
 
 impl From<RequestStats> for ReplyStats {
     fn from(stats: RequestStats) -> Self {
-        Self { model: Some(stats.model), usage: stats.usage, cost: stats.cost, duration_ms: Some(stats.duration_ms), first_text_ms: stats.first_text_ms, first_output_ms: stats.first_output_ms }
+        Self { model: Some(stats.model), usage: stats.usage, cost: stats.cost, duration_ms: Some(stats.duration_ms), first_output_ms: stats.first_output_ms }
     }
 }
 
@@ -300,7 +299,7 @@ fn load_records(path: &Path, replay: bool, registry: &Registry) -> Result<Loaded
                 let cost = model.as_deref().and_then(|model| registry.price_of(model)).and_then(|price| price.cost(usage));
                 if !stats_boundary { ledger.legacy(usage, cost); }
                 if let Some(index) = previous_reply {
-                    reply_stats.insert(index, ReplyStats { model: model.clone(), usage: Some(usage), cost, duration_ms: None, first_text_ms: None, first_output_ms: None });
+                    reply_stats.insert(index, ReplyStats { model: model.clone(), usage: Some(usage), cost, duration_ms: None, first_output_ms: None });
                 }
             }
             Some("request_stats_boundary") => { stats_boundary = true; pending = None; }
@@ -758,9 +757,9 @@ mod tests {
         let main_usage = Usage { input: 100, output: 20, cache_read: 10, cache_write: 5 };
         let child_usage = Usage { input: 40, output: 4, cache_read: 2, cache_write: 1 };
         let compact_usage = Usage { input: 30, output: 5, cache_read: 3, cache_write: 0 };
-        let main = RequestStats { id: "main-1".into(), model: "model-a".into(), kind: Kind::Chat, usage: Some(main_usage), cost: Some(1.25), duration_ms: 1000, first_text_ms: None, first_output_ms: None, child: false };
-        let child = RequestStats { id: "child-1".into(), model: "model-b".into(), kind: Kind::Chat, usage: Some(child_usage), cost: Some(0.75), duration_ms: 500, first_text_ms: None, first_output_ms: None, child: true };
-        let compact = RequestStats { id: "compact-1".into(), model: "model-b".into(), kind: Kind::Compact, usage: Some(compact_usage), cost: Some(2.5), duration_ms: 500, first_text_ms: None, first_output_ms: None, child: false };
+        let main = RequestStats { id: "main-1".into(), model: "model-a".into(), kind: Kind::Chat, usage: Some(main_usage), cost: Some(1.25), duration_ms: 1000, first_output_ms: None, child: false };
+        let child = RequestStats { id: "child-1".into(), model: "model-b".into(), kind: Kind::Chat, usage: Some(child_usage), cost: Some(0.75), duration_ms: 500, first_output_ms: None, child: true };
+        let compact = RequestStats { id: "compact-1".into(), model: "model-b".into(), kind: Kind::Compact, usage: Some(compact_usage), cost: Some(2.5), duration_ms: 500, first_output_ms: None, child: false };
         loaded.session.message(&answer);
         loaded.session.request_stats(&main);
         loaded.session.usage(&main_usage);
@@ -796,7 +795,7 @@ mod tests {
         // Clearing selects an independent, still-lazy session. A late child
         // result belongs to the old writer, not the new session or ledger.
         let mut fresh = Session { path: fresh_path.clone(), writer: Arc::new(Mutex::new(Writer { file: None, meta: None, needs_stats_boundary: true })) };
-        let late = RequestStats { id: "child-late".into(), model: "model-a".into(), kind: Kind::Chat, usage: Some(child_usage), cost: Some(0.2), duration_ms: 500, first_text_ms: None, first_output_ms: None, child: true };
+        let late = RequestStats { id: "child-late".into(), model: "model-a".into(), kind: Kind::Chat, usage: Some(child_usage), cost: Some(0.2), duration_ms: 500, first_output_ms: None, child: true };
         late_writer.request_stats(&late);
         assert!(!fresh_path.exists());
         let old_after_late = load(&path).unwrap().ledger.snapshot();
@@ -838,24 +837,24 @@ mod tests {
     fn each_reply_keeps_its_request_metrics() {
         let dir = env::temp_dir().join(format!("ashira-metrics-{}-{}", std::process::id(), SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
         fs::create_dir_all(&dir).unwrap();
-        let stats = |id: &str, output: u64, first_text_ms, first_output_ms| RequestStats { id: id.into(), model: "p/m".into(), kind: crate::stats::Kind::Chat, usage: Some(Usage { input: 10, output, cache_read: 0, cache_write: 0 }), cost: None, duration_ms: 1000, first_text_ms, first_output_ms, child: false };
+        let stats = |id: &str, output: u64, first_output_ms| RequestStats { id: id.into(), model: "p/m".into(), kind: crate::stats::Kind::Chat, usage: Some(Usage { input: 10, output, cache_read: 0, cache_write: 0 }), cost: None, duration_ms: 1000, first_output_ms, child: false };
         let reply = |text: &str| json!({"role": "assistant", "content": [{"type": "text", "text": text}]});
         let usage = Usage { input: 10, output: 5, cache_read: 0, cache_write: 0 };
         let mut session = Session { path: dir.join("s.jsonl"), writer: Arc::new(Mutex::new(Writer { file: None, meta: None, needs_stats_boundary: true })) };
         session.message(&json!({"role": "user", "content": [{"type": "text", "text": "hi"}]}));
         // The order the agent writes: request, reply, then the context usage.
-        session.request_stats(&stats("a", 5, Some(380), Some(120)));
+        session.request_stats(&stats("a", 5, Some(120)));
         session.reply(&reply("one"), "a");
         session.usage(&usage);
         // v0.2.15 wrote the usage between the request and its reply.
-        session.request_stats(&stats("b", 7, Some(280), None));
+        session.request_stats(&stats("b", 7, None));
         session.usage(&usage);
         session.reply(&reply("two"), "b");
         let loaded = read_http(&session.path, &Registry::empty()).unwrap();
         let output = |index: usize| loaded.reply_stats.get(&index).and_then(|stats| stats.usage).map(|usage| usage.output);
         assert_eq!((output(1), output(2)), (Some(5), Some(7)));
-        let latency = |index| loaded.reply_stats.get(&index).map(|stats| (stats.first_output_ms, stats.first_text_ms));
-        assert_eq!((latency(1), latency(2)), (Some((Some(120), Some(380))), Some((None, Some(280)))));
+        let latency = |index| loaded.reply_stats.get(&index).and_then(|stats| stats.first_output_ms);
+        assert_eq!((latency(1), latency(2)), (Some(120), None));
         drop(session);
         fs::remove_dir_all(dir).unwrap();
     }

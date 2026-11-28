@@ -18,7 +18,6 @@ const outputColor = Color(0xFFF59E0B);
 class UsageSums {
   int input = 0, output = 0, cacheRead = 0, cacheWrite = 0, unknown = 0, requests = 0, timedOutput = 0, durationMs = 0;
   int firstOutputTotalMs = 0, firstOutputSamples = 0;
-  int firstTextTotalMs = 0, firstTextSamples = 0;
   double cost = 0;
   int get prompt => input + cacheRead + cacheWrite;
   int get tokens => prompt + output;
@@ -35,8 +34,6 @@ class UsageSums {
     durationMs += bucket.durationMs;
     firstOutputTotalMs += bucket.firstOutputTotalMs;
     firstOutputSamples += bucket.firstOutputSamples;
-    firstTextTotalMs += bucket.firstTextTotalMs;
-    firstTextSamples += bucket.firstTextSamples;
   }
 }
 
@@ -154,7 +151,7 @@ class _UsageSettingsState extends State<UsageSettings> {
     return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
       Wrap(alignment: WrapAlignment.spaceBetween, crossAxisAlignment: WrapCrossAlignment.center, runSpacing: 8, children: [
         Text('所有会话（含已归档、子代理）· 共 ${report.sessions} 个会话', style: small),
-        Wrap(spacing: 4, children: [for (final (id, label) in _ranges) Pill(label: label, selected: _range == id, onTap: () => setState(() => _range = id))]),
+        Wrap(spacing: 4, runSpacing: 4, children: [for (final (id, label) in _ranges) Pill(label: label, selected: _range == id, onTap: () => setState(() => _range = id))]),
       ]),
       const SizedBox(height: 12),
       if (rows.isEmpty)
@@ -177,7 +174,7 @@ class _UsageSettingsState extends State<UsageSettings> {
           child: _ModelTable(rows: [
             for (final MapEntry(key: model, value: sums) in models)
               (
-                cells: [model, wan(sums.tokens), cacheRate(sums.cacheRead, sums.prompt), tokens(sums.requests), tpsLabel(sums), _averageLatency(sums.firstOutputTotalMs, sums.firstOutputSamples), _averageLatency(sums.firstTextTotalMs, sums.firstTextSamples), costLabel(sums.cost, sums.unknown > 0)],
+                cells: [model, wan(sums.tokens), cacheRate(sums.cacheRead, sums.prompt), tokens(sums.requests), tpsLabel(sums), _averageLatency(sums.firstOutputTotalMs, sums.firstOutputSamples), costLabel(sums.cost, sums.unknown > 0)],
                 tooltip: '输入 ${tokens(sums.prompt)} · 输出 ${tokens(sums.output)}',
               ),
           ]),
@@ -457,7 +454,7 @@ class _ModelTable extends StatelessWidget {
   const _ModelTable({required this.rows});
   final List<({List<String> cells, String tooltip})> rows;
 
-  static const _header = ['模型', 'Token', '缓存命中', '请求', 'TPS', '平均首输出块', '平均首段正文', '费用'];
+  static const _header = ['模型', 'Token', '缓存命中', '请求', 'TPS', '平均首字耗时', '费用'];
 
   @override
   Widget build(BuildContext context) {

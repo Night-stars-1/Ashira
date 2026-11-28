@@ -300,6 +300,6 @@ impl Decoder for Stream {
             let id = if c.id.is_empty() { format!("call_{i}") } else { c.id };
             content.push(json!({ "type": "tool_use", "id": id, "name": c.name, "input": parse_input(c.args) }));
         }
-        Ok(Response { content, usage: self.usage, usage_reported: self.usage_reported, duration_ms: 0, first_output_ms: None, first_text_ms: None, truncated: self.truncated })
+        Ok(Response { content, usage: self.usage, usage_reported: self.usage_reported, duration_ms: 0, first_output_ms: None, truncated: self.truncated })
     }
 }

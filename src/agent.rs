@@ -748,7 +748,6 @@ impl Agent {
             id, model: client.name().to_owned(), kind, usage,
             cost: usage.and_then(|u| client.estimate_cost(u)),
             duration_ms: result.as_ref().map(|r| r.duration_ms).unwrap_or_else(|_| started.elapsed().as_millis().min(u64::MAX as u128) as u64),
-            first_text_ms: chat.and_then(|r| r.first_text_ms),
             first_output_ms: chat.and_then(|r| r.first_output_ms),
             child: self.identity.is_some(),
         }
@@ -787,7 +786,6 @@ impl Agent {
             id: request_id, model: client.name().to_owned(), kind: crate::stats::Kind::Image, usage,
             cost: usage.and_then(|u| client.estimate_cost(u)),
             duration_ms: started.elapsed().as_millis().min(u64::MAX as u128) as u64,
-            first_text_ms: None,
             first_output_ms: None,
             child: self.identity.is_some(),
         };
@@ -1022,9 +1020,10 @@ impl Agent {
             let started = std::time::Instant::now();
             let outbound = if sub { None } else { self.outbound_messages(inject).await };
             let messages = outbound.as_deref().unwrap_or(&self.history);
+            let messages = without_stale_images(messages);
             let result = model
                 .client
-                .stream(&system, &tools, messages, None, cancel, |event| match event {
+                .stream(&system, &tools, &messages, None, cancel, |event| match event {
                     api::StreamEvent::TextDelta(text) => {
                         if !sub { sh.emit(Event::Text(text.to_owned())); }
                         if let Some(log) = &self.transcript { log.lock().unwrap().text(text); }
@@ -1159,7 +1158,6 @@ impl Agent {
                     id: request_id, model: client.name().to_owned(), kind: crate::stats::Kind::Title, usage,
                     cost: usage.and_then(|u| client.estimate_cost(u)),
                     duration_ms: response.as_ref().map(|r| r.duration_ms).unwrap_or_else(|_| started.elapsed().as_millis() as u64),
-                    first_text_ms: None,
                     first_output_ms: None,
                     child: false,
                 };
@@ -1666,7 +1664,8 @@ impl Agent {
         let (system, tools) = self.request_context(&model, cancel).await?;
         let request_id = self.begin_request(&model.client, crate::stats::Kind::Compact, cancel).await?;
         let started = std::time::Instant::now();
-        let result = model.client.stream(&system, &tools, &self.history, Some(&prompt), cancel, |_| {}).await;
+        let history = without_stale_images(&self.history);
+        let result = model.client.stream(&system, &tools, &history, Some(&prompt), cancel, |_| {}).await;
         let record = self.request_record(request_id, &model.client, crate::stats::Kind::Compact, &result, started);
         self.record_request(&record).await?;
         let resp = result?;
@@ -1936,6 +1935,45 @@ fn job_ids(input: &Value, required: bool) -> Result<Option<Vec<String>>, String>
     let Some(values) = value.as_array() else { return Err("ids must be an array".into()); };
     if required && values.is_empty() { return Err("ids must not be empty".into()); }
     values.iter().map(|v| v.as_str().filter(|s| !s.is_empty()).map(str::to_owned).ok_or_else(|| "ids must contain nonempty strings".to_owned())).collect::<Result<Vec<_>, _>>().map(Some)
+}
+
+/// Requests the user wrote keep their own pictures for this many turns.
+const USER_IMAGE_TURNS: usize = 3;
+const IMAGE_OMITTED: &str = "[Image omitted from earlier history to save context. Read the file or take a new screenshot if you need it again.]";
+
+/// The request copy of `messages`: pictures a tool returned are sent only during the turn
+/// that produced them, and the user's own pictures for their last `USER_IMAGE_TURNS`
+/// requests. The stored history keeps every picture; this changes only what is sent.
+fn without_stale_images(messages: &[Value]) -> std::borrow::Cow<'_, [Value]> {
+    let requests: Vec<usize> = messages.iter().enumerate().filter(|(_, m)| is_request(m)).map(|(i, _)| i).collect();
+    let Some(&turn) = requests.last() else { return messages.into() };
+    let user_from = requests[requests.len().saturating_sub(USER_IMAGE_TURNS)];
+    let stale = |i: usize, m: &Value| (i < turn && has_tool_image(m)) || (i < user_from && m["content"].as_array().is_some_and(|c| c.iter().any(|b| b["type"] == "image")));
+    if !messages.iter().enumerate().any(|(i, m)| stale(i, m)) { return messages.into() }
+    let mut out = messages.to_vec();
+    for (i, message) in out.iter_mut().enumerate() {
+        let Some(blocks) = message["content"].as_array_mut() else { continue };
+        for block in blocks {
+            if block["type"] == "image" && i < user_from { *block = json!({ "type": "text", "text": IMAGE_OMITTED }); }
+            if block["type"] == "tool_result" && i < turn && let Some(parts) = block["content"].as_array_mut() {
+                for part in parts.iter_mut().filter(|p| p["type"] == "image") { *part = json!({ "type": "text", "text": IMAGE_OMITTED }); }
+            }
+        }
+    }
+    out.into()
+}
+
+/// A message the user wrote: not tool results, a reminder, a summary or a delivery.
+fn is_request(message: &Value) -> bool {
+    message["role"] == "user"
+        && !message["content"].as_array().is_some_and(|c| c.iter().any(|b| b["type"] == "tool_result"))
+        && !crate::recovery::is_internal(&text_of(&message["content"]))
+}
+
+fn has_tool_image(message: &Value) -> bool {
+    message["content"].as_array().into_iter().flatten()
+        .filter(|b| b["type"] == "tool_result")
+        .any(|b| b["content"].as_array().is_some_and(|parts| parts.iter().any(|p| p["type"] == "image")))
 }
 
 /// Estimate image cost at 4,096 tokens each, independent of encoded size;

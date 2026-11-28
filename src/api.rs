@@ -57,8 +57,6 @@ pub struct Response {
     pub duration_ms: u64,
     /// Milliseconds from request start to the first non-empty provider output.
     pub first_output_ms: Option<u64>,
-    /// Milliseconds from request start to the first non-whitespace text delta.
-    pub first_text_ms: Option<u64>,
     /// The output stopped at the token limit (`max_tokens`, `length`, `max_output_tokens`):
     /// whatever it was writing, text or a tool call, is cut off.
     pub truncated: bool,
@@ -352,18 +350,14 @@ impl Client {
             let text = resp.text().await.unwrap_or_default();
             return Err(format!("API {status}: {}", error_message(&text)));
         }
-        let (mut first_output_ms, mut first_text_ms) = (None, None);
+        let mut first_output_ms = None;
         let mut observe = |event: StreamEvent<'_>| {
-            let first_text = first_text_ms.is_none() && matches!(&event, StreamEvent::TextDelta(text) if !text.trim().is_empty());
-            let first_output = first_output_ms.is_none() && match &event {
+            if first_output_ms.is_none() && match &event {
                 StreamEvent::TextDelta(text) | StreamEvent::ReasoningDelta(text) => !text.is_empty(),
                 StreamEvent::OutputChunk => true,
                 StreamEvent::ReasoningEnd => false,
-            };
-            if first_output || first_text {
-                let elapsed = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
-                if first_output { first_output_ms = Some(elapsed); }
-                if first_text { first_text_ms = Some(elapsed); }
+            } {
+                first_output_ms = Some(started.elapsed().as_millis().min(u64::MAX as u128) as u64);
             }
             if !matches!(event, StreamEvent::OutputChunk) { on_text(event); }
         };
@@ -374,7 +368,6 @@ impl Client {
         }?;
         response.duration_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
         response.first_output_ms = first_output_ms;
-        response.first_text_ms = first_text_ms;
         Ok(response)
     }
 }
@@ -576,7 +569,7 @@ impl Decoder for AnthropicStream {
             return Err("stream ended before message_stop".into());
         }
         self.content.retain(|b| !b.is_null());
-        Ok(Response { content: self.content, usage: self.usage, usage_reported: self.input_reported && self.output_reported, duration_ms: 0, first_output_ms: None, first_text_ms: None, truncated: self.truncated })
+        Ok(Response { content: self.content, usage: self.usage, usage_reported: self.input_reported && self.output_reported, duration_ms: 0, first_output_ms: None, truncated: self.truncated })
     }
 }
 

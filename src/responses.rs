@@ -352,6 +352,6 @@ impl Decoder for Stream {
                 _ => {}
             }
         }
-        Ok(Response { content, usage: self.usage, usage_reported: self.usage_reported, duration_ms: 0, first_output_ms: None, first_text_ms: None, truncated: self.truncated })
+        Ok(Response { content, usage: self.usage, usage_reported: self.usage_reported, duration_ms: 0, first_output_ms: None, truncated: self.truncated })
     }
 }

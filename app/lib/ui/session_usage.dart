@@ -58,7 +58,7 @@ class _SessionUsage extends StatelessWidget {
   }
 }
 
-const _metrics = [('total', '总 Token'), ('output', '输出'), ('hit', '缓存命中'), ('rate', 'TPS'), ('firstOutputMs', '首输出块耗时'), ('firstTextMs', '首段正文耗时'), ('cost', '费用')];
+const _metrics = [('total', '总 Token'), ('output', '输出'), ('hit', '缓存命中'), ('rate', 'TPS'), ('firstOutputMs', '首字耗时'), ('cost', '费用')];
 /// Replies the chart shows by default: the latest ones, until the range is moved.
 const _defaultSpan = 30;
 
@@ -68,7 +68,6 @@ double? _value(ReplyMetrics? reply, String metric) {
   if (metric == 'rate') return reply.rate;
   if (metric == 'cost') return reply.cost;
   if (metric == 'firstOutputMs') return reply.firstOutputMs;
-  if (metric == 'firstTextMs') return reply.firstTextMs;
   final usage = reply.usage;
   if (usage == null) return null;
   // Share of this reply's prompt read from cache.
@@ -104,7 +103,7 @@ String _format(double? amount, String metric, {bool short = false}) {
     'cost' => dollars(amount),
     'hit' => '${(amount * 100).toStringAsFixed(1).replaceFirst(RegExp(r'\.0$'), '')}%',
     'rate' => short ? amount.toStringAsFixed(1) : '${amount.toStringAsFixed(1)} tok/s',
-    'firstOutputMs' || 'firstTextMs' => '${(amount / 1000).toStringAsFixed(3)} 秒',
+    'firstOutputMs' => '${(amount / 1000).toStringAsFixed(3)} 秒',
     _ => short ? wan(amount) : tokens(amount),
   };
 }
@@ -146,7 +145,7 @@ class _ReplyTrendState extends State<_ReplyTrend> {
       Wrap(alignment: WrapAlignment.spaceBetween, crossAxisAlignment: WrapCrossAlignment.center, runSpacing: 8, children: [
         const Text('逐回复趋势', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
         if (replies.isNotEmpty)
-          Wrap(spacing: 4, children: [for (final (id, name) in _metrics) Pill(label: name, selected: _metric == id, onTap: () => setState(() => _metric = id))]),
+          Wrap(spacing: 4, runSpacing: 4, children: [for (final (id, name) in _metrics) Pill(label: name, selected: _metric == id, onTap: () => setState(() => _metric = id))]),
       ]),
       const SizedBox(height: 8),
       if (replies.isEmpty)
@@ -217,7 +216,6 @@ class _ReplyTrendState extends State<_ReplyTrend> {
                           _format(_value(reply.metrics, 'hit'), 'hit'),
                           _format(_value(reply.metrics, 'rate'), 'rate', short: true),
                           _format(_value(reply.metrics, 'firstOutputMs'), 'firstOutputMs'),
-                          _format(_value(reply.metrics, 'firstTextMs'), 'firstTextMs'),
                           _format(_value(reply.metrics, 'cost'), 'cost'),
                         ],
                     ],
@@ -493,7 +491,7 @@ class _ReplyTable extends StatelessWidget {
   final ReplySort sort;
   final ValueChanged<String> onSort;
 
-  static const _header = ['回复', '输入', '输出', '缓存读 / 写', '缓存命中', 'TPS', '首输出块耗时', '首段正文耗时', '估算费用'];
+  static const _header = ['回复', '输入', '输出', '缓存读 / 写', '缓存命中', 'TPS', '首字耗时', '估算费用'];
   /// The arrow beside the sorted column's name, and the gap before it.
   static const _arrow = 14.0;
 

@@ -14,7 +14,7 @@ const props = defineProps<{ blocks: Block[] }>()
 const choices = [
   { key: 'total', label: '总 Token' }, { key: 'output', label: '输出' },
   { key: 'hit', label: '缓存命中' }, { key: 'rate', label: 'TPS' },
-  { key: 'firstOutputMs', label: '首输出块耗时' }, { key: 'firstTextMs', label: '首段正文耗时' }, { key: 'cost', label: '费用' },
+  { key: 'firstOutputMs', label: '首字耗时' }, { key: 'cost', label: '费用' },
 ] as const
 type Metric = typeof choices[number]['key']
 const metric = ref<Metric>('total')
@@ -47,7 +47,7 @@ const percent = new Intl.NumberFormat('zh-CN', { style: 'percent', maximumFracti
 const columns = [
   { key: 'number', label: '回复' }, { key: 'input', label: '输入' }, { key: 'output', label: '输出' }, { key: 'cache', label: '缓存读 / 写' },
   { key: 'hit', label: '缓存命中' }, { key: 'rate', label: 'TPS' },
-  { key: 'firstOutputMs', label: '首输出块耗时' }, { key: 'firstTextMs', label: '首段正文耗时' }, { key: 'cost', label: '估算费用' },
+  { key: 'firstOutputMs', label: '首字耗时' }, { key: 'cost', label: '估算费用' },
 ] as const
 type Column = typeof columns[number]['key']
 type Sort = { key: Column; dir: 'asc' | 'desc' }
@@ -80,7 +80,7 @@ const sortedPage = computed(() => {
 
 function value(reply: ReplyMetrics | null | undefined, key: Metric): number | null {
   if (!reply) return null
-  if (key === 'rate' || key === 'cost' || key === 'firstOutputMs' || key === 'firstTextMs') return reply[key]
+  if (key === 'rate' || key === 'cost' || key === 'firstOutputMs') return reply[key]
   if (!reply.usage) return null
   const { input, output, cacheRead, cacheWrite } = reply.usage
   const prompt = input + cacheRead + cacheWrite
@@ -94,7 +94,7 @@ function format(amount: number | null, key: Metric, compact = false) {
   if (key === 'cost') return dollars.format(amount)
   if (key === 'hit') return percent.format(amount)
   if (key === 'rate') return `${amount.toFixed(1)}${compact ? '' : ' tok/s'}`
-  if (key === 'firstOutputMs' || key === 'firstTextMs') return `${(amount / 1000).toFixed(3)} 秒`
+  if (key === 'firstOutputMs') return `${(amount / 1000).toFixed(3)} 秒`
   return (compact ? short : tokens).format(amount)
 }
 
@@ -186,7 +186,6 @@ const tooltipTemplate = computed(() => {
                 <td class="px-2">{{ format(value(row.metrics, 'hit'), 'hit') }}</td>
                 <td class="px-2">{{ format(value(row.metrics, 'rate'), 'rate', true) }}</td>
                 <td class="px-2">{{ format(value(row.metrics, 'firstOutputMs'), 'firstOutputMs') }}</td>
-                <td class="px-2">{{ format(value(row.metrics, 'firstTextMs'), 'firstTextMs') }}</td>
                 <td class="px-3">{{ format(value(row.metrics, 'cost'), 'cost') }}</td>
               </tr>
             </tbody>

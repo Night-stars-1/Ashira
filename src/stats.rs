@@ -26,8 +26,6 @@ pub struct RequestStats {
     pub cost: Option<f64>,
     pub duration_ms: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub first_text_ms: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub first_output_ms: Option<u64>,
     pub child: bool,
 }
