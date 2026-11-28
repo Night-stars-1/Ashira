@@ -388,9 +388,11 @@ fn replace(target: &Path, binary: &[u8]) -> Result<(), String> {
     }
     #[cfg(windows)]
     {
-        let old = dir.join(format!(".{BINARY}.old"));
-        // Left by the previous update, which could not delete itself while running.
-        let _ = fs::remove_file(&old);
+        // A program still running from an earlier update's leftover keeps that file locked,
+        // so each update moves the old one aside under a name of its own.
+        remove_leftovers(dir);
+        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+        let old = dir.join(format!(".{BINARY}.{nanos}.old"));
         if let Err(e) = fs::rename(target, &old) { let _ = fs::remove_file(&staged); return Err(denied(e)); }
         if let Err(e) = fs::rename(&staged, target) {
             let _ = fs::rename(&old, target);
@@ -436,7 +438,18 @@ pub fn replaced_since_start() -> bool {
 pub fn clean_leftover() {
     #[cfg(windows)]
     if let Some(dir) = env::current_exe().ok().as_deref().and_then(Path::parent) {
-        let _ = fs::remove_file(dir.join(format!(".{BINARY}.old")));
+        remove_leftovers(dir);
+    }
+}
+
+/// Deletes the executables earlier updates moved aside; one still running stays until it exits.
+#[cfg(windows)]
+fn remove_leftovers(dir: &Path) {
+    let prefix = format!(".{BINARY}.");
+    for entry in fs::read_dir(dir).into_iter().flatten().flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with(&prefix) && name.ends_with(".old") { let _ = fs::remove_file(entry.path()); }
     }
 }
 
